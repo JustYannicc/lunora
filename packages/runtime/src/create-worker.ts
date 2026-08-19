@@ -29,9 +29,11 @@ import type { RestExposure } from "../../../shared/rest-surface";
 import type { TraceSamplingConfig } from "../../../shared/sampling";
 import { SAMPLE_ERRORS_HEADER } from "../../../shared/sampling";
 import { checkBearerToken, isReservedRelationFunctionPath, SCHEDULER_DISPATCH_PATH, verifySchedulerDispatch } from "../../../shared/scheduler-dispatch";
+import type { AiRunBinding } from "../../../shared/sql-assistant";
 import { buildSystemDispatchHeaders, readForwardedDispatchIdentity } from "../../../shared/system-dispatch-headers";
 import { resolveWorkflowHandle } from "../../../shared/workflow-binding";
 import { mintWsAdminToken, verifyWsAdminToken } from "../../../shared/ws-admin-token";
+import { AI_CHAT_OP, buildAiChat } from "./ai-chat-rpc";
 import { assertArgsObject } from "./assert-args-object";
 import type { AuthAdmin } from "./auth-admin-routes";
 import { buildAuthAdminRoutes } from "./auth-admin-routes";
@@ -814,6 +816,19 @@ interface WorkerOptions {
      * per-shard admin gate uses.
      */
     adminToken?: string;
+
+    /**
+     * The Workers `AI` binding backing the studio's chat assistant (the
+     * `__lunora_admin__:aiChat` admin RPC). Served HERE at the worker rather than
+     * on a shard because the DO's admin dispatch is single-threaded and a
+     * conversation would hold it open — see `ai-chat-rpc.ts`. Pass `env.AI`. Omit
+     * it and the RPC responds `AI_CHAT_NOT_CONFIGURED`; a caller without a valid
+     * admin bearer always gets `ADMIN_FORBIDDEN` first (default-closed).
+     *
+     * The three one-shot assistant RPCs are unaffected — they stay on the shard,
+     * reading the same binding through `ctx.ai`.
+     */
+    aiChatBinding?: AiRunBinding;
 
     /**
      * Opt into an authorization-open posture for sharded and fan-out access.
@@ -3510,6 +3525,15 @@ const createWorker = (options: WorkerOptions): LunoraWorker => {
         getMove: () => options.authJurisdictionMove,
     });
 
+    // The `__lunora_admin__:aiChat` handler. Worker-served for a different reason
+    // than its auth-audit sibling: not because its data lives elsewhere, but
+    // because a multi-turn exchange must not occupy the DO's single-threaded
+    // admin dispatch. See `ai-chat-rpc.ts`.
+    const aiChat = buildAiChat({
+        assertAdmin: assertAdminAuthorized,
+        getBinding: () => options.aiChatBinding,
+    });
+
     /**
      * Serve the gated `__lunora_admin__:listPushSubscriptions` admin RPC — the
      * Studio Notifications page's read of registered `@lunora/notify` devices.
@@ -3616,6 +3640,10 @@ const createWorker = (options: WorkerOptions): LunoraWorker => {
 
         if (envelope.functionPath === LIST_PUSH_SUBSCRIPTIONS_OP) {
             return listPushSubscriptions(request, envelope.args);
+        }
+
+        if (envelope.functionPath === AI_CHAT_OP) {
+            return aiChat(request, envelope.args ?? {});
         }
 
         return authJurisdictionMove(request, envelope.functionPath, envelope.args ?? {});
@@ -6004,6 +6032,7 @@ const defineRpcEnvelope = (envelope: RpcEnvelope): RpcEnvelope => envelope;
 
 export { composeWorker, createLunoraHandler, createWorker, defineRpcEnvelope, probeRelayCount, resolveLunoraOptions, withFrameworkWorker };
 export { type AccessContextLike, type AccessIdentityLike, type ExecutionContextLike, NOOP_EXECUTION_CONTEXT } from "../../../shared/execution-context";
+export { AI_CHAT_OP } from "./ai-chat-rpc";
 export type {
     AuthAdmin,
     AuthCapabilities,

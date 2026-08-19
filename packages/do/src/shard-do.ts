@@ -274,6 +274,7 @@ import { parseRelayName } from "../../../shared/relay-name";
 import { parseReplicaName } from "../../../shared/replica-name";
 import { SAMPLE_ERRORS_HEADER } from "../../../shared/sampling";
 import type { SpanEvent, SpanHandle } from "../../../shared/span-event";
+import { generateChart, generateFilter, generateSql } from "../../../shared/sql-assistant";
 import { resolveWorkflowHandle } from "../../../shared/workflow-binding";
 import { adminSocketBinding, verifyWsAdminToken } from "../../../shared/ws-admin-token";
 import {
@@ -368,9 +369,6 @@ import { InFlightClaims } from "./in-flight-claims";
 import { ensureScheduleRateTable, readScheduleRateWindow, scheduleRateLimitFrom, writeScheduleRateWindow } from "./schedule-rate-breaker";
 import { resolveSchemaHistoryRead } from "./schema-history-reads";
 import { registerShardKey, SHARD_REGISTRY_DO_NAME, unregisterShardKey } from "./shard-registry-do";
-
-// Admin-only (Studio AI actions): kept out of the always-loaded class chunk, fetched on first use.
-const loadSqlAssistant = () => import("./sql-assistant");
 
 /**
  * Client→server text frame the runtime answers with {@link WS_KEEPALIVE_PONG}
@@ -10190,7 +10188,6 @@ abstract class ShardDO {
         const schema = listTables(sql).map((table) => {
             return { columns: this.tableColumns(table.name).map((column) => column.name), table: table.name };
         });
-        const { generateSql } = await loadSqlAssistant();
         const result = await generateSql((this.env as Record<string, unknown> | undefined)?.["AI"], args, schema);
 
         if (result.degraded) {
@@ -10267,7 +10264,6 @@ abstract class ShardDO {
 
         const table = typeof args["table"] === "string" ? args["table"] : "";
         const columns = table === "" ? [] : this.tableColumns(table).map((column) => column.name);
-        const { generateFilter } = await loadSqlAssistant();
         const result = await generateFilter((this.env as Record<string, unknown> | undefined)?.["AI"], args, columns);
 
         if (result.degraded && result.reason !== "no-ai-binding") {
@@ -10319,7 +10315,6 @@ abstract class ShardDO {
                 ? undefined
                 : Object.fromEntries(Object.entries(rawTypes).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
         const rowCount = typeof args["rowCount"] === "number" ? args["rowCount"] : 0;
-        const { generateChart } = await loadSqlAssistant();
         const result = await generateChart((this.env as Record<string, unknown> | undefined)?.["AI"], args, { columns, rowCount, types });
 
         if (result.degraded && result.reason !== "no-ai-binding") {
