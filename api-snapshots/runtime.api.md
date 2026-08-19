@@ -2263,7 +2263,7 @@ interface WorkerOptions {
     adminGate?: (request: Request, context?: ExecutionContextLike) => boolean | Promise<boolean>;
     adminToken?: string;
     aiChatBinding?: AiRunBinding;
-    aiOptInLevel?: string;
+    aiOptInLevel?: AiOptInLevel;
     allowUnauthenticatedShardAccess?: boolean;
     applyGlobals?: GlobalCdcApplyFunction;
     architecture?: unknown;

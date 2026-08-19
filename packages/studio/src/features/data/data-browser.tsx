@@ -4,7 +4,7 @@ import { useCallback, useState } from "react";
 
 import { ShardInput } from "../../components/shard-input";
 import { useAdminQuery } from "../../hooks/use-admin-query";
-import { useAssistantOps } from "../../hooks/use-assistant-ops";
+import { useAssistantRpc } from "../../hooks/use-assistant-rpc";
 import useMirroredRef from "../../hooks/use-mirrored-ref";
 import type { ColumnMeta, FilterClause, TableIndexInfo, TableInfo, TablePage, TablesColumnsResult, TablesIndexesResult } from "../../lib/admin";
 import { ADMIN_FUNCTIONS } from "../../lib/admin";
@@ -271,7 +271,7 @@ export const DataBrowser = ({
     // Natural-language filtering. The model returns STRUCTURED clauses which
     // land in the visible filter rows for the operator to see and edit — the
     // query never runs off un-reviewed model output.
-    const assistant = useAssistantOps(shardKey);
+    const assistant = useAssistantRpc(shardKey);
     // The table on screen when a suggestion lands. The clauses name the columns of
     // the table they were asked for, so a reply that arrives after a table switch
     // is dropped rather than filtering the new table by the old one's columns.

@@ -2,6 +2,8 @@ import { isLunoraError, toErrorBody } from "@lunora/errors";
 import type { HttpCacheLike } from "@lunora/platform";
 import { decodeWire, encodeArgsOrThrow, encodeWire } from "@lunora/wire";
 
+import type { AiOptInLevel, AiRunBinding } from "../../../shared/ai-chat";
+import { asOptInLevel } from "../../../shared/ai-chat";
 import { asBucketStorage } from "../../../shared/as-bucket-storage";
 import type { BatchEntry } from "../../../shared/batch-wire";
 import { BRANCH_MARKER_REJECTION, hasBranchMarker } from "../../../shared/branch-marker";
@@ -29,8 +31,6 @@ import type { RestExposure } from "../../../shared/rest-surface";
 import type { TraceSamplingConfig } from "../../../shared/sampling";
 import { SAMPLE_ERRORS_HEADER } from "../../../shared/sampling";
 import { checkBearerToken, isReservedRelationFunctionPath, SCHEDULER_DISPATCH_PATH, verifySchedulerDispatch } from "../../../shared/scheduler-dispatch";
-import type { AiRunBinding } from "../../../shared/sql-assistant";
-import { asOptInLevel } from "../../../shared/sql-assistant";
 import { buildSystemDispatchHeaders, readForwardedDispatchIdentity } from "../../../shared/system-dispatch-headers";
 import { resolveWorkflowHandle } from "../../../shared/workflow-binding";
 import { mintWsAdminToken, verifyWsAdminToken } from "../../../shared/ws-admin-token";
@@ -839,16 +839,16 @@ interface WorkerOptions {
      * `runSql`; `"disabled"` turns the assistant off entirely. Codegen passes
      * `env.LUNORA_AI_OPT_IN`, so this is a wrangler var rather than a code change.
      *
-     * Deliberately server-side. The studio holds an admin bearer and could run any
-     * read statement itself, so this is not protecting the operator from their own
-     * database — it decides whether rows the app's END USERS wrote are sent to an
-     * inference provider. A level the browser could pick would not be a gate at
-     * all, so nothing about it is read off the request.
+     * Deliberately server-side: a level the browser could pick would not be a gate,
+     * so nothing about it is read off the request. `DEFAULT_AI_OPT_IN_LEVEL` in
+     * `shared/ai-chat.ts` states why the default is the conservative one.
      *
-     * Anything unrecognised falls back to the default rather than the top tier —
-     * see `asOptInLevel` — so a typo in the var fails closed.
+     * Typed as the closed union so a hand-written typo is a compile error. The
+     * runtime still validates: codegen passes `env.LUNORA_AI_OPT_IN`, which is
+     * genuinely `unknown`, and anything unrecognised falls back to the default
+     * rather than the top tier — so a typo in the var fails closed too.
      */
-    aiOptInLevel?: string;
+    aiOptInLevel?: AiOptInLevel;
 
     /**
      * Opt into an authorization-open posture for sharded and fan-out access.
@@ -6066,8 +6066,8 @@ const createLunoraHandler =
 const defineRpcEnvelope = (envelope: RpcEnvelope): RpcEnvelope => envelope;
 
 export { composeWorker, createLunoraHandler, createWorker, defineRpcEnvelope, probeRelayCount, resolveLunoraOptions, withFrameworkWorker };
+export { type AiRunBinding } from "../../../shared/ai-chat";
 export { type AccessContextLike, type AccessIdentityLike, type ExecutionContextLike, NOOP_EXECUTION_CONTEXT } from "../../../shared/execution-context";
-export { type AiRunBinding } from "../../../shared/sql-assistant";
 export type {
     AuthAdmin,
     AuthCapabilities,

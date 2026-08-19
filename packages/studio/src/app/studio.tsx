@@ -951,7 +951,7 @@ const StudioLayoutShell = (): ReactElement => {
         ...(toggleConsole === undefined ? [] : [{ group: t("Operations"), label: t("Toggle operation console"), run: toggleConsole }]),
         // The assistant has a docked panel and no route of its own, so without this
         // it is reachable only from whichever page happens to offer a button.
-        ...(assistant === undefined ? [] : [{ group: t("Operations"), label: t("Ask the assistant"), run: assistant.toggle }]),
+        ...(assistant === undefined || assistant.unavailable ? [] : [{ group: t("Operations"), label: t("Ask the assistant"), run: assistant.toggle }]),
     ];
 
     // The app-owned chrome (theme + admin token + rules banner) renders inside this
@@ -1028,7 +1028,7 @@ const StudioLayoutShell = (): ReactElement => {
                     that disappears when the page it is discussing throws is an
                     assistant you cannot ask about the error. Suspense-wrapped like
                     every other lazy panel. */}
-                {assistant !== undefined && assistant.open && (
+                {assistant !== undefined && (
                     <Suspense fallback={null}>
                         <AssistantPanel assistant={assistant} />
                     </Suspense>

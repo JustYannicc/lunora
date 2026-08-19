@@ -29,7 +29,7 @@ const AI_CHAT = adminRef(ADMIN_FUNCTIONS.aiChat);
 type AssistantTaskKey = "chart" | "chat" | "filter" | "sql";
 
 /** What a surface needs to render one assistant affordance. */
-interface AssistantOps {
+interface AssistantRpc {
     /**
      * One conversational turn. `transcript` is the prior turns, client-held and
      * re-sent; the server caps and fences it, so a long conversation degrades by
@@ -91,7 +91,7 @@ interface AssistantOps {
  * because they are different facts about the deployment, even though the studio
  * does the same thing with both.
  */
-const useAssistantOps = (shardKey: string): AssistantOps => {
+const useAssistantRpc = (shardKey: string): AssistantRpc => {
     const client = useLunora();
 
     const [pendingByTask, setPendingByTask] = useState<Partial<Record<AssistantTaskKey, boolean>>>({});
@@ -155,7 +155,7 @@ const useAssistantOps = (shardKey: string): AssistantOps => {
 
     const rewrite = async (instruction: string, sql: string): Promise<string | undefined> => askForSql({ editSql: sql, prompt: instruction });
 
-    const chat: AssistantOps["chat"] = async (prompt, transcript, schema) => {
+    const chat: AssistantRpc["chat"] = async (prompt, transcript, schema) => {
         begin("chat");
 
         try {
@@ -221,5 +221,5 @@ const useAssistantOps = (shardKey: string): AssistantOps => {
     return { chat, generate, inferChart, pending, reason, rewrite, suggestFilter, unavailable };
 };
 
-export { useAssistantOps };
-export type { AssistantOps, AssistantTaskKey };
+export { useAssistantRpc };
+export type { AssistantRpc, AssistantTaskKey };

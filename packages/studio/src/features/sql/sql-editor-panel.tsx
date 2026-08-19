@@ -5,12 +5,13 @@ import { useEffect, useState } from "react";
 import { explainQueryPlan } from "../../../../../shared/sql-readonly";
 import { classifyOne, splitStatements } from "../../../../../shared/sql-split-statements";
 import { useAssistant } from "../../components/assistant-provider";
-import { useAssistantOps } from "../../hooks/use-assistant-ops";
+import { useAssistantRpc } from "../../hooks/use-assistant-rpc";
 import useMirroredRef from "../../hooks/use-mirrored-ref";
+import { useT } from "../../i18n/i18n-context";
 import type { SchemaFact, SqlConsoleResult } from "../../lib/admin";
 import { ADMIN_FUNCTIONS } from "../../lib/admin";
 import { usePersistedValue } from "../../lib/browser-storage";
-import { adminRef, callOptions, errorMessage, fireAndForget } from "../../lib/internal";
+import { adminRef, callOptions, errorMessage, fireAndForget, formatCell } from "../../lib/internal";
 import { recordShard } from "../../lib/shard-history";
 import formatSql from "./format-sql";
 import { useSqlDiagnostics } from "./hooks/use-sql-diagnostics";
@@ -38,32 +39,6 @@ const SPLIT_VIEW_KEY = "lunora-studio-sql-split-view";
 
 /** The tab the editor opens with on a fresh browser: the first template. */
 const seedTab = (): SqlTab => makeTab(TEMPLATES[0]?.sql ?? "");
-
-/**
- * One plan cell as text.
- *
- * `EXPLAIN QUERY PLAN` answers scalars, but a decoded row is typed `unknown` —
- * and a bare `String()` on an object yields `[object Object]`, which would tell
- * the model the plan step was literally that.
- */
-const planCell = (value: unknown): string => {
-    if (typeof value === "string") {
-        return value;
-    }
-
-    if (typeof value === "bigint" || typeof value === "boolean" || typeof value === "number") {
-        return value.toString();
-    }
-
-    if (value === null || value === undefined) {
-        return "";
-    }
-
-    // What is left is an object (a decoded row carries no symbols or functions).
-    // JSON rather than `String()`, which renders one as `[object Object]` and
-    // would tell the model that WAS the plan step.
-    return JSON.stringify(value);
-};
 
 /**
  * The editor's schema, as the chat engine's grounding block wants it.
@@ -125,6 +100,7 @@ export const SqlEditorPanel = ({ initialShardKey }: SqlEditorPanelProps): ReactE
      * `undefined` when no provider is mounted (a bare-composed Studio panel), in
      * which case every affordance below is simply not offered.
      */
+    const t = useT();
     const assistantShell = useAssistant();
 
     const { probe, schema } = useSqlSchema(shardKey);
@@ -166,7 +142,7 @@ export const SqlEditorPanel = ({ initialShardKey }: SqlEditorPanelProps): ReactE
     }, [setInsert, setDraftRef]);
 
     const diagnostics = useSqlDiagnostics(draft, schema, shardKey);
-    const assistant = useAssistantOps(shardKey);
+    const rpc = useAssistantRpc(shardKey);
 
     const inferChart = (): void => {
         if (result === null) {
@@ -175,7 +151,7 @@ export const SqlEditorPanel = ({ initialShardKey }: SqlEditorPanelProps): ReactE
 
         const apply = async (): Promise<void> => {
             // The result's SHAPE only — never its rows (plan 202 Phase 0).
-            const chart = await assistant.inferChart({
+            const chart = await rpc.inferChart({
                 columns: result.columns,
                 rowCount: result.rowCount,
                 types: Object.fromEntries(result.columns.map((column) => [column, typeof (result.rows[0]?.[column] ?? "")])),
@@ -347,7 +323,7 @@ export const SqlEditorPanel = ({ initialShardKey }: SqlEditorPanelProps): ReactE
         // Grounding travels with the toggle, not just with a seeded question: an
         // operator who opens the assistant and types their own question should get
         // the same schema the "Debug with AI" path does.
-        assistantShell.openAssistant({ schema: groundingFacts(schema), shardKey, title: "SQL console" });
+        assistantShell.openAssistant({ schema: groundingFacts(schema), shardKey, title: t("SQL console") });
     };
 
     /*
@@ -367,7 +343,7 @@ export const SqlEditorPanel = ({ initialShardKey }: SqlEditorPanelProps): ReactE
             ask: `This statement failed:\n${failedRun.sql}\n\nThe database said: ${failedRun.error}\n\nWhy, and what should it be?`,
             schema: groundingFacts(schema),
             shardKey,
-            title: "Debug query",
+            title: t("Debug query"),
         });
     };
 
@@ -389,7 +365,7 @@ export const SqlEditorPanel = ({ initialShardKey }: SqlEditorPanelProps): ReactE
             ask: `Explain what this query does, step by step:\n${statement}`,
             schema: groundingFacts(schema),
             shardKey,
-            title: "Explain query",
+            title: t("Explain query"),
         });
     };
 
@@ -406,13 +382,13 @@ export const SqlEditorPanel = ({ initialShardKey }: SqlEditorPanelProps): ReactE
             return;
         }
 
-        const plan = result.rows.map((row) => result.columns.map((column) => planCell(row[column])).join(" | ")).join("\n");
+        const plan = result.rows.map((row) => result.columns.map((column) => formatCell(row[column])).join(" | ")).join("\n");
 
         assistantShell?.openAssistant({
             ask: `SQLite planned this query:\n${draft.trim()}\n\nas:\n${plan}\n\nWhat is it doing, and is anything here slow?`,
             schema: groundingFacts(schema),
             shardKey,
-            title: "Read plan",
+            title: t("Read plan"),
         });
     };
 
@@ -449,7 +425,6 @@ export const SqlEditorPanel = ({ initialShardKey }: SqlEditorPanelProps): ReactE
                 {/* Editor + results workspace — stacked, or split side-by-side. */}
                 <div className={workspaceClass}>
                     <SqlEditorPane
-                        assistant={assistant}
                         autocomplete={surface.autocompleteState}
                         diagnostics={diagnostics}
                         draft={draft}
@@ -465,6 +440,7 @@ export const SqlEditorPanel = ({ initialShardKey }: SqlEditorPanelProps): ReactE
                         onPickSuggestion={surface.onPickSuggestion}
                         onRevealDiagnostic={surface.revealDiagnostic}
                         overlayRef={surface.overlayRef}
+                        rpc={rpc}
                     />
 
                     {/*
@@ -474,14 +450,13 @@ export const SqlEditorPanel = ({ initialShardKey }: SqlEditorPanelProps): ReactE
                      * the prompt bar.
                      */}
                     <SqlResultsPane
-                        assistant={assistant}
                         chart={inferredChart}
                         chatOpen={assistantShell?.open === true}
                         className={resultsClass}
                         error={error}
                         onDebugError={failedRun === undefined ? undefined : debugError}
-                        onExplainPlan={assistantShell === undefined || tab !== "explain" ? undefined : explainPlan}
-                        onExplainSql={assistantShell === undefined ? undefined : explainSql}
+                        onExplainPlan={assistantShell === undefined || assistantShell.unavailable || tab !== "explain" ? undefined : explainPlan}
+                        onExplainSql={assistantShell === undefined || assistantShell.unavailable ? undefined : explainSql}
                         onFormat={formatDraft}
                         onInferChart={inferChart}
                         onRun={onRun}
@@ -490,10 +465,11 @@ export const SqlEditorPanel = ({ initialShardKey }: SqlEditorPanelProps): ReactE
                         onShowChart={showChart}
                         onShowExplain={showExplain}
                         onShowResults={showResults}
-                        onToggleChat={assistantShell === undefined ? undefined : toggleChat}
+                        onToggleChat={assistantShell === undefined || assistantShell.unavailable ? undefined : toggleChat}
                         onToggleSplit={toggleSplit}
                         pane={tab}
                         result={result}
+                        rpc={rpc}
                         running={running}
                         script={output.script}
                         shardKey={shardKey}
