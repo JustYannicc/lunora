@@ -2,11 +2,11 @@ import type { ReactElement } from "react";
 import { useState } from "react";
 
 import { Input } from "../../components/ui/input";
+import type { AssistantOps } from "../../hooks/use-assistant-ops";
 import { useT } from "../../i18n/i18n-context";
 import { fireAndForget } from "../../lib/internal";
 import { cn } from "../../lib/utils";
 import assistantReasonMessage from "./assistant-reason";
-import type { SqlAssistant } from "./hooks/use-sql-assistant";
 
 /**
  * Natural-language prompt bar above the SQL editor.
@@ -17,12 +17,12 @@ import type { SqlAssistant } from "./hooks/use-sql-assistant";
  * anything they typed. It has already passed the same read-only gate the server
  * enforces before it gets here.
  */
-const SqlAssistantBar = ({
+const AssistantOpsBar = ({
     assistant,
     failed,
     onGenerated,
 }: {
-    readonly assistant: SqlAssistant;
+    readonly assistant: AssistantOps;
     /** The last failed run, enabling the repair affordance. */
     readonly failed?: { error: string; sql: string };
     readonly onGenerated: (sql: string) => void;
@@ -116,4 +116,4 @@ const SqlAssistantBar = ({
         </div>
     );
 };
-export default SqlAssistantBar;
+export default AssistantOpsBar;

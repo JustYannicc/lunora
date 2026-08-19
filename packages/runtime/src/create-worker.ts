@@ -30,6 +30,7 @@ import type { TraceSamplingConfig } from "../../../shared/sampling";
 import { SAMPLE_ERRORS_HEADER } from "../../../shared/sampling";
 import { checkBearerToken, isReservedRelationFunctionPath, SCHEDULER_DISPATCH_PATH, verifySchedulerDispatch } from "../../../shared/scheduler-dispatch";
 import type { AiRunBinding } from "../../../shared/sql-assistant";
+import { asOptInLevel } from "../../../shared/sql-assistant";
 import { buildSystemDispatchHeaders, readForwardedDispatchIdentity } from "../../../shared/system-dispatch-headers";
 import { resolveWorkflowHandle } from "../../../shared/workflow-binding";
 import { mintWsAdminToken, verifyWsAdminToken } from "../../../shared/ws-admin-token";
@@ -829,6 +830,25 @@ interface WorkerOptions {
      * reading the same binding through `ctx.ai`.
      */
     aiChatBinding?: AiRunBinding;
+
+    /**
+     * How much of this deployment the studio's chat assistant may read.
+     *
+     * `"schema"` (the default) lets it read table and column NAMES; `"schema_and_log"`
+     * adds recent log lines; `"schema_and_log_and_data"` adds reading rows with
+     * `runSql`; `"disabled"` turns the assistant off entirely. Codegen passes
+     * `env.LUNORA_AI_OPT_IN`, so this is a wrangler var rather than a code change.
+     *
+     * Deliberately server-side. The studio holds an admin bearer and could run any
+     * read statement itself, so this is not protecting the operator from their own
+     * database — it decides whether rows the app's END USERS wrote are sent to an
+     * inference provider. A level the browser could pick would not be a gate at
+     * all, so nothing about it is read off the request.
+     *
+     * Anything unrecognised falls back to the default rather than the top tier —
+     * see `asOptInLevel` — so a typo in the var fails closed.
+     */
+    aiOptInLevel?: string;
 
     /**
      * Opt into an authorization-open posture for sharded and fan-out access.
@@ -3546,6 +3566,7 @@ const createWorker = (options: WorkerOptions): LunoraWorker => {
             return { forward: forwardRpcToShard, headers: context.headers };
         },
         getBinding: () => options.aiChatBinding,
+        optInLevel: () => asOptInLevel(options.aiOptInLevel),
     });
 
     /**
