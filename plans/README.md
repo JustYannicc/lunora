@@ -26,7 +26,7 @@ When a plan ships: delete its file and remove its row here in the same change.
 | [166](./166-enterprise-auth-saml-scim.md)  | Enterprise auth: SAML SSO + SCIM                                | Phase 1a (OIDC SSO + SCIM Users) shipped; Phase 1b SAML gated                                        |
 | [464](./464-replay-conflict-resolution.md) | Replayed offline writes that conflict                           | Phase A shipped (docs + test); Phase B waits on a real app needing a merge the handler can't express |
 | [468](./468-gdpr-package.md)               | `@lunora/privacy`: data-subject rights (export, erasure, holds) | Phase 0: codegen spike; legal and tax review open (§10)                                              |
-| [364](./364-studio-conversational-assistant.md) | Conversational assistant for the Studio | W1–W4 shipped; W5 (streaming) blocked — needs its own transport plan |
+| [364](./364-studio-conversational-assistant.md) | Conversational assistant for the Studio | W1–W9 shipped (assistant reachable studio-wide, server-side data-sharing ladder, hardened markdown); W5 (streaming) blocked — needs its own transport plan |
 
 ## Open (TODO)
 
