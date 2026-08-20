@@ -189,7 +189,7 @@ export interface BulkRowOpResult {
     hasMore: boolean;
 }
 
-export type { AiOptInLevel, ChatResult, ChatTurn } from "../../../../shared/ai-chat";
+export type { AiOptInLevel, ChatApproval, ChatPendingApproval, ChatResult, ChatTurn } from "../../../../shared/ai-chat";
 export type { GenerateSqlDegradedReason, SchemaFact } from "../../../../shared/ai-prompt";
 export type { AssistantChartConfig, GenerateChartResult, GenerateSqlResult } from "../../../../shared/sql-assistant";
 
