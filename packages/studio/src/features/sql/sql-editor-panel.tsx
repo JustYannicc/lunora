@@ -313,7 +313,7 @@ export const SqlEditorPanel = ({ initialShardKey }: SqlEditorPanelProps): ReactE
         // The chord is inert on a deployment that cannot run the assistant —
         // swallowing ⌘I to open a panel that renders nothing is worse than
         // leaving the key to the browser.
-        inlineEditEnabled: !assistant.unavailable,
+        inlineEditEnabled: !rpc.unavailable,
         onSubmit: () => {
             fireAndForget(run(output.pane));
         },

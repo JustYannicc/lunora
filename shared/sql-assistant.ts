@@ -1,8 +1,9 @@
 /**
  * Engine for the one-shot AI-assistant admin RPCs — `aiGenerateSql` (the SQL
- * editor's "describe the query you want" and its "fix this" follow-up),
- * `aiTableFilter`, `aiChartConfig`, `aiNameQuery` (a title and description for a
- * saved query) and `aiCronExpression` (a schedule from plain English).
+ * editor's "describe the query you want", its "fix this" follow-up, and its
+ * in-place "edit this with AI" rewrite), `aiTableFilter`, `aiChartConfig`,
+ * `aiNameQuery` (a title and description for a saved query) and
+ * `aiCronExpression` (a schedule from plain English).
  *
  * Several RPCs, but ONE inference primitive (`runPrompt`) and ONE retry policy
  * (`attempt`). The caps, the untrusted fence, the deadline, and the two degrade
@@ -283,7 +284,7 @@ const structuredUserPrompt = (facts: string, prompt: string): string =>
     [facts, "", UNTRUSTED_BEGIN, `Request: ${capped(prompt, PROMPT_CAP)}`, UNTRUSTED_END].join("\n");
 
 /**
- * Generate (or repair) a read-only statement for the Studio SQL editor.
+ * Generate, repair, or rewrite a read-only statement for the Studio SQL editor.
  *
  * A response that fails the read-only gate is retried once and then DISCARDED —
  * returning unvalidated SQL, even labelled, would put model output inside a
