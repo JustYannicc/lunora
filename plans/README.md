@@ -27,7 +27,7 @@ When a plan ships: delete its file and remove its row here in the same change.
 | [464](./464-replay-conflict-resolution.md)                 | Replayed offline writes that conflict                           | Phase A shipped (docs + test); Phase B waits on a real app needing a merge the handler can't express |
 | [468](./468-gdpr-package.md)                               | `@lunora/privacy`: data-subject rights (export, erasure, holds) | Phase 0: codegen spike; legal and tax review open (§10)                                              |
 | [458](./458-cloud-celld-vps-target.md)                     | Lunora Cloud manages a customer VPS (`celld-vps` target)        | Control plane, hostd and install path landed on PR #85; live-box gates open                          |
-| [365](./365-cloud-spend-guardrails-and-anomaly-research.md) | Cloud spend guardrails, anomaly alerting, recursion protection  | W0 + W1 shipped                                                                                      |
+| [365](./365-cloud-spend-guardrails-and-anomaly-research.md) | Cloud spend guardrails, anomaly alerting, recursion protection  | W0–W8 shipped (code); live checks in §4b open                                                        |
 
 ## Open (TODO)
 
