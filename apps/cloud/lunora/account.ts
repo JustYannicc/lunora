@@ -1,11 +1,16 @@
 import { LunoraError } from "@lunora/server";
 
-import type { Id } from "./_generated/dataModel.js";
-import type { MutationCtx as MutationContext } from "./_generated/server.js";
+import type { Id, TableName } from "./_generated/dataModel.js";
+import type { MutationCtx as MutationContext, QueryCtx as QueryContext } from "./_generated/server.js";
 import { internalMutation, internalQuery, v } from "./_generated/server.js";
 import { legacySetRoleTargetRole } from "./members";
 import { collectAll } from "./paginate";
 import { anonymiseScopedRows, purgeScopedRows } from "./purge";
+
+/** The one read the export and the erasure make on a table picked by name. */
+interface AuthoredFacade {
+    findMany: (query: { limit?: number; where: Record<string, unknown> }) => Promise<{ page: { _id: string; organizationId?: string }[] }>;
+}
 
 /** Rows per list in one export. A caller with more than this gets the first page and a flag. */
 const EXPORT_LIMIT = 1000;
@@ -22,6 +27,21 @@ export const ACCOUNT_EXPORT_FORMAT = "lunora-account-export/2";
  * cannot be told apart or linked back to an account.
  */
 export const DELETED_ACTOR = "deleted-user";
+
+/**
+ * Every column that records the user who created or acted on a row. The
+ * account export lists those rows, and the erasure replaces the user id in them
+ * with {@link DELETED_ACTOR}. One list for both, so they cannot disagree.
+ */
+const AUTHORED_COLUMNS: ReadonlyArray<readonly [TableName, string]> = [
+    ["deployments", "createdBy"],
+    ["catalogInstalls", "installedBy"],
+    ["halts", "haltedBy"],
+    ["boxEnrolments", "createdBy"],
+    ["cloudflareAccounts", "createdBy"],
+    ["anomalySilences", "createdBy"],
+    ["invitations", "invitedBy"],
+];
 
 /**
  * The personal data the control plane holds about the signed-in caller, as a
@@ -49,7 +69,19 @@ export const exportMine = internalQuery.query(async ({ ctx: context }): Promise<
         where: { actorUserId: userId },
     });
 
+    const authored: Record<string, unknown>[] = [];
+
+    for (const [table, column] of AUTHORED_COLUMNS) {
+        // eslint-disable-next-line no-await-in-loop -- one bounded read per table; the export is small
+        const { page } = await (context.db[table] as unknown as AuthoredFacade).findMany({ limit: EXPORT_LIMIT, where: { [column]: userId } });
+
+        for (const row of page) {
+            authored.push({ column, id: row._id, organizationId: row.organizationId ?? null, table });
+        }
+    }
+
     return {
+        authoredRecords: authored,
         auditEntries: entries.map((entry) => {
             return {
                 action: entry.action,
@@ -71,42 +103,12 @@ export const exportMine = internalQuery.query(async ({ ctx: context }): Promise<
     };
 });
 
-/** An organization the user is the only owner of: it blocks a self-service deletion. */
+/** An organization named by an account deletion: one the user solely owns, or one left without an owner. */
 export interface SoleOwnedOrganization {
     id: string;
     name: string;
 }
 
-<<<<<<< HEAD
-/**
- * The outcome of {@link eraseUser}. `retainedOwnerOf`, present only for an
- * operator removal, lists the organizations whose owner membership the erasure
- * kept because the user was their only owner; self-service refuses instead.
- */
-export type EraseUserResult = { erased: false; soleOwnerOf: SoleOwnedOrganization[] } | { erased: true; retainedOwnerOf?: SoleOwnedOrganization[] };
-
-/** The actor of the audit entry that marks an organization whose removed owner's membership was kept. */
-export const ERASURE_ACTOR = "system:account-erasure";
-
-/** The action of that entry; support looks for it to transfer the ownership. */
-export const OWNER_REMOVED_ACTION = "organization.owner-removed";
-
-/**
- * The `target` of that entry: the kept membership's row id (which names no
- * person) and what support has to do. One entry per kept membership, so a
- * repeated removal does not add another.
- */
-const ownerRemovedTarget = (memberId: string): string =>
-    `${memberId}: the only owner's account was removed by an operator; the membership is kept until support transfers ownership`;
-
-/** The live organizations `userId` is the only owner of, among their `memberships`. */
-const soleOwnedOrganizations = async (
-    context: MutationContext,
-    userId: string,
-    memberships: ReadonlyArray<{ organizationId: Id<"organizations">; role: string }>,
-): Promise<SoleOwnedOrganization[]> => {
-    const soleOwnerOf: SoleOwnedOrganization[] = [];
-=======
 /** The outcome of {@link eraseUser}. */
 export interface EraseUserResult {
     /**
@@ -129,29 +131,27 @@ export const OWNERLESS_ACTION = "organization.ownerless";
 /** The organizations of `ownerOf` (ids) that are live and have no owner other than `userId`. */
 const organizationsWithoutOtherOwner = async (context: QueryContext, ownerOf: ReadonlyArray<string>, userId: string): Promise<SoleOwnedOrganization[]> => {
     const found: SoleOwnedOrganization[] = [];
->>>>>>> d97f1349c (feat(cloud): refuse operator removal of an organization's only owner)
 
-    for (const membership of memberships.filter((row) => row.role === "owner")) {
+    for (const organizationId of ownerOf) {
         // eslint-disable-next-line no-await-in-loop -- one organization at a time; a user owns few
-        const organization = await context.db.organizations.get(membership.organizationId);
+        const organization = await context.db.organizations.get(organizationId as Id<"organizations">);
 
+        // An organization already scheduled for deletion is removed by the purge anyway.
         if (organization === null || typeof organization.deletionRequestedAt === "number") {
             continue;
         }
 
         // eslint-disable-next-line no-await-in-loop -- one organization at a time; a user owns few
-        const { page: owners } = await context.db.members.findMany({ where: { organizationId: membership.organizationId, role: "owner" } });
+        const { page: owners } = await context.db.members.findMany({ where: { organizationId: organization._id, role: "owner" } });
 
         if (owners.every((row) => row.userId === userId)) {
-            soleOwnerOf.push({ id: organization._id, name: organization.name });
+            found.push({ id: organization._id, name: organization.name });
         }
     }
 
-    return soleOwnerOf;
+    return found;
 };
 
-<<<<<<< HEAD
-=======
 /** The ids of the organizations `userId` is an owner of, among their `memberships`. */
 const ownedOrganizationIds = (memberships: ReadonlyArray<{ organizationId: string; role: string }>): string[] =>
     memberships.filter((row) => row.role === "owner").map((row) => row.organizationId);
@@ -172,7 +172,6 @@ export const soleOwnedOrganizations = internalQuery
         return organizationsWithoutOtherOwner(context, ownedOrganizationIds(memberships), userId);
     });
 
->>>>>>> d97f1349c (feat(cloud): refuse operator removal of an organization's only owner)
 /**
  * Replace `userId` in old-format `member.set-role` targets (`{user id} → {role}`)
  * with {@link DELETED_ACTOR}, in `organizationIds`. Read per organization through
@@ -198,84 +197,21 @@ const rewriteLegacySetRoleTargets = async (context: MutationContext, userId: str
     }
 };
 
-/**
-<<<<<<< HEAD
- * The operator path's membership erasure when the user is the only owner of
- * `retainedOrganizationIds`: delete every other membership, keep those, and
- * mark each kept one with an {@link OWNER_REMOVED_ACTION} entry unless an
- * earlier run already did.
- */
-const keepSoleOwnerships = async (
-    context: MutationContext,
-    memberships: ReadonlyArray<{ _id: Id<"members">; organizationId: Id<"organizations"> }>,
-    retainedOrganizationIds: ReadonlySet<string>,
-): Promise<void> => {
-    for (const membership of memberships) {
-        if (!retainedOrganizationIds.has(membership.organizationId)) {
-            // eslint-disable-next-line no-await-in-loop -- sequential deletes; a user is in few organizations
-            await context.db.delete(membership._id);
-            continue;
-        }
-
-        const target = ownerRemovedTarget(membership._id);
-        // eslint-disable-next-line no-await-in-loop -- one organization at a time; a user owns few
-        const { page: marks } = await context.db.auditLog.findMany({
-            limit: 1,
-            where: { action: OWNER_REMOVED_ACTION, organizationId: membership.organizationId, target },
+/** Record an `organization.ownerless` entry for each organization the user's removal left without an owner. */
+const recordOwnerless = async (context: MutationContext, organizations: ReadonlyArray<SoleOwnedOrganization>): Promise<void> => {
+    for (const organization of organizations) {
+        // eslint-disable-next-line no-await-in-loop -- one entry per ownerless organization; rare
+        await context.db.insert("auditLog", {
+            action: OWNERLESS_ACTION,
+            actorUserId: DELETED_ACTOR,
+            createdAt: context.now,
+            organizationId: organization.id,
+            target: "account-deletion",
         });
-
-        if (marks.length === 0) {
-            // eslint-disable-next-line no-await-in-loop -- one entry per organization; a user owns few
-            await context.db.insert("auditLog", {
-                action: OWNER_REMOVED_ACTION,
-                actorUserId: ERASURE_ACTOR,
-                createdAt: context.now,
-                organizationId: membership.organizationId,
-                target,
-            });
-        }
     }
 };
 
 /**
- * Remove what the control plane holds about a user whose account is being
- * deleted: their memberships go, and the audit entries they authored stay for
- * their retention period with the actor replaced by {@link DELETED_ACTOR}.
- * `member.set-role` entries in the old format, which name the member by user id
- * (see `setRoleAuditTarget` in `members.ts`), are rewritten to name
- * {@link DELETED_ACTOR} instead, in every organization the user was still a
- * member of.
- *
- * Self-service (`operator` unset): refused, with nothing written, while the user
- * is the only owner of an organization, because the organization would be left
- * with nobody able to manage or delete it. The user can transfer ownership
- * first.
- *
- * Operator removal (`operator: true`, from the auth admin's `removeUser`): never
- * refused. The operator acts on the account (abuse, a legal request, a user who
- * cannot sign in any more), and the user cannot be asked to transfer ownership
- * first. An organization must not be left without an owner, and handing it to
- * another member would give it to someone who never accepted it, so a sole
- * owner's membership is kept and the organization is left unchanged. It gets an
- * {@link OWNER_REMOVED_ACTION} audit entry by {@link ERASURE_ACTOR}, the mark
- * support works from (its admins see it in the Activity tab), and is listed in
- * the result as `retainedOwnerOf`. Every other membership goes, and the audit
- * actor is anonymised as for self-service. The kept row is the one place the
- * user's id stays: until support transfers the ownership, or the organization is
- * deleted, which purges it.
- *
- * An organization already scheduled for deletion counts for neither path,
- * because the purge removes it anyway. Every check runs before the first write,
- * so a refusal changes nothing. The tables are `.global()` (D1, which has no
- * interactive transaction), so the check and the writes are not isolated from
- * another owner leaving at the same moment.
- *
- * Runs through `POST /v1/account/erase`: from the authentication layer's
- * before-delete hook, after the password check and before the account row is
- * deleted, and from the operator's `removeUser` before the auth cascade.
- * Idempotent: a second run changes nothing, and finds the kept memberships
- * already marked. SYSTEM only.
-=======
  * Remove what the control plane holds about a user whose account is being or
  * has been removed: the audit entries they authored stay for their retention
  * period with the actor replaced by {@link DELETED_ACTOR}, `member.set-role`
@@ -300,7 +236,8 @@ const keepSoleOwnerships = async (
  *
  * Every membership goes. Every audit write happens before the memberships go,
  * because the sweep finds unfinished work by the memberships: a run cut short in
- * between is still found. Idempotent: a second run changes nothing.
+ * between is still found. A second run after an interruption changes nothing but
+ * may repeat an {@link OWNERLESS_ACTION} entry already written.
  *
  * Not isolated: the tables are `.global()` (D1, which has no interactive
  * transaction), so another owner can leave an organization between the
@@ -310,18 +247,11 @@ const keepSoleOwnerships = async (
  * the operator can assign one. The re-read narrows the race, it does not close
  * it: an owner who leaves after the re-read, while this was the last other
  * owner, is not caught here. Nothing is undone. SYSTEM only.
->>>>>>> d97f1349c (feat(cloud): refuse operator removal of an organization's only owner)
  */
 export const eraseUser = internalMutation
     .input({ operator: v.optional(v.boolean()), userId: v.string() })
     .mutation(async ({ ctx: context, args: { operator, userId } }): Promise<EraseUserResult> => {
         const { page: memberships } = await context.db.members.findMany({ where: { userId } });
-<<<<<<< HEAD
-        const soleOwnerOf = await soleOwnedOrganizations(context, userId, memberships);
-
-        if (soleOwnerOf.length > 0 && operator !== true) {
-            return { erased: false, soleOwnerOf };
-=======
         const ownerOf = ownedOrganizationIds(memberships);
 
         // Checked before the first write, so a refusal leaves everything as it was.
@@ -331,36 +261,33 @@ export const eraseUser = internalMutation
             if (refused.length > 0) {
                 return { ownerless: [], refused };
             }
->>>>>>> d97f1349c (feat(cloud): refuse operator removal of an organization's only owner)
         }
 
+        // Found and recorded while the memberships still exist: the sweep finds
+        // unfinished work by memberships, so an entry written after they go is lost
+        // if the run is cut short. A retry after an interruption repeats the entry.
+        const ownerless = await organizationsWithoutOtherOwner(context, ownerOf, userId);
+
+        await recordOwnerless(context, ownerless);
         await rewriteLegacySetRoleTargets(context, userId, new Set(memberships.map((membership) => membership.organizationId)));
-
-        await (soleOwnerOf.length === 0 ? purgeScopedRows(context, ["members"], { userId }) : keepSoleOwnerships(context, memberships, new Set(soleOwnerOf.map((organization) => organization.id))));
-
         await anonymiseScopedRows(context, "auditLog", { actorUserId: userId }, () => {
             return { actorUserId: DELETED_ACTOR };
         });
-<<<<<<< HEAD
 
-        return operator === true ? { erased: true, retainedOwnerOf: soleOwnerOf } : { erased: true };
-=======
-        await purgeScopedRows(context, ["members"], { userId });
-
-        // The user has no membership left, so "no owner other than userId" is "no owner".
-        const ownerless = await organizationsWithoutOtherOwner(context, ownerOf, userId);
-
-        for (const organization of ownerless) {
-            // eslint-disable-next-line no-await-in-loop -- one entry per ownerless organization; rare
-            await context.db.insert("auditLog", {
-                action: OWNERLESS_ACTION,
-                actorUserId: DELETED_ACTOR,
-                createdAt: context.now,
-                organizationId: organization.id,
-                target: "account-deletion",
+        for (const [table, column] of AUTHORED_COLUMNS) {
+            // eslint-disable-next-line no-await-in-loop -- one pass per table; a user's rows are few
+            await anonymiseScopedRows(context, table, { [column]: userId }, () => {
+                return { [column]: DELETED_ACTOR };
             });
         }
 
-        return { ownerless };
->>>>>>> d97f1349c (feat(cloud): refuse operator removal of an organization's only owner)
+        await purgeScopedRows(context, ["members"], { userId });
+
+        // A co-owner who left while this ran is caught here; the ones found above are not repeated.
+        const ownerlessAfter = await organizationsWithoutOtherOwner(context, ownerOf, userId);
+        const raced = ownerlessAfter.filter((organization) => !ownerless.some((found) => found.id === organization.id));
+
+        await recordOwnerless(context, raced);
+
+        return { ownerless: [...ownerless, ...raced] };
     });
