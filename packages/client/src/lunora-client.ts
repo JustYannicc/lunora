@@ -10,7 +10,7 @@ import { decodeWire, encodeWire } from "../../../shared/wire-codec";
 import { stableWireKey } from "../../../shared/wire-key";
 import createInMemoryBookmarkStorage from "./bookmark";
 import type { BatchSlot } from "./call-wire";
-import { demuxBatchResults, encodeCallArgs, isEncodable, isSlotEnvelope, replayExpectation } from "./call-wire";
+import { demuxBatchResults, encodeCallArgs, isEncodable, replayExpectation } from "./call-wire";
 import {
     ARCHITECTURE_PATH,
     AUTH_ACCOUNTS_PATH,
@@ -110,7 +110,7 @@ import { bucketQuery, deriveWsUrl, joinUrl, withQuery } from "./client-urls";
 import type { ConnectionStatus, ManagedSocketState, ShardConnection, WSState } from "./connection-state";
 import { connectionKey, decodeServerFrame, flushPendingStreams, isLiveStatus, sendOn } from "./connection-state";
 import { TabCoordinator } from "./cross-tab";
-import { applyDelta, isMutationDelta, UNMERGEABLE_DELTA } from "./delta-merge";
+import { resolveDataPayload, UNMERGEABLE_DELTA } from "./delta-merge";
 import { isAuthReplayFailure, TransportError } from "./errors";
 import { httpStream } from "./http-stream";
 import Listeners from "./listeners";
@@ -126,8 +126,7 @@ import {
     applyOptimisticLayer,
     dropAcknowledgedLayers,
     dropConfirmedLayers,
-    foldOptimistic,
-    notifySubscription,
+    refoldSubscription,
     rollbackOptimistic,
 } from "./optimistic-layers";
 import isStaleVersion from "./persisted-version";
@@ -138,21 +137,24 @@ import { createReconnect } from "./reconnect";
 import type { RpcEnvelopeBody } from "./replay";
 import {
     defaultReplayRetryDelayMs,
+    indexReplaySlots,
     isTransientReplayFailure,
     isUndecodableResult,
     MAX_BATCH_BODY_BYTES,
     replayRetryDelayMs,
+    replaySlotVerdict,
     undecodableResultError,
     unparseableResponseError,
     utf8ByteLength,
 } from "./replay";
 import type { PokeBuffer, ShapeCallback, ShapeSubscriptionState } from "./shape-state";
-import { applyRowOpsToView } from "./shape-state";
+import { commitPokeSlice, PokeAssembler } from "./shape-state";
 import createSnapshotPrecondition from "./snapshot-precondition";
 import type { StreamHandle, StreamIterable } from "./stream";
 import { createStream } from "./stream";
 import type { SubscriptionCallback, SubscriptionErrorCallback, SubscriptionState, SyncWatermark } from "./subscription";
 import { fanSubscriptionError, SubscriptionRegistry, wrapSubscriber } from "./subscription";
+import { advanceWatermark, commitDataFrame, fanCheckpoints, isForeignStamp, isLiveTransition, routeErrorFrame } from "./subscription-frames";
 import type {
     ArgsOf,
     AuthCapabilities,
@@ -186,7 +188,6 @@ import type {
     QueryCacheAdapter,
     ReconnectOptions,
     ReturnOf,
-    RowOp,
     ScheduleRecord,
     SchedulerStatus,
     ServerDataMessage,
@@ -194,8 +195,6 @@ import type {
     ServerIdentityMessage,
     ServerMessage,
     ServerPokeEndMessage,
-    ServerPokePartMessage,
-    ServerPokeStartMessage,
     ServerResumeMessage,
     ServerSettledMessage,
     ServerWhisperMessage,
@@ -212,7 +211,7 @@ import type {
     WorkflowInstanceStatus,
     WsTokenProvider,
 } from "./types";
-import { buildStreamError, buildSubscriptionError, errorEnvelopeOf, reconstructError, reconstructErrorWithRetryAfter, slotError } from "./wire-errors";
+import { buildStreamError, buildSubscriptionError, errorEnvelopeOf, reconstructError, reconstructErrorWithRetryAfter } from "./wire-errors";
 
 /**
  * Whether an identity change leaves a session behind that must be retired: a
@@ -950,18 +949,8 @@ class LunoraClient {
 
     private readonly shapeSubscriptions = new Map<string, ShapeSubscriptionState>();
 
-    /**
-     * In-flight pokes being assembled between `pokeStart` and `pokeEnd`, keyed by
-     * `<connectionKey>\u0000<pokeId>`.
-     *
-     * The connection has to be in the key: `pokeId` is a per-DO counter that also
-     * resets on eviction, so a multi-shard client — one socket per shard, one map
-     * here — sees two shards mint `poke-1` concurrently. Keyed by `pokeId` alone
-     * their frames interleave into a single buffer: one shard applies the other's
-     * epoch (spurious fork → view wiped) and the other finds no buffer for its
-     * parts at all, silently dropping rows while the server's memo advances.
-     */
-    private readonly pokeBuffers = new Map<string, PokeBuffer>();
+    /** In-flight pokes, keyed by connection and `pokeId`. The key rule is in shape-state.ts. */
+    private readonly pokeAssembler = new PokeAssembler(LunoraClient.MAX_POKE_BUFFERS);
 
     private nextShapeId = 0;
 
@@ -3955,7 +3944,7 @@ class LunoraClient {
         // touched by the registries above, so drop them too — otherwise the UI
         // closures they close over outlive the terminal client.
         this.shapeSubscriptions.clear();
-        this.pokeBuffers.clear();
+        this.pokeAssembler.clear();
 
         // The three registries the comment above always claimed to cover but
         // never did. Each `SubscriptionState` holds three callback sets
@@ -4277,7 +4266,7 @@ class LunoraClient {
                 // is already queued in the message task queue. Drop it when a
                 // stamp is present and doesn't match; an absent stamp
                 // (mixed-version leader) is accepted, same as today.
-                if (identity !== undefined && identity !== this.identityFingerprint()) {
+                if (isForeignStamp(identity, this.identityFingerprint())) {
                     return;
                 }
 
@@ -4288,9 +4277,7 @@ class LunoraClient {
                 // consumers see it.
                 // `"polling"` counts as live too: the leader reaches the origin over
                 // HTTP, and this tab's queued writes ride HTTP either way.
-                const transitionedToConnected =
-                    (status === "connected" && this.leaderStatus !== "connected") ||
-                    (status === "polling" && this.leaderStatus !== "connected" && this.leaderStatus !== "polling");
+                const transitionedToConnected = isLiveTransition(this.leaderStatus, status);
 
                 this.leaderStatus = status;
 
@@ -4310,7 +4297,7 @@ class LunoraClient {
             onSubscriptionData: (key, data, cursor, epoch, identity) => {
                 // Belt-and-braces identity check — see `onConnectionStatus`'s
                 // comment for the full rationale (identical here).
-                if (identity !== undefined && identity !== this.identityFingerprint()) {
+                if (isForeignStamp(identity, this.identityFingerprint())) {
                     return;
                 }
 
@@ -4323,8 +4310,6 @@ class LunoraClient {
                 if (!state) {
                     return;
                 }
-
-                state.serverBase = data;
 
                 // The leader's frame replaces the cache seed — same bookkeeping
                 // the leader's own `handleDataMessage` does.
@@ -4340,17 +4325,15 @@ class LunoraClient {
                 // hasn't shipped the cursor yet falls through to the historical
                 // fold-and-notify-without-drop behavior below — backward
                 // compatible with a cursor-less wire frame.
+                // The epoch rides only with a cursor. A cursor-less frame changes nothing but the
+                // value, so it never drops layers against the old cursor.
+                commitDataFrame(state, data, cursor === undefined ? {} : { cursor, epoch });
+
                 if (cursor !== undefined) {
-                    state.serverCursor = cursor;
-
-                    if (epoch !== undefined) {
-                        state.serverEpoch = epoch;
-                    }
-
                     dropConfirmedLayers(state, cursor);
                 }
 
-                notifySubscription(state, foldOptimistic(data, state.optimisticLayers));
+                refoldSubscription(state, data);
             },
             onLeaderClaimAnswered: () => {
                 // A new tab just announced itself. Re-state our status directly:
@@ -4368,7 +4351,7 @@ class LunoraClient {
                 // comment for the full rationale (identical here). This was the
                 // one of the four callbacks without it, which only went unnoticed
                 // because nothing broadcast to it.
-                if (identity !== undefined && identity !== this.identityFingerprint()) {
+                if (isForeignStamp(identity, this.identityFingerprint())) {
                     return;
                 }
 
@@ -4381,7 +4364,7 @@ class LunoraClient {
             onSubscriptionSettled: (key, cursor, epoch, lastMutationId, clientId, identity) => {
                 // Belt-and-braces identity check — see `onConnectionStatus`'s
                 // comment for the full rationale (identical here).
-                if (identity !== undefined && identity !== this.identityFingerprint()) {
+                if (isForeignStamp(identity, this.identityFingerprint())) {
                     return;
                 }
 
@@ -4408,7 +4391,7 @@ class LunoraClient {
                     // `Math.max` guards monotonicity: this must never move
                     // `state.lastMutationId` backwards.
                     if (lastMutationId !== undefined && clientId === this.clientId) {
-                        state.lastMutationId = Math.max(state.lastMutationId ?? 0, lastMutationId);
+                        advanceWatermark(state, lastMutationId);
                     }
 
                     // Fan out to every registered checkpoint subscriber, same
@@ -4419,9 +4402,7 @@ class LunoraClient {
                     // always fires; `state.lastMutationId` is whatever it was
                     // above — unchanged (a no-op re-resolve) when the frame
                     // didn't own this follower's watermark.
-                    for (const onCheckpoint of state.checkpointCallbacks) {
-                        onCheckpoint({ checkpoint: state.serverCursor, mutationId: state.lastMutationId });
-                    }
+                    fanCheckpoints(state);
                 }
             },
         });
@@ -5035,7 +5016,7 @@ class LunoraClient {
 
         this.cacheSeededQueries.set(queryCacheKey(state.fn.__lunoraRef, state.argsKey, state.shardKey), entry);
 
-        notifySubscription(state, foldOptimistic(entry.value, state.optimisticLayers));
+        refoldSubscription(state, entry.value);
     }
 
     /**
@@ -5118,7 +5099,7 @@ class LunoraClient {
                 state.serverBase = undefined;
                 state.serverCursor = undefined;
                 state.serverEpoch = undefined;
-                notifySubscription(state, foldOptimistic(undefined, state.optimisticLayers));
+                refoldSubscription(state, undefined);
             }
 
             this.hydratedQueryCache.set(key, entry);
@@ -6688,12 +6669,12 @@ class LunoraClient {
                 break;
             }
             case "pokePart": {
-                this.handlePokePart(message, shardKey);
+                this.pokeAssembler.part(shardKey, message);
 
                 break;
             }
             case "pokeStart": {
-                this.handlePokeStart(message, shardKey);
+                this.pokeAssembler.start(shardKey, message);
 
                 break;
             }
@@ -6719,23 +6700,25 @@ class LunoraClient {
     }
 
     private handleErrorMessage(message: ServerErrorMessage): void {
-        // Token-expiry rejection (sent just before the server closes the socket
-        // with code 4001). Surface it to listeners; the close handler also fires
-        // and arms the reconnect, so nothing else to do here.
-        const errorCode = (message.error as { code?: unknown } | undefined)?.code;
+        // Stream-scoped errors arrive on the same `error` envelope as subscription
+        // errors. The route is decided from the frame and what holds its id, and each
+        // branch below only performs the effect for its route.
+        const { id } = message;
+        const stream = id === undefined ? undefined : this.streams.get(id);
+        const state = id === undefined ? undefined : this.subscriptions.getById(id);
+        const shapeState = id === undefined ? undefined : this.shapeSubscriptions.get(id);
+        const route = routeErrorFrame(message, { shape: shapeState !== undefined, stream: stream !== undefined, subscription: state !== undefined });
 
-        if (errorCode === "TOKEN_EXPIRED") {
+        // Token-expiry rejection (sent just before the server closes the socket with code
+        // 4001). Surface it to listeners; the close handler also fires and arms the
+        // reconnect, so nothing else to do here.
+        if (route === "tokenExpired") {
             this.notifyTokenExpired();
 
             return;
         }
 
-        // Stream-scoped errors arrive on the same `error` envelope as
-        // subscription errors; dispatch by id-prefix lookup.
-        const { id } = message;
-        const stream = id === undefined ? undefined : this.streams.get(id);
-
-        if (stream && id !== undefined) {
+        if (route === "stream" && stream && id !== undefined) {
             stream.handle.fail(buildStreamError(message));
             this.forgetStream(id);
 
@@ -6747,9 +6730,7 @@ class LunoraClient {
         // subscriber's onError so the UI can react instead of silently
         // never receiving data; the registration is left in place so a
         // later reconnect with proper credentials can still succeed.
-        const state = id === undefined ? undefined : this.subscriptions.getById(id);
-
-        if (state) {
+        if (route === "subscription" && state) {
             const subscriptionError = buildSubscriptionError(message);
 
             // Snapshot the identity and key BEFORE fanning. `fanSubscriptionError`
@@ -6783,115 +6764,24 @@ class LunoraClient {
             return;
         }
 
-        // A shape subscription is keyed in its own map (`shape_*` ids), so the
-        // lookup above misses it. Without this a rejected `shape_subscribe`
-        // (unknown shape, RLS-denied, cross-shard-invalid) would never reach the
-        // subscriber's `onError` and the shape would silently hang with no data.
-        const shapeState = id === undefined ? undefined : this.shapeSubscriptions.get(id);
-
-        if (shapeState) {
+        // Shape subscriptions are keyed in their own map (`shape_*` ids). A rejected
+        // `shape_subscribe` (unknown shape, RLS-denied, cross-shard-invalid) must reach the
+        // subscriber's `onError`, or the shape hangs with no data.
+        if (route === "shape" && shapeState) {
             fanSubscriptionError(shapeState.errorCallbacks, buildSubscriptionError(message));
         }
     }
 
-    /** Buffer key for an in-flight poke: `pokeId` is only unique per shard socket, so it is scoped by connection. */
-    // eslint-disable-next-line class-methods-use-this -- a pure key derivation kept beside the poke handlers that are its only callers
-    private pokeBufferKey(shardKey: string | undefined, pokeId: string): string {
-        return `${connectionKey(shardKey)}\u0000${pokeId}`;
-    }
-
-    private handlePokeStart(message: ServerPokeStartMessage, shardKey: string | undefined): void {
-        // A buffer is dropped at its `pokeEnd`; one whose socket drops mid-poke
-        // (no `pokeEnd`) is abandoned and the server re-seeds on resume, so it
-        // would otherwise linger forever. Bound the map by evicting the oldest
-        // entry once it exceeds the cap — abandoned buffers are always the oldest,
-        // and live pokes resolve within a few frames, so this only ever reclaims
-        // dead buffers in practice.
-        evictOldestEntry(this.pokeBuffers, LunoraClient.MAX_POKE_BUFFERS);
-
-        // Open a buffer for this poke. Parts accumulate per shape and apply
-        // atomically at `pokeEnd`, so a socket dropping mid-poke leaves the view
-        // untouched and re-seeds on reconnect (no torn state).
-        this.pokeBuffers.set(this.pokeBufferKey(shardKey, message.pokeId), {
-            baseCheckpoint: message.baseCheckpoint,
-            bases: new Map(),
-            epoch: message.epoch,
-            lastMutationId: new Map(),
-            parts: new Map(),
-            resets: new Set(),
-            undecodable: new Map(),
-        });
-    }
-
-    private handlePokePart(message: ServerPokePartMessage, shardKey: string | undefined): void {
-        const buffer = this.pokeBuffers.get(this.pokeBufferKey(shardKey, message.pokeId));
-
-        if (!buffer) {
-            // No matching `pokeStart` (we connected mid-poke) — ignore; the
-            // server re-seeds the shape on the next subscribe.
-            return;
-        }
-
-        // Wire-decode each row-op's post-image (no-op on a pure-JSON value), so a
-        // shape carrying a `bytes`/`bigint` column applies real values locally.
-        // Loop rather than `push(...map())` — a large `rowsPatch` would otherwise
-        // allocate an intermediate array and risk the JS argument-count ceiling.
-        //
-        // Decoded into a scratch list BEFORE anything is buffered: a row the
-        // codec refuses used to throw out of this handler half-way through the
-        // push, and the poke's `pokeEnd` then applied the rest and advanced the
-        // checkpoint past rows the view never held — with nothing reported.
-        const decoded: RowOp[] = [];
-
-        try {
-            for (const op of message.rowsPatch) {
-                decoded.push(op.value === undefined ? op : { ...op, value: decodeWire(op.value) as Record<string, unknown> });
-            }
-        } catch (error) {
-            buffer.undecodable.set(message.shapeId, error);
-
-            return;
-        }
-
-        const existing = buffer.parts.get(message.shapeId) ?? [];
-
-        for (const op of decoded) {
-            existing.push(op);
-        }
-        buffer.parts.set(message.shapeId, existing);
-
-        if (message.lastMutationId !== undefined) {
-            buffer.lastMutationId.set(message.shapeId, message.lastMutationId);
-        }
-
-        const base = message.baseCheckpoint ?? buffer.baseCheckpoint;
-
-        if (base !== undefined) {
-            buffer.bases.set(message.shapeId, base);
-        }
-
-        // A shape can only ever receive one part per poke, but record the flag
-        // sticky (never cleared) so a server that split a seed across parts still
-        // replaces rather than merges.
-        if (message.reset === true) {
-            buffer.resets.add(message.shapeId);
-        }
-    }
-
     private handlePokeEnd(message: ServerPokeEndMessage, shardKey: string | undefined): void {
-        const key = this.pokeBufferKey(shardKey, message.pokeId);
-        const buffer = this.pokeBuffers.get(key);
+        const buffer = this.pokeAssembler.end(shardKey, message.pokeId);
 
         if (!buffer) {
             return;
         }
-
-        this.pokeBuffers.delete(key);
 
         // A shape whose slice carried a row the codec refused keeps its view, its
-        // checkpoint and its epoch exactly as they were: applying the decodable
-        // rest would advance the resume position past a row it never held, so no
-        // resume would ever send that row again.
+        // checkpoint and its epoch: applying the decodable rest would advance the
+        // resume position past a row it never held, so no resume would send it again.
         for (const [shapeId, error] of buffer.undecodable) {
             const state = this.shapeSubscriptions.get(shapeId);
 
@@ -6913,72 +6803,23 @@ class LunoraClient {
     }
 
     /**
-     * Commit one shape's slice of a poke, or refuse it and re-seed.
-     *
-     * Split out of {@link handlePokeEnd} because every decision here is PER SHAPE
-     * — the reset flag, the base checkpoint, the watermark — while the poke
-     * envelope around it is not.
+     * Commit one shape's slice of a poke. The decision and the state change live in
+     * `commitPokeSlice`; this method only performs the I/O that follows it.
      */
     private applyPokePart(state: ShapeSubscriptionState, buffer: PokeBuffer, message: ServerPokeEndMessage): void {
-        // Read from the buffer rather than taken as a parameter: the caller could
-        // only ever pass `buffer.parts.get(state.id)`, and two ways to reach one
-        // value is one way for them to disagree.
-        const ops = buffer.parts.get(state.id) ?? [];
-        /* eslint-disable no-param-reassign -- advance the shared shape-subscription state in place, as the rest of the poke path does */
-        // A `reset` part carries the shape's COMPLETE membership, so it is
-        // authoritative on its own: drop whatever we hold and apply it. Without
-        // this the ops splice onto the stale view — and a seed is inserts-only,
-        // so every row deleted while we were disconnected survives the reconnect
-        // and renders forever. It also settles a forked epoch / diverged base in
-        // one round trip instead of provoking a redundant re-subscribe below.
-        const reset = buffer.resets.has(state.id);
+        const outcome = commitPokeSlice(state, buffer, message);
 
-        // An epoch mismatch means the changelog timeline forked since we last
-        // applied (a reset/recycled DO); a base mismatch means this diff was
-        // computed against a checkpoint we're not actually at (a dropped poke
-        // / gap). Either way, splicing the incremental ops onto our view would
-        // corrupt it — so drop the local view, clear the cursor, SKIP the ops,
-        // and re-subscribe so the server re-seeds the membership from scratch.
-        const base = buffer.bases.get(state.id);
-        const epochForked = buffer.epoch !== undefined && state.serverEpoch !== undefined && buffer.epoch !== state.serverEpoch;
-        const baseDiverged = base !== undefined && state.serverCursor !== undefined && state.serverCursor !== base;
+        this.emitShapeRows(state);
 
-        if (!reset && (epochForked || baseDiverged)) {
-            state.rows.clear();
-            state.serverCursor = undefined;
-            state.serverEpoch = undefined;
-            this.emitShapeRows(state);
+        if (outcome === "reseed") {
             this.sendShapeSubscribeIfOpen(state);
 
             return;
         }
 
-        if (reset) {
-            state.rows.clear();
-        }
-
-        applyRowOpsToView(state.rows, ops);
-
-        if (message.checkpoint !== undefined) {
-            state.serverCursor = message.checkpoint;
-        }
-
-        if (message.epoch !== undefined) {
-            state.serverEpoch = message.epoch;
-        }
-
-        const watermark = buffer.lastMutationId.get(state.id);
-
-        if (watermark !== undefined) {
-            state.lastMutationId = watermark;
-        }
-
-        this.emitShapeRows(state);
-
-        // Surface the advanced watermark so a `@lunora/db` collection can drop
-        // the optimistic overlay for any mutation this poke has now synced.
+        // Fired after the emit, as before: `@lunora/db` drops its optimistic overlay on
+        // this callback, so it must run once the rows have rendered.
         state.onCheckpoint?.({ checkpoint: state.serverCursor, mutationId: state.lastMutationId });
-        /* eslint-enable no-param-reassign */
     }
 
     /**
@@ -7031,7 +6872,7 @@ class LunoraClient {
         let payload: unknown;
 
         try {
-            payload = this.resolveDataPayload(message, state);
+            payload = resolveDataPayload(message, state.serverBase);
         } catch (error) {
             // The frame carried a value `decodeWire` refuses (an over-long
             // bigint, an over-depth tree, a malformed map entry). Left to throw
@@ -7054,44 +6895,14 @@ class LunoraClient {
             return;
         }
 
-        // `payload` is the new authoritative base. Update it first, then advance
-        // the cursor, so a layer whose write committed at/under this cursor is
-        // dropped (its effect is now in `payload`) before we re-fold. With no
-        // layers active (the common case) the displayed value is just `payload`,
-        // byte-identical to the historical behaviour.
-        state.serverBase = payload;
-
+        // Drop the cache seed before the value moves, then commit the payload and its
+        // position. The watermark and the checkpoint fan-out follow the commit.
         this.dropCacheSeed(SubscriptionRegistry.keyOf(state));
+        commitDataFrame(state, payload, { cursor: message.cursor, epoch: message.epoch });
 
-        // Advance the resume cursor + epoch when the frame carries them
-        // (CDC-enabled shard); replayed as `sinceSeq` / `sinceEpoch` on the
-        // next reconnect.
-        if (message.cursor !== undefined) {
-            state.serverCursor = message.cursor;
-        }
-
-        if (message.epoch !== undefined) {
-            state.serverEpoch = message.epoch;
-        }
-
-        // Consume the per-client custom-mutator watermark this frame carries
-        // (mirrors the `settled` tail in `handleSettledMessage`), so a
-        // `@lunora/db` checkpoint gate sees the watermark THIS frame's rows
-        // actually reflect, instead of relying solely on the provisional
-        // RPC-ack signal (`confirmedMutationWatermark`) which can race ahead
-        // of what has actually synced. `Math.max` guards monotonicity. Fired
-        // BEFORE `notifySubscription` below (which drives `@lunora/db`'s
-        // `onRows`) so a fresher, frame-scoped watermark is already recorded
-        // by the time any RPC-ack-based fallback would otherwise run.
         if (message.lastMutationId !== undefined) {
-            state.lastMutationId = Math.max(state.lastMutationId ?? 0, message.lastMutationId);
-
-            for (const onCheckpoint of state.checkpointCallbacks) {
-                // The one call site that sets `rowsFollow`: `notifySubscription`
-                // below drives this same frame's rowset callback, so this
-                // watermark genuinely describes rows that are about to land.
-                onCheckpoint({ checkpoint: state.serverCursor, mutationId: state.lastMutationId, rowsFollow: true });
-            }
+            advanceWatermark(state, message.lastMutationId);
+            fanCheckpoints(state, true);
         }
 
         // Persist the authoritative server value (never the optimistic overlay)
@@ -7107,7 +6918,7 @@ class LunoraClient {
             dropAcknowledgedLayers(state, snapshotMark);
         }
 
-        notifySubscription(state, foldOptimistic(payload, state.optimisticLayers));
+        refoldSubscription(state, payload);
 
         // When cross-tab sync is active and we're the WS leader, broadcast
         // the new value to follower tabs so they stay in sync without their
@@ -7167,15 +6978,13 @@ class LunoraClient {
             // is reset (a recycled DO, a PITR restore, the shard's own watermark
             // recovery path) — a bare assignment would then walk this gate
             // BACKWARDS and re-open an overlay a later frame already confirmed.
-            state.lastMutationId = Math.max(state.lastMutationId ?? 0, message.lastMutationId);
+            advanceWatermark(state, message.lastMutationId);
         }
 
         // Fan out to every registered subscriber (shared state — see
         // SubscriptionState.checkpointCallbacks). A snapshot isn't needed: a
         // checkpoint callback never (un)subscribes to this same state mid-flush.
-        for (const onCheckpoint of state.checkpointCallbacks) {
-            onCheckpoint({ checkpoint: state.serverCursor, mutationId: state.lastMutationId });
-        }
+        fanCheckpoints(state);
 
         // Cross-tab: propagate the checkpoint advance to follower tabs too, or a
         // `setQuery`/per-call optimistic overlay this byte-identical write just
@@ -7222,60 +7031,10 @@ class LunoraClient {
             // confirmed. Sweep confirmed layers here too (not just on `data`
             // frames), or a no-visible-change write would leave its overlay stuck.
             if (dropConfirmedLayers(state, state.serverCursor)) {
-                notifySubscription(state, foldOptimistic(state.serverBase, state.optimisticLayers));
+                refoldSubscription(state, state.serverBase);
             }
         }
         /* eslint-enable no-param-reassign */
-    }
-
-    /**
-     * Resolve the value to publish for a `data`/`delta` frame.
-     *
-     * A `data` frame is an authoritative snapshot (the server re-execution path)
-     * and always replaces the cached value wholesale. A `delta` frame carrying a
-     * structured `MutationDelta` (the `broadcastDelta` row-change path) is
-     * merged incrementally into the cached list — preserving order, no dup/loss —
-     * so each subscription (including every paginated page) updates by delta
-     * rather than a full re-send. We fall back to full replacement when the
-     * delta isn't a recognisable row change, when there's no cached value yet,
-     * or when it can't be applied cleanly against the current cached shape.
-     */
-    // eslint-disable-next-line class-methods-use-this -- instance method for symmetry with the other message handlers; reads no shared client state
-    private resolveDataPayload(message: ServerDataMessage, state: SubscriptionState): unknown {
-        if ("data" in message && message.data !== undefined) {
-            // Wire-decode the snapshot so a `bytes`/`bigint` column arrives as a
-            // real ArrayBuffer/bigint (no-op on a pure-JSON payload).
-            return decodeWire(message.data);
-        }
-
-        const delta = decodeWire(message.delta);
-
-        // Merge into the authoritative `serverBase`, NOT the displayed `lastValue`
-        // (which may carry an optimistic overlay) — a delta describes a change to
-        // server truth, re-folded under the overlay afterwards. With no optimistic
-        // layers active `serverBase === lastValue`, so this is the historical path.
-        if (isMutationDelta(delta)) {
-            // No cached base is NOT a merge failure — there is nothing to merge
-            // into and nothing to corrupt. This is the legacy `broadcastDelta`
-            // fan-out, which stamps no `cursor` at all (see `ShardDO.broadcastDelta`:
-            // "legacy broadcast path has no diff baseline to protect"), so handing
-            // the change itself to a subscriber that has not been seeded strands
-            // no cursor and is the behaviour that path has always had. Asking for
-            // a snapshot here would turn every such broadcast into a re-subscribe.
-            if (state.serverBase === undefined) {
-                return delta;
-            }
-
-            // A base we DO hold and cannot splice the delta into is the dangerous
-            // case: wholesale replacement publishes the `{ key, op, table, row }`
-            // envelope over a real query result, and a frame that carries a cursor
-            // advances it, so nothing would ever reconcile it. Ask for a snapshot.
-            return applyDelta(state.serverBase, delta) ?? UNMERGEABLE_DELTA;
-        }
-
-        // Opaque delta payload (e.g. a full result the server sent verbatim):
-        // replace wholesale, preserving the historical behaviour.
-        return delta;
     }
 
     /** Route an inbound whisper to the topic's handlers on the originating shard. */
@@ -7938,7 +7697,7 @@ class LunoraClient {
             // acknowledged by anything.
             state.acked = false;
 
-            notifySubscription(state, foldOptimistic(undefined, state.optimisticLayers));
+            refoldSubscription(state, undefined);
         }
 
         // Shapes are the same rows by another protocol, and were left untouched
@@ -8924,41 +8683,44 @@ class LunoraClient {
         shardKey: string | undefined,
         authToken: null | string,
     ): QueuedMutation[] {
-        const bySlot = new Map<number, RpcEnvelopeBody>();
-
-        for (const entry of results) {
-            // A body that is not a readable envelope is a slot the server never answered
-            // (§4.3): leave it out so the item is requeued under the same mutationId.
-            if (typeof entry.id === "number" && isSlotEnvelope(entry.body)) {
-                bySlot.set(entry.id, entry.body);
-            }
-        }
-
+        const bySlot = indexReplaySlots(results);
         const requeue: QueuedMutation[] = [];
         let accepted = false;
         let refused = false;
 
         for (const [index, item] of items.entries()) {
-            const inner = bySlot.get(index);
+            const verdict = replaySlotVerdict(bySlot.get(index));
 
-            if (inner === undefined) {
-                // The server never returned this slot — it may or may not have
-                // committed; retry under the same `mutationId` (idempotent).
-                requeue.push(item);
-            } else if ("error" in inner) {
-                const error = slotError(inner);
+            switch (verdict.kind) {
+                case "committed": {
+                    accepted = true;
+                    this.settleReplaySuccess(item, verdict.value, verdict.commitCursor);
 
-                refused ||= isAuthReplayFailure(error);
-
-                if (this.shouldRequeueReplayFailure(error, authToken)) {
-                    this.noteReplayRetryDelay(shardKey, error, authToken);
-                    requeue.push(item);
-                } else {
-                    this.settleReplayTerminal(item, error);
+                    break;
                 }
-            } else {
-                accepted = true;
-                this.settleReplayBatchResult(item, inner);
+                case "errored": {
+                    refused ||= isAuthReplayFailure(verdict.error);
+
+                    if (this.shouldRequeueReplayFailure(verdict.error, authToken)) {
+                        this.noteReplayRetryDelay(shardKey, verdict.error, authToken);
+                        requeue.push(item);
+                    } else {
+                        this.settleReplayTerminal(item, verdict.error);
+                    }
+
+                    break;
+                }
+                case "unanswered": {
+                    // The server never returned this slot. It may or may not have committed,
+                    // so retry under the same `mutationId` (idempotent).
+                    requeue.push(item);
+
+                    break;
+                }
+                default: {
+                    accepted = true;
+                    this.settleReplayUndecodable(item, verdict.error, verdict.commitCursor);
+                }
             }
         }
 
@@ -8969,26 +8731,6 @@ class LunoraClient {
         }
 
         return requeue;
-    }
-
-    /**
-     * Settle one batch slot that answered with a result. Decoded per slot: one
-     * result the codec refuses must not abandon the slots after it (committed
-     * writes left pending and unsettled for the rest of the session), and its
-     * own write DID commit.
-     */
-    private settleReplayBatchResult(item: QueuedMutation, inner: RpcEnvelopeBody): void {
-        let value: unknown;
-
-        try {
-            value = decodeWire(inner.result);
-        } catch (error) {
-            this.settleReplayUndecodable(item, undecodableResultError(error), inner.commitCursor);
-
-            return;
-        }
-
-        this.settleReplaySuccess(item, value, inner.commitCursor);
     }
 }
 
