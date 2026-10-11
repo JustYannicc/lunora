@@ -4,9 +4,7 @@ import { isDataMovementPath } from "../src/admin/proxy";
 import { highestPlan } from "../src/billing/plans";
 import type { AdmissionRow } from "../src/billing/spend";
 import { organizationServing } from "../src/billing/spend";
-import { endInstallBadge, restoreInstallBadge } from "../src/catalog/install-badge";
 import { previewExpiry } from "../src/deploy/preview";
-import { assertStatusMove } from "../src/deploy/status-transitions";
 import { PLAIN_WORKER_NO_ADMIN, RUNTIME_LABELS, storedRuntime } from "../src/project-runtime";
 import type { TargetId } from "../src/provision-contract";
 import { DEFAULT_TARGET, storedTarget } from "../src/provision-contract";
@@ -14,16 +12,18 @@ import { isCellPlaced, resourceRefOf } from "../src/targets/placement";
 import type { Doc as Document_, Id } from "./_generated/dataModel.js";
 import type { MutationCtx as MutationContext, QueryCtx as QueryContext } from "./_generated/server.js";
 import { internalMutation, internalQuery, mutation, query, v } from "./_generated/server.js";
+import { fireDeployAlerts } from "./alerts";
 import { assertMember, authorizeDeployKey } from "./authz";
-import { claimDeploymentAlias } from "./deployment-aliases";
-import { installBadgeOf, isWebUrl, onEnter, PHASE_TIMESTAMP, projectNameOf, releaseDetail } from "./deployment-lifecycle";
 import { orgEntitlements } from "./entitlements";
 import { rateLimit } from "./guards";
 import { assertProjectNotHalted } from "./halts";
 import { enqueueNotification } from "./notification-outbox";
 import { collectAll } from "./paginate";
+import type { DEPLOYMENT_STATUSES } from "./tables/shared";
 import { storedProjectRuntime } from "./tables/shared";
 import { boundedString, LIMITS } from "./validators";
+
+type DeploymentStatus = (typeof DEPLOYMENT_STATUSES)[number];
 
 type DeploymentRow = Document_<"deployments">;
 
@@ -120,6 +120,128 @@ const pointProjectAt = async (context: MutationContext, deployment: DeploymentRo
         await context.db.patch(deployment.projectId, { activeDeploymentId: deployment._id, activeScriptName: deployment.scriptName });
     }
 };
+
+interface AliasOwnershipRow {
+    _id: Id<"aliasOwnership">;
+    alias: string;
+    organizationId: Id<"organizations">;
+    projectId: Id<"projects">;
+}
+
+/**
+ * Claim a deployment alias for a project through the `aliasOwnership` ledger.
+ * The ledger's `by_alias` unique index makes the claim atomic, so this closes
+ * the check-then-insert TOCTOU in {@link create}: a concurrent first claim of
+ * the same new alias by a *different* project loses on the unique constraint and
+ * is rejected. Idempotent for the owning project (re-deploys reuse their alias).
+ */
+export const claimAlias = async (context: MutationContext, alias: string, organizationId: Id<"organizations">, projectId: Id<"projects">): Promise<void> => {
+    const currentOwner = async (): Promise<AliasOwnershipRow | undefined> => {
+        const { page } = await context.db.aliasOwnership.findMany({ where: { alias } });
+
+        return page[0];
+    };
+
+    const existing = await currentOwner();
+
+    if (existing) {
+        if (existing.projectId !== projectId) {
+            throw new LunoraError("FORBIDDEN", "deployment alias is already in use by another project");
+        }
+
+        return;
+    }
+
+    try {
+        await context.db.insert("aliasOwnership", { alias, createdAt: context.now, organizationId, projectId });
+    } catch (error) {
+        // Lost a concurrent first-claim race — the `by_alias` unique index rejected
+        // the insert. Re-read the winner: if it is us, the claim stands; if it is
+        // another project, reject cleanly; otherwise the failure was not an
+        // ownership collision, so surface it.
+        const winner = await currentOwner();
+
+        if (winner?.projectId === projectId) {
+            return;
+        }
+
+        if (winner) {
+            throw new LunoraError("FORBIDDEN", "deployment alias is already in use by another project");
+        }
+
+        throw error;
+    }
+};
+
+/** Whether `error` is {@link claimAlias}'s refusal of an alias another project owns. */
+const isAliasTaken = (error: unknown): boolean => error instanceof LunoraError && error.code === "FORBIDDEN";
+
+/**
+ * Claim the first of `candidates` no other project owns, for `projectId`, and
+ * answer it — a new project's production alias (`src/deploy/production-alias.ts`).
+ * @throws {LunoraError} `CONFLICT` when every candidate is taken.
+ */
+export const claimFirstFreeAlias = async (
+    context: MutationContext,
+    candidates: ReadonlyArray<string>,
+    organizationId: Id<"organizations">,
+    projectId: Id<"projects">,
+): Promise<string> => {
+    for (const alias of candidates) {
+        try {
+            // eslint-disable-next-line no-await-in-loop -- candidates are tried in order; the first free one wins
+            await claimAlias(context, alias, organizationId, projectId);
+
+            return alias;
+        } catch (error) {
+            if (!isAliasTaken(error)) {
+                throw error;
+            }
+        }
+    }
+
+    throw new LunoraError("CONFLICT", "every production alias tried for this project is taken; create it with another slug");
+};
+
+/**
+ * Claim a deployment's alias for `project` ({@link claimAlias}). A refusal names the alias the
+ * project reserved when it was created, so a CLI deploy whose wrangler `name`
+ * someone else owns says what to deploy as instead.
+ */
+const claimDeploymentAlias = async (
+    context: MutationContext,
+    alias: string,
+    organizationId: Id<"organizations">,
+    project: { _id: Id<"projects">; productionAlias?: null | string },
+): Promise<void> => {
+    try {
+        await claimAlias(context, alias, organizationId, project._id);
+    } catch (error) {
+        const reserved = project.productionAlias;
+
+        if (isAliasTaken(error) && reserved != null && reserved !== alias) {
+            throw new LunoraError(
+                "FORBIDDEN",
+                `deployment alias "${alias}" is already in use by another project; this project's production alias is "${reserved}" — deploy as it: lunora cloud deploy --name ${reserved}`,
+            );
+        }
+
+        throw error;
+    }
+};
+
+/** The `${status}At` timestamp column stamped on each phase transition (GAPS.md A2). */
+const PHASE_TIMESTAMP: Record<DeploymentStatus, "destroyedAt" | "failedAt" | "liveAt" | "provisioningAt" | "queuedAt" | "supersededAt" | "verifyingAt" | null> =
+    {
+        building: null,
+        destroyed: "destroyedAt",
+        failed: "failedAt",
+        live: "liveAt",
+        provisioning: "provisioningAt",
+        queued: "queuedAt",
+        superseded: "supersededAt",
+        verifying: "verifyingAt",
+    };
 
 /**
  * Resolve a deployment's tenant URL + *sealed* admin token for the hosted-studio
@@ -359,6 +481,53 @@ const placementColumns = (
     return { ...(placementRef === undefined ? {} : { placementRef }), resourceRef: resourceRefOf({ placementRef, target }, alias) };
 };
 
+/**
+ * The deployments of a set the teardown sweep (`src/deploy/teardown.ts`) has
+ * not finished with — what keeps a project on its target and a connected
+ * account connected, because the tenant they name may still live there.
+ *
+ * The sweep acts on `destroyed` and `failed` rows whose `teardownAt` is unset,
+ * and stamps `teardownAt` once it reclaimed them; it never revisits a stamped
+ * row. So a row is pending while it is anything else (`live`, `queued`,
+ * `superseded`, …: its tenant is running or about to), or while it is
+ * `destroyed`/`failed` and not stamped yet. A stamped `failed` row is done —
+ * the sweep reclaims only its stored release — and counting it would block a
+ * target change or a disconnect forever, with nothing left that could unblock it.
+ * `!= null`: `.global()` rows answer SQL NULL for an unset column.
+ */
+export const pendingTeardown = <Row extends { status: string; teardownAt?: null | number }>(rows: ReadonlyArray<Row>): Row[] =>
+    rows.filter((row) => (row.status !== "destroyed" && row.status !== "failed") || row.teardownAt == null);
+
+/**
+ * Drop the alias claims of a project or organization being deleted whose
+ * tenant is already gone, and keep the rest.
+ *
+ * An alias names its tenant — its script and the resources derived from it —
+ * so it must stay claimed until the teardown sweep has destroyed that tenant:
+ * released earlier, another project could claim the same alias and its first
+ * deploy would converge onto the deleted project's tenant, data included,
+ * while the sweep (seeing the alias alive again) never destroyed it. An alias
+ * with a deployment the sweep has not finished with ({@link pendingTeardown})
+ * is therefore left claimed, and the sweep releases it once the tenant is gone;
+ * one with none (reserved and never deployed, or already torn down) is released
+ * here, since no sweep will ever reach it.
+ */
+export const releaseIdleAliases = async (
+    context: MutationContext,
+    where: { organizationId: Id<"organizations"> } | { projectId: Id<"projects"> },
+): Promise<void> => {
+    const { page: deployments } = await context.db.deployments.findMany({ where });
+    const claimed = new Set(pendingTeardown(deployments).map((row) => row.alias ?? row.scriptName));
+    const { page: owned } = await context.db.aliasOwnership.findMany({ where });
+
+    for (const row of owned) {
+        if (!claimed.has(row.alias)) {
+            // eslint-disable-next-line no-await-in-loop -- one scope's aliases are few
+            await context.db.delete(row._id);
+        }
+    }
+};
+
 /** What {@link create} answers: the new row, its release number, and the release live on the alias before it (the revert target). */
 interface CreatedDeployment {
     deploymentId: Id<"deployments">;
@@ -419,9 +588,10 @@ export const create = mutation
         }
 
         // Integrity: the project must belong to the same org (no cross-org linkage).
-        const project = await context.db.get(arguments_.projectId);
+        const { page } = await context.db.projects.findMany({ where: { organizationId: arguments_.organizationId } });
+        const project = page.find((row) => row._id === arguments_.projectId);
 
-        if (project?.organizationId !== arguments_.organizationId) {
+        if (!project) {
             throw new LunoraError("NOT_FOUND", "project not found in this organization");
         }
 
@@ -497,6 +667,21 @@ export const create = mutation
         return { deploymentId, ...(previous ? { previousDeploymentId: previous._id } : {}), version };
     });
 
+/** The release line a live notification carries: the version and its public URL, nothing else. */
+const releaseDetail = (deployment: DeploymentRow, url: string | undefined): string => {
+    const version = deployment.version === undefined ? undefined : `Version ${String(deployment.version)}`;
+    const liveUrl = url ?? deployment.url;
+
+    return [version, liveUrl ? `is live at ${liveUrl}.` : "is live."].filter(Boolean).join(" ");
+};
+
+/** The project's display name for a notification, falling back when the row is gone. */
+const projectNameOf = async (context: MutationContext, projectId: Id<"projects">): Promise<string> => {
+    const project = (await context.db.get(projectId)) as null | { name?: string };
+
+    return project?.name ?? "project";
+};
+
 /**
  * Record a health-checked deployment as its alias's live release (GAPS.md A1).
  * The Worker already runs it — this is bookkeeping, not a cutover. Marks every
@@ -529,19 +714,10 @@ export const activate = mutation
         const { page } = await context.db.deployments.findMany({ where: { projectId: deployment.projectId } }); // secret-scanner:allow -- domain field name
         const others = page.filter((d) => d._id !== id && d.alias === deployment.alias && d.kind === deployment.kind && d.status === "live");
 
-        // Every superseded row is checked before the first write, so a refused move leaves the alias as it was.
-        for (const other of others) {
-            assertStatusMove(other.status, "superseded");
-        }
-
         for (const other of others) {
             // eslint-disable-next-line no-await-in-loop -- small batch; sequential keeps the writer simple
             await context.db.patch(other._id, { status: "superseded", supersededAt: now, updatedAt: now });
-            // eslint-disable-next-line no-await-in-loop -- the same small batch
-            await endInstallBadge(installBadgeOf(context), other);
         }
-
-        await restoreInstallBadge(installBadgeOf(context), deployment, now);
 
         const project = (await context.db.get(deployment.projectId)) as null | { activeDeploymentId?: string; name?: string };
         const movesPointer = deployment.kind === "production" && project?.activeDeploymentId !== id;
@@ -610,16 +786,11 @@ export const rollback = internalMutation
         const { now } = context;
         const replaced = await liveRelease(context, target);
 
-        assertStatusMove(target.status, "live");
-
         if (replaced && replaced._id !== id) {
-            assertStatusMove(replaced.status, "superseded");
             await context.db.patch(replaced._id, { status: "superseded", supersededAt: now, updatedAt: now });
-            await endInstallBadge(installBadgeOf(context), replaced);
         }
 
         await context.db.patch(id, { liveAt: now, status: "live", updatedAt: now });
-        await restoreInstallBadge(installBadgeOf(context), target, now);
         await pointProjectAt(context, target);
         await context.db.insert("auditLog", {
             action: "deployment.rollback",
@@ -634,7 +805,7 @@ export const rollback = internalMutation
             project: await projectNameOf(context, target.projectId),
         });
 
-        return { scriptName: target.scriptName, version: target.version ?? undefined };
+        return { scriptName: target.scriptName, version: target.version };
     });
 
 /**
@@ -728,18 +899,19 @@ export const pruneSuperseded = internalMutation.mutation(async ({ ctx: context }
         byProjectKind.set(groupKey, group);
     }
 
-    const excess = [...byProjectKind.values()].flatMap((group) => group.toSorted((a, b) => b.createdAt - a.createdAt).slice(SUPERSEDED_RETENTION));
+    let pruned = 0;
 
-    for (const deployment of excess) {
-        assertStatusMove(deployment.status, "destroyed");
+    for (const group of byProjectKind.values()) {
+        const excess = group.toSorted((a, b) => b.createdAt - a.createdAt).slice(SUPERSEDED_RETENTION);
+
+        for (const deployment of excess) {
+            // eslint-disable-next-line no-await-in-loop -- small batch; sequential keeps the writer simple
+            await context.db.patch(deployment._id, { destroyedAt: now, status: "destroyed", updatedAt: now });
+            pruned += 1;
+        }
     }
 
-    for (const deployment of excess) {
-        // eslint-disable-next-line no-await-in-loop -- small batch; sequential keeps the writer simple
-        await context.db.patch(deployment._id, { destroyedAt: now, status: "destroyed", updatedAt: now });
-    }
-
-    return { pruned: excess.length };
+    return { pruned };
 });
 
 /**
@@ -755,19 +927,17 @@ export const cleanupExpiredPreviews = internalMutation.mutation(async ({ ctx: co
 
     const expired = page.filter((deployment) => deployment.status !== "destroyed" && deployment.expiresAt != null && deployment.expiresAt < now);
 
-    for (const deployment of expired) {
-        assertStatusMove(deployment.status, "destroyed");
-    }
+    // One name lookup per project, all at once, rather than one per expired preview.
+    const projectIds = [...new Set(expired.map((deployment) => deployment.projectId))];
+    const names = new Map(await Promise.all(projectIds.map(async (projectId) => [projectId, await projectNameOf(context, projectId)] as const)));
 
     for (const deployment of expired) {
         // eslint-disable-next-line no-await-in-loop -- small batch; sequential keeps the writer simple
         await context.db.patch(deployment._id, { status: "destroyed", updatedAt: now });
         // eslint-disable-next-line no-await-in-loop -- see above
-        const project = await projectNameOf(context, deployment.projectId);
-        // eslint-disable-next-line no-await-in-loop -- see above
         await enqueueNotification(context, deployment.organizationId, "preview.expired", {
             detail: `Preview ${deployment.alias ?? deployment.scriptName} was removed after its expiry time.`,
-            project,
+            project: names.get(deployment.projectId) ?? "",
         });
     }
 
@@ -775,9 +945,8 @@ export const cleanupExpiredPreviews = internalMutation.mutation(async ({ ctx: co
 });
 
 /**
- * Advance a deployment's lifecycle (queued → provisioning → verifying → live, or
- * → failed). A move the transition table (`src/deploy/status-transitions.ts`) does not
- * list is refused with a CONFLICT. Driven by the deploy orchestrator as it works through the
+ * Advance a deployment's lifecycle (queued → provisioning → building → live, or
+ * → failed). Driven by the deploy orchestrator as it works through the
  * provisioner's progress events, authorized by the same `deployKey` (CI) or a
  * member session (dashboard).
  *
@@ -817,13 +986,6 @@ export const updateStatus = mutation
             ? authorizeDeployKey(context, existing.organizationId, deployKey, existing.projectId)
             : assertMember(context, existing.organizationId, ["owner", "admin"]));
 
-        // The URL is what the admin proxy sends the tenant's bearer to, so only web schemes are stored.
-        if (url !== undefined && !isWebUrl(url)) {
-            throw new LunoraError("BAD_REQUEST", "deployment url must be an http:// or https:// URL");
-        }
-
-        assertStatusMove(existing.status, status);
-
         const { now } = context;
         const phaseColumn = PHASE_TIMESTAMP[status];
 
@@ -835,7 +997,26 @@ export const updateStatus = mutation
             updatedAt: now,
         });
 
-        await onEnter(context, id, existing, status);
+        // Notify the org's `deploy` rules, but only on the transition INTO failed.
+        // The orchestrator re-drives this mutation as it works through the
+        // provisioner's events, and a deployment that is already failed can be
+        // written again by a retry — firing on the state rather than the crossing
+        // would page somebody once per attempt for one broken release.
+        if (status === "failed" && existing.status !== "failed") {
+            const project = (await context.db.get(existing.projectId)) as null | { name: string };
+
+            await fireDeployAlerts(context, existing.organizationId, `deployment:${id}`, {
+                detail: `The deployment did not reach a live state. Its last recorded phase was "${existing.status}".`,
+                kind: "deployment",
+                project: project?.name ?? "project",
+                reference: existing.scriptName,
+            });
+
+            await enqueueNotification(context, existing.organizationId, "deployment.failed", {
+                detail: "Open the deployment in the dashboard for its log.",
+                project: await projectNameOf(context, existing.projectId),
+            });
+        }
     });
 
 /**
@@ -847,14 +1028,15 @@ export const updateStatus = mutation
  * session-authorized for the hosted studio's browser proxy, while eject arrives
  * over a deploy key from a terminal.
  *
- * **The key is authorized HERE, not at the edge.** The org is not resolved from the key
- * with `orgForDeployKey`, the helper the OTLP endpoints use: that one accepts ANY
- * non-revoked key and checks neither capability nor project scope, so a full tenant data
- * export would be reachable from a telemetry `ingest` token, the lowest-privilege
- * credential on the platform, which the platform injects into every tenant Worker as an
- * env secret. `authorizeDeployKey` runs inside this query instead, against the
- * deployment's own org and project, exactly as {@link rollback} does — a route cannot
- * forget to do what it does not perform.
+ * **The key is authorized HERE, not at the edge.** An earlier cut resolved the
+ * org from the key with `orgForDeployKey` — the helper the OTLP endpoints use,
+ * which deliberately accepts ANY non-revoked key and checks neither capability
+ * nor project scope. That made a full tenant data export reachable from a
+ * telemetry `ingest` token: the lowest-privilege credential on the platform, and
+ * one the platform itself injects into every tenant Worker as an env secret. So
+ * `authorizeDeployKey` runs inside this query, against the deployment's own org
+ * and project, exactly as {@link rollback} does — a route cannot forget to do
+ * what it does not perform.
  *
  * The admin token is returned sealed. The edge decrypts it with
  * `SECRET_ENCRYPTION_KEY` exactly as the studio proxy does, so the plaintext

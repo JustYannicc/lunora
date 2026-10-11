@@ -7,7 +7,6 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { COLUMN_LABEL } from "@/lib/typography";
 import { cn } from "@/lib/utils";
 
 import { api } from "../../lunora/_generated/api.js";
@@ -17,6 +16,7 @@ import readJson from "../read-json";
 import { AsyncList } from "./AsyncList";
 import { certificateBadge, EDGE_BLOCK_MODE_NOTE } from "./domains";
 import { formatDateTime } from "./format";
+import { COLUMN_LABEL } from "./section-styles";
 import { Field, FieldForm, FormError, Row, RowActions, RowList, StatusBadge } from "./section-ui";
 import type { SectionProps } from "./tabs";
 import type { OrgId, ProjectId } from "./types";
@@ -219,7 +219,7 @@ export const DomainsSection = ({ organizationId, preloaded }: SectionProps<Retur
                                                     <span className="text-muted-foreground truncate font-mono text-xs">→ {domain.redirectTo}</span>
                                                 ) : null}
                                                 <span className={cn(COLUMN_LABEL, "text-muted-foreground truncate")}>
-                                                    {domain.lastCheckedAt == null ? "not checked yet" : `checked ${formatDateTime(domain.lastCheckedAt)}`}
+                                                    {domain.lastCheckedAt === undefined ? "not checked yet" : `checked ${formatDateTime(domain.lastCheckedAt)}`}
                                                     {domain.failedChecks
                                                         ? ` · ${String(domain.failedChecks)} of ${String(FAILURES_BEFORE_UNVERIFIED)} checks failed`
                                                         : ""}

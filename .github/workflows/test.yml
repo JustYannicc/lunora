@@ -28,7 +28,6 @@
             "templates": "${{ steps.changes.outputs.templates }}"
             "templates_expo": "${{ steps.changes.outputs.templates_expo }}"
             "worker_size": "${{ steps.changes.outputs.worker_size }}"
-            "worker_startup": "${{ steps.changes.outputs.worker_startup }}"
             "sdks": "${{ steps.changes.outputs.sdks }}"
             "celld": "${{ steps.changes.outputs.celld }}"
             "hostd": "${{ steps.changes.outputs.hostd }}"
@@ -61,11 +60,10 @@
         # @lunora/codegen alone, which left no room for the studio step after it and
         # cancelled the job at 30 min with every test passing.
         #
-        # 90, not 60: by 2026-10 a full-suite 22.15 leg took 37-58 min when it
-        # passed, and a leg that also boots extra workerd projects was cancelled at
-        # 60 mid-suite with every test so far passing. Affected-only runs are
-        # far shorter and unaffected by the ceiling.
-        "timeout-minutes": 90
+        # 60, not 45: by 2026-10 a full-suite 22.15 leg took 41-43 min when it
+        # passed, so a slow runner hit 45 during the Codecov upload, after
+        # `test:coverage` had already succeeded for every project.
+        "timeout-minutes": 60
         "strategy":
             "fail-fast": false
             "matrix":
@@ -218,7 +216,6 @@
                 # (`@lunora/cloud`), and a path selects it for pnpm and vis alike.
                 "workspace":
                     [
-                        "packages/agent",
                         "apps/cloud",
                         "packages/auth",
                         "packages/browser",
@@ -228,7 +225,6 @@
                         "packages/do",
                         "packages/payment",
                         "packages/queue",
-                        "packages/ratelimit",
                         "packages/runtime",
                         "packages/scheduler",
                         "packages/server",
@@ -236,7 +232,6 @@
                         "packages/storage",
                         "packages/workflow",
                         "packages/x402",
-                        "examples/privacy",
                     ]
         "steps":
             - "name": "Harden Runner"
@@ -258,20 +253,20 @@
                   "run-npm-audit": "false"
                   "run-signatures-audit": "false"
 
-            # The matrix is a hand-typed list of 19 workspaces, duplicated verbatim in
+            # The matrix is a hand-typed list of 16 workspaces, duplicated verbatim in
             # test.yml and nightly.yml, with nothing tying either copy to the workspaces
             # that actually declare a `workerd` vitest project. Drop one from either and
             # its workerd suites stop running with every check green. Each leg asserts
             # its own workspace still declares the project, and that the leg count
             # equals the number of workspaces that do — together that makes the matrix
-            # and the filesystem the same set, not merely the same size. Packages,
-            # examples and apps: `apps/cloud` holds the `BoxSessionDO` suite.
+            # and the filesystem the same set, not merely the same size. Packages and
+            # apps both: `apps/cloud` holds the `BoxSessionDO` suite.
             - "name": "Assert the matrix matches the workspaces declaring a workerd project"
               "env":
                   "WORKSPACE": "${{ matrix.workspace }}"
                   "LEGS": "${{ strategy.job-total }}"
               "run": |
-                  declared="$(grep -l 'name: "workerd"' packages/*/vitest.config.ts examples/*/vitest.config.ts apps/*/vitest.config.ts | sed 's|/vitest.config.ts||' | sort)"
+                  declared="$(grep -l 'name: "workerd"' packages/*/vitest.config.ts apps/*/vitest.config.ts | sed 's|/vitest.config.ts||' | sort)"
                   count="$(printf '%s\n' "$declared" | wc -l | tr -d ' ')"
                   if ! printf '%s\n' "$declared" | grep -qx "$WORKSPACE"; then
                     echo "$WORKSPACE/vitest.config.ts declares no \`workerd\` project — this leg would run nothing." >&2
@@ -295,15 +290,20 @@
                   "WORKSPACE": "${{ matrix.workspace }}"
               "run": |
                   case "$WORKSPACE" in
-                    apps/*|examples/*) pnpm exec vis run build --filter "./$WORKSPACE^..." ;;
+                    apps/*) pnpm exec vis run build --filter "./$WORKSPACE^..." ;;
                     *) pnpm exec vis run build --filter "./$WORKSPACE..." ;;
                   esac
 
-            - "name": "Generate workspace code"
+            # An app's generated code (`lunora/_generated`) is gitignored and only codegen
+            # writes it, and its suites import it. The build above builds the app's
+            # dependencies, not the app, so generate it here.
+            - "name": "Generate app code"
               "env":
                   "WORKSPACE": "${{ matrix.workspace }}"
               "run": |
-                  pnpm --filter "./$WORKSPACE" run --if-present codegen
+                  case "$WORKSPACE" in
+                    apps/*) pnpm --filter "./$WORKSPACE" run --if-present codegen ;;
+                  esac
 
             - "name": "Run workerd suites"
               "env":
@@ -466,7 +466,7 @@
 
             # apps/hostd/rust-toolchain.toml pins the same channel.
             - "name": "Install Rust stable toolchain"
-              "uses": "dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067" # v1
+              "uses": "dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9" # v1
               "with":
                   "toolchain": "stable"
 
@@ -562,7 +562,7 @@
             - "name": "Assert the run covers every suite using the MySQL harness"
               "run": |
                   declared="$(grep -rl '_helpers/mysql-mem' packages/hyperdrive/__tests__/*.test.ts | sort | tr '\n' ' ')"
-                  expected='packages/hyperdrive/__tests__/create-hyperdrive.test.ts packages/hyperdrive/__tests__/global-collation-parity.test.ts packages/hyperdrive/__tests__/global-json-paths.test.ts packages/hyperdrive/__tests__/global-mysql.integration.test.ts packages/hyperdrive/__tests__/global-null-placement.test.ts '
+                  expected='packages/hyperdrive/__tests__/create-hyperdrive.test.ts packages/hyperdrive/__tests__/global-collation-parity.test.ts packages/hyperdrive/__tests__/global-mysql.integration.test.ts '
                   if [ "$declared" != "$expected" ]; then
                     echo "::error file=.github/workflows/test.yml::Suites using the MySQL harness are [$declared] but this job runs [$expected]. Update the run step below."
                     exit 1
@@ -579,9 +579,7 @@
                   pnpm --filter "@lunora/hyperdrive" run test \
                       __tests__/create-hyperdrive.test.ts \
                       __tests__/global-collation-parity.test.ts \
-                      __tests__/global-json-paths.test.ts \
                       __tests__/global-mysql.integration.test.ts \
-                      __tests__/global-null-placement.test.ts \
                       --reporter=default --reporter=json --outputFile.json=test-results/mysql.json
 
             # The node -e script is JavaScript, its `${}` is not shell.
@@ -815,46 +813,6 @@
 
             - "name": "Weigh the reference Worker"
               "run": "pnpm run worker-size:check"
-
-    # Guards Cloudflare's 1 s startup-CPU limit (error 10021, not raisable) for a large
-    # app: counts the modules a synthetic 300-procedure app evaluates at startup (static
-    # imports only) against the ceiling in `worker-startup.json`. Deterministic, so it
-    # can gate; CPU time is printed as advisory only. See scripts/check-worker-startup.js.
-    #
-    # Its own job, not a `postinstall` gate: a failing postinstall turns every job red
-    # in its setup step, with the cause invisible in the job that reports it.
-    "worker-startup":
-        "name": "Worker startup budget"
-        "if": "needs.files-changed.outputs.packages == 'true' || needs.files-changed.outputs.templates == 'true' || needs.files-changed.outputs.worker_startup == 'true'"
-        "needs": "files-changed"
-        "runs-on": "ubuntu-latest"
-        "timeout-minutes": 30
-        "steps":
-            - "name": "Harden Runner"
-              "uses": "step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411" # v2.19.4
-              "with":
-                  "egress-policy": "audit"
-
-            - "name": "Git checkout"
-              "uses": "anolilab/workflows/step/checkout-with-retry@6c16895f4c3b5273b373656988505d1a8264e78b" # main
-
-            - "name": "Setup resources and environment"
-              "uses": "anolilab/workflows/step/node@acba5fb15ac98ad23dec1ad233e40e1bb79c1dae" # v19.0.4
-              "with":
-                  "node-version": "22.15"
-                  "cache-prefix": "worker-startup"
-                  "install-node-gyp": "true"
-                  "skip-playwright": "true"
-                  "enable-nx-cache": "false"
-                  "run-npm-audit": "false"
-                  "run-signatures-audit": "false"
-
-            # `:prod` for the same reason as the size gate: users install the production build.
-            - "name": "Build packages (production artifacts)"
-              "run": "pnpm run build:packages:prod"
-
-            - "name": "Count what the reference Worker evaluates at startup"
-              "run": "pnpm run worker-startup:check"
 
     # The non-JS SDKs against `protocol/fixtures/*.json`, the same golden frames the
     # TypeScript client is tested against. Nothing else runs them: `sdks/` is not a pnpm
@@ -1111,20 +1069,17 @@
     "test-required-check":
         "name": "Check Test Run"
         "needs":
-            [
-                "files-changed",
-                "test",
-                "test-workerd",
-                "test-celld",
-                "test-hostd",
-                "test-mysql",
-                "e2e",
-                "templates",
-                "templates-expo",
-                "worker-size",
-                "worker-startup",
-                "sdk-conformance",
-            ]
+            - "files-changed"
+            - "test"
+            - "test-workerd"
+            - "test-celld"
+            - "test-hostd"
+            - "test-mysql"
+            - "e2e"
+            - "templates"
+            - "templates-expo"
+            - "worker-size"
+            - "sdk-conformance"
         "if": "always()"
         "runs-on": "ubuntu-latest"
         "timeout-minutes": 5

@@ -53,10 +53,12 @@ const fakeDatabase = (tables: Record<string, Row[]>): ControlPlaneDatabase & { r
             return Promise.resolve({ page: args?.limit === undefined ? rows : rows.slice(0, args.limit) });
         },
         insert: (table, document) => {
-            // eslint-disable-next-line no-param-reassign -- the fake's state is the record the test passed in and reads back
-            tables[table] ??= [];
-            const rows = tables[table];
-            rows.push({ _id: `${table}_${String(rows.length)}`, ...document });
+            // The fake owns this record: the alias makes that explicit rather than writing through the parameter.
+            const store = tables;
+            const existing = store[table] ?? [];
+
+            store[table] = existing;
+            existing.push({ _id: `${table}_${String(existing.length)}`, ...document });
 
             return Promise.resolve(undefined);
         },
