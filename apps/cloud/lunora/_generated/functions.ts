@@ -241,6 +241,7 @@ export const LUNORA_FUNCTIONS: Record<string, RegisteredLunoraFunction> = {
     "logs:orgForScript": lunora_logs_22.orgForScript as unknown as RegisteredLunoraFunction,
     "logs:prune": lunora_logs_22.prune as unknown as RegisteredLunoraFunction,
     "members:list": lunora_members_23.list as unknown as RegisteredLunoraFunction,
+    "members:operatorPromoteOwner": lunora_members_23.operatorPromoteOwner as unknown as RegisteredLunoraFunction,
     "members:remove": lunora_members_23.remove as unknown as RegisteredLunoraFunction,
     "members:roleForUser": lunora_members_23.roleForUser as unknown as RegisteredLunoraFunction,
     "members:setRole": lunora_members_23.setRole as unknown as RegisteredLunoraFunction,
@@ -1232,7 +1233,11 @@ export type CallerCtx = ActionCtx | MutationCtx | QueryCtx;
  */
 export interface Caller {
     account: {
+<<<<<<< HEAD
         eraseUser: (args: { operator?: boolean; userId: string }) => Promise<{ erased: false; soleOwnerOf: { id: string; name: string }[] } | { erased: true; retainedOwnerOf?: { id: string; name: string }[] }>;
+=======
+        eraseUser: (args: { operator?: boolean; userId: string }) => Promise<{ ownerless: { id: string; name: string }[]; refused?: { id: string; name: string }[] }>;
+>>>>>>> d97f1349c (feat(cloud): refuse operator removal of an organization's only owner)
         exportMine: (args?: {}) => Promise<Record<string, unknown>>;
     };
     alerts: {
@@ -1422,6 +1427,7 @@ export interface Caller {
     };
     members: {
         list: (args: { organizationId: Id<"organizations"> }) => Promise<{ _id: Id<"members">; createdAt: number; organizationId: Id<"organizations">; role: "admin" | "member" | "owner" | "viewer"; userId: string }[]>;
+        operatorPromoteOwner: (args: { organizationId: Id<"organizations">; userId: unknown }) => Promise<{ memberId: string; promoted: boolean; }>;
         remove: (args: { id: Id<"members">; organizationId: Id<"organizations"> }) => Promise<void>;
         roleForUser: (args: { allowedRoles: Array<"admin" | "member" | "owner" | "viewer">; organizationId: Id<"organizations">; userId: unknown }) => Promise<"admin" | "member" | "owner" | "viewer">;
         setRole: (args: { id: Id<"members">; organizationId: Id<"organizations">; role: "owner" | "admin" | "member" | "viewer" }) => Promise<void>;
@@ -1755,6 +1761,7 @@ export const createCaller = (context: CallerCtx): Caller => ({
     },
     members: {
         list: (args) => callRegistered(context, "members:list", args),
+        operatorPromoteOwner: (args) => callRegistered(context, "members:operatorPromoteOwner", args),
         remove: (args) => callRegistered(context, "members:remove", args),
         roleForUser: (args) => callRegistered(context, "members:roleForUser", args),
         setRole: (args) => callRegistered(context, "members:setRole", args),

@@ -2,7 +2,7 @@ import { internal } from "../../../lunora/_generated/internal";
 import type { EraseUserResult } from "../../../lunora/account";
 import { currentAuth } from "../../auth";
 import type { RouterEnv } from "./shared";
-import { jsonError, requireContext } from "./shared";
+import { jsonError, rejected, requireContext } from "./shared";
 
 /** The slice of better-auth's database adapter the profile read uses. */
 export interface AuthRecordReader {
@@ -87,6 +87,7 @@ export const handleAccountExportRoute = async (request: Request, environment: Ro
 };
 
 /**
+<<<<<<< HEAD
  * `POST /v1/account/erase` — remove what the control plane holds about a user
  * whose account is being deleted (`account.eraseUser`). Called in-process with
  * the admin token, by the authentication layer's before-delete hook and, with
@@ -94,6 +95,23 @@ export const handleAccountExportRoute = async (request: Request, environment: Ro
  * organizations, while a self-service user is the only owner of any; an
  * operator removal is never refused and answers with the organizations whose
  * owner membership it kept (`retainedOwnerOf`).
+=======
+ * `POST /v1/account/erase` — the control plane's half of removing an account,
+ * called in-process with the admin token:
+ *
+ * - `{ userId, check: true }` from the self-service before-delete hook: writes
+ *   nothing, and answers 409 naming the organizations while the user is the only
+ *   owner of any (`account.soleOwnedOrganizations`). Only this call refuses.
+ * - `{ userId }` from the self-service after-delete hook: removes the
+ *   memberships and anonymises the audit actor (`account.eraseUser`), and
+ *   answers the organizations that were left without an owner.
+ * - `{ userId, operator: true }` from the operator's `removeUser` and from the
+ *   orphaned-membership sweep: the same, except that it is refused while the
+ *   user is the only owner of an organization. The refusal is a 409 naming the
+ *   organizations, as the check's is, and nothing is written; the operator
+ *   promotes another member (`POST /v1/organizations/owners`) or deletes the
+ *   organization, then removes the user again.
+>>>>>>> d97f1349c (feat(cloud): refuse operator removal of an organization's only owner)
  */
 export const handleAccountEraseRoute = async (request: Request, environment: RouterEnv): Promise<Response> => {
     const context = requireContext(environment);
@@ -107,10 +125,16 @@ export const handleAccountEraseRoute = async (request: Request, environment: Rou
         return jsonError(400, "operator must be a boolean");
     }
 
+<<<<<<< HEAD
     const result = await context.runMutation<EraseUserResult>(internal.account.eraseUser, {
         userId: body.userId,
         ...(body.operator === true ? { operator: true } : {}),
     });
+=======
+    if (body.check === true && body.operator === true) {
+        return jsonError(400, "an operator removal checks inside the erasure, so it takes no separate check");
+    }
+>>>>>>> d97f1349c (feat(cloud): refuse operator removal of an organization's only owner)
 
     if (!result.erased) {
         const names = result.soleOwnerOf.map((organization) => `"${organization.name}"`).join(", ");
@@ -124,5 +148,58 @@ export const handleAccountEraseRoute = async (request: Request, environment: Rou
         );
     }
 
+<<<<<<< HEAD
     return Response.json(result.retainedOwnerOf === undefined ? { erased: true } : { erased: true, retainedOwnerOf: result.retainedOwnerOf });
+=======
+    const { ownerless, refused } = await context.runMutation<EraseUserResult>(internal.account.eraseUser, {
+        userId: body.userId,
+        ...(body.operator === true ? { operator: true } : {}),
+    });
+
+    if (refused !== undefined) {
+        const names = refused.map((organization) => `"${organization.name}"`).join(", ");
+
+        return Response.json(
+            {
+                error: `The user is the only owner of ${names}. Promote another member to owner or delete the organization, then remove the user again.`,
+                organizations: refused,
+            },
+            { status: 409 },
+        );
+    }
+
+    if (ownerless.length > 0) {
+        // eslint-disable-next-line no-console -- the audit entry is in each organization's log; this is the operator's signal
+        console.error("[account] account deletion left organizations without an owner", ownerless);
+    }
+
+    return Response.json({ erased: true, ownerless });
+};
+
+/**
+ * `POST /v1/organizations/owners` — make an existing member of an organization
+ * one of its owners (`members.operatorPromoteOwner`). Admin token only: it is
+ * how an operator resolves a removal refused because the user is the only owner
+ * of an organization. Body `{ organizationId, userId }`. 404 when the user is
+ * not a member of the organization; never demotes anyone.
+ */
+export const handleOwnerPromoteRoute = async (request: Request, environment: RouterEnv): Promise<Response> => {
+    const context = requireContext(environment);
+    const body = (await request.json().catch(() => null)) as null | { organizationId?: unknown; userId?: unknown };
+
+    if (typeof body?.organizationId !== "string" || body.organizationId === "" || typeof body.userId !== "string" || body.userId === "") {
+        return jsonError(400, "organizationId and userId are required");
+    }
+
+    try {
+        const result = await context.runMutation<{ memberId: string; promoted: boolean }>(internal.members.operatorPromoteOwner, {
+            organizationId: body.organizationId,
+            userId: body.userId,
+        });
+
+        return Response.json({ ok: true, ...result });
+    } catch (error) {
+        return rejected(error, "promotion refused");
+    }
+>>>>>>> d97f1349c (feat(cloud): refuse operator removal of an organization's only owner)
 };
