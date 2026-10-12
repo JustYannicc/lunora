@@ -1,3 +1,19 @@
+## @lunora/platform-node [1.0.0-alpha.132](https://github.com/anolilab/lunora/compare/@lunora/platform-node@1.0.0-alpha.131...@lunora/platform-node@1.0.0-alpha.132) (2026-10-12)
+
+
+### Dependencies
+
+* **@lunora/d1:** upgraded to 1.0.0-alpha.172
+* **@lunora/errors:** upgraded to 1.0.0-alpha.53
+* **@lunora/queue:** upgraded to 1.0.0-alpha.100
+* **@lunora/runtime:** upgraded to 1.0.0-alpha.192
+* **@lunora/sql-store:** upgraded to 1.0.0-alpha.173
+* **@lunora/workflow:** upgraded to 1.0.0-alpha.75
+* **@lunora/do:** upgraded to 1.0.0-alpha.205
+* **@lunora/platform-cloudflare:** upgraded to 1.0.0-alpha.82
+* **@lunora/shard-engine:** upgraded to 1.0.0-alpha.122
+* **@lunora/storage:** upgraded to 1.0.0-alpha.127
+
 ## @lunora/platform-node [1.0.0-alpha.131](https://github.com/anolilab/lunora/compare/@lunora/platform-node@1.0.0-alpha.130...@lunora/platform-node@1.0.0-alpha.131) (2026-10-12)
 
 ### Bug Fixes
