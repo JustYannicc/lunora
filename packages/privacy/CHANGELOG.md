@@ -1,3 +1,9 @@
+## @lunora/privacy [1.0.0-alpha.2](https://github.com/anolilab/lunora/compare/@lunora/privacy@1.0.0-alpha.1...@lunora/privacy@1.0.0-alpha.2) (2026-10-12)
+
+### Bug Fixes
+
+* **privacy:** record the 10-year voucher default as decided ([#1135](https://github.com/anolilab/lunora/issues/1135)) ([bc7cbbe](https://github.com/anolilab/lunora/commit/bc7cbbe65de9e9d88514d81047696c332d75941d))
+
 ## @lunora/privacy 1.0.0-alpha.1 (2026-10-12)
 
 ### Features
