@@ -1,3 +1,15 @@
+## @lunora/shard-engine [1.0.0-alpha.122](https://github.com/anolilab/lunora/compare/@lunora/shard-engine@1.0.0-alpha.121...@lunora/shard-engine@1.0.0-alpha.122) (2026-10-12)
+
+### Features
+
+* **privacy:** add the @lunora/privacy data-rights package ([#1127](https://github.com/anolilab/lunora/issues/1127)) ([01ad496](https://github.com/anolilab/lunora/commit/01ad496fad562fbeddf3052e71ac6a3abeb38d0a))
+
+
+### Dependencies
+
+* **@lunora/errors:** upgraded to 1.0.0-alpha.53
+* **@lunora/bindings:** upgraded to 1.0.0-alpha.106
+
 ## @lunora/shard-engine [1.0.0-alpha.121](https://github.com/anolilab/lunora/compare/@lunora/shard-engine@1.0.0-alpha.120...@lunora/shard-engine@1.0.0-alpha.121) (2026-10-12)
 
 ### Bug Fixes
