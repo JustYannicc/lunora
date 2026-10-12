@@ -18,12 +18,12 @@ import ssrHandler from "@tanstack/react-start/server-entry";
 import { LUNORA_CRONS } from "../lunora/_generated/crons.js";
 import { LUNORA_FUNCTIONS } from "../lunora/_generated/functions.js";
 import { openApiSpec } from "../lunora/_generated/openapi.js";
-import schema from "../lunora/schema";
+import schema from "../lunora/schema.js";
 import { currentAuth } from "./auth";
+import { withLegacyCookieClearing } from "./auth-legacy-cookies";
 import type { ControlPlaneEnv } from "./control-plane-env";
 import { buildExec } from "./d1-store";
 import { createDeployRouter } from "./deploy/router";
-import { withControlPlaneErasure } from "./operator-removal";
 
 /** Let the studio's global data browser list/page the `.global()` (D1) tables. */
 const d1Introspector = (database: D1DatabaseLike): GlobalIntrospector => {
@@ -79,10 +79,8 @@ const buildWorker = (env: ControlPlaneEnv): LunoraWorker => {
         adminToken: env.LUNORA_ADMIN_TOKEN,
         // Dispatch better-auth's `/api/auth/*` routes inside the worker so the
         // studio and the control plane share an origin.
-        // `removeUser` erases the control plane's data about the user first, and is refused
-        // for an organization's only owner (`operator-removal.ts`).
-        authAdmin: auth ? withControlPlaneErasure(createAuthAdmin(auth), env) : undefined,
-        authHandler: (request) => (auth ? handleAuthRequest(auth, request) : Promise.resolve(undefined)),
+        authAdmin: auth ? createAuthAdmin(auth) : undefined,
+        authHandler: withLegacyCookieClearing(async (request) => (auth ? handleAuthRequest(auth, request) : undefined)),
         // Code-first crons (lunora/crons.ts): the cleanup-expired-previews job
         // fires on the worker's `scheduled()` entry. The control plane is an
         // account-level worker, so its cron triggers fire normally (§2.4).
