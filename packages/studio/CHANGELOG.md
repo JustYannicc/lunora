@@ -1,3 +1,22 @@
+## @lunora/studio [1.0.0-alpha.289](https://github.com/anolilab/lunora/compare/@lunora/studio@1.0.0-alpha.288...@lunora/studio@1.0.0-alpha.289) (2026-10-12)
+
+### Features
+
+* **privacy:** add the @lunora/privacy data-rights package ([#1127](https://github.com/anolilab/lunora/issues/1127)) ([01ad496](https://github.com/anolilab/lunora/commit/01ad496fad562fbeddf3052e71ac6a3abeb38d0a))
+
+
+### Dependencies
+
+* **@lunora/advisor:** upgraded to 1.0.0-alpha.209
+* **@lunora/bindings:** upgraded to 1.0.0-alpha.106
+* **@lunora/client:** upgraded to 1.0.0-alpha.199
+* **@lunora/errors:** upgraded to 1.0.0-alpha.53
+* **@lunora/react:** upgraded to 1.0.0-alpha.212
+* **@lunora/mail:** upgraded to 1.0.0-alpha.105
+* **@lunora/notify:** upgraded to 1.0.0-alpha.78
+* **@lunora/runtime:** upgraded to 1.0.0-alpha.192
+* **@lunora/shard-engine:** upgraded to 1.0.0-alpha.122
+
 ## @lunora/studio [1.0.0-alpha.288](https://github.com/anolilab/lunora/compare/@lunora/studio@1.0.0-alpha.287...@lunora/studio@1.0.0-alpha.288) (2026-10-12)
 
 
