@@ -1,3 +1,14 @@
+## @lunora/config [1.0.0-alpha.341](https://github.com/anolilab/lunora/compare/@lunora/config@1.0.0-alpha.340...@lunora/config@1.0.0-alpha.341) (2026-10-12)
+
+
+### Dependencies
+
+* **@lunora/codegen:** upgraded to 1.0.0-alpha.294
+* **@lunora/container:** upgraded to 1.0.0-alpha.73
+* **@lunora/errors:** upgraded to 1.0.0-alpha.53
+* **@lunora/seed:** upgraded to 1.0.0-alpha.212
+* **@lunora/studio:** upgraded to 1.0.0-alpha.289
+
 ## @lunora/config [1.0.0-alpha.340](https://github.com/anolilab/lunora/compare/@lunora/config@1.0.0-alpha.339...@lunora/config@1.0.0-alpha.340) (2026-10-12)
 
 
