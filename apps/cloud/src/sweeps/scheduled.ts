@@ -8,7 +8,7 @@ import type { D1DatabaseLike } from "@lunora/d1";
 import type { ExecutionContextLike, LunoraWorker, ScheduledControllerLike } from "@lunora/runtime";
 import { Creem } from "creem";
 
-import { authExistingUserIds, authUserEmails } from "../auth";
+import { authUserEmails } from "../auth";
 import { controlPlaneExport } from "../backup/control-plane-export";
 import { offsiteBucket } from "../backup/offsite";
 import { runBackupSweep } from "../backup/sweep";
@@ -58,7 +58,7 @@ import { orgAdminEmails } from "../telemetry/recipients";
 import { runAlertSweep } from "../telemetry/sweep";
 import { runUsageAlertSweep } from "../telemetry/usage-alert-sweep";
 import { runUptimeSweep } from "../uptime/sweep";
-import { runAccountErasureSweep } from "./account-erasure";
+import { sweepPlanRecords } from "./plan-records";
 
 /** The Worker's own entry, as far as a scheduled run reaches it. */
 type ScheduledWorker = Pick<LunoraWorker, "fetch" | "scheduled">;
@@ -711,65 +711,6 @@ const runBuildDrain = (tick: TickContext): Promise<void> =>
         console.error("[builds] build dispatch failed", error);
     });
 
-/** Where the sweep below reaches the account cleanup; never resolved, the request is handed to the Worker in-process. */
-const ACCOUNT_ERASE_URL = "https://control-plane.internal/v1/account/erase";
-
-/**
- * Re-run the control plane's account cleanup for users whose account is gone but
- * whose memberships remain (`./account-erasure.ts`), through the same in-process
-<<<<<<< HEAD
- * `POST /v1/account/erase` the after-delete hook calls. No-ops without the admin
- * token the route is gated on.
-=======
- * `POST /v1/account/erase` the after-delete hook calls, as an operator removal,
- * which is refused for a sole owner: that user is left for the operator and
- * logged. No-ops without the admin token the route is gated on.
->>>>>>> d97f1349c (feat(cloud): refuse operator removal of an organization's only owner)
- */
-const sweepAccountErasure = async (tick: TickContext): Promise<void> => {
-    const token = tick.env.LUNORA_ADMIN_TOKEN;
-
-    if (tick.database === undefined || !token) {
-        return;
-    }
-
-    const result = await runAccountErasureSweep(tick.database, {
-        erase: async (userId) => {
-            const response = await tick.worker.fetch(
-                new Request(ACCOUNT_ERASE_URL, {
-                    body: JSON.stringify({ userId }),
-                    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-                    method: "POST",
-                }),
-                tick.env,
-                tick.context,
-            );
-
-            if (response.status === 409) {
-                const { organizations } = await response.json<{ organizations: { id: string }[] }>();
-
-                return { refused: organizations.map((organization) => organization.id) };
-            }
-
-            return response.ok;
-        },
-        existingUserIds: authExistingUserIds(tick.env),
-    });
-
-    if (result.failed.length > 0) {
-        // eslint-disable-next-line no-console -- the next tick retries them; this is the record that it had to
-        console.error("[account] cleanup of deleted accounts failed", result.failed.length);
-    }
-
-    if (result.leftForOperator.length > 0) {
-        // eslint-disable-next-line no-console -- the operator's signal; the organizations only, not the removed users' ids
-        console.warn(
-            "[account] deleted accounts that are the only owner of an organization were left untouched; promote another member to owner or delete the organization",
-            [...new Set(result.leftForOperator.flatMap((entry) => entry.organizationIds))],
-        );
-    }
-};
-
 const SCHEDULED_SWEEPS: { cron: string; run: (tick: TickContext) => Promise<void>; stage?: Stage }[] = [
     { cron: EVERY_HOUR, run: withStore(sweepTeardown) },
     { cron: EVERY_HOUR, run: withStore(sweepUsageRollback) },
@@ -805,14 +746,14 @@ const SCHEDULED_SWEEPS: { cron: string; run: (tick: TickContext) => Promise<void
     { cron: EVERY_HOUR, run: withStore(sweepCertificates) },
     // Suspended organizations blocked at the edge, recovered ones restored (plan 365 W8).
     { cron: EVERY_HOUR, run: withStore(sweepEdgeBlocks) },
+    // Stored plan records the dispatcher reads during a control-plane outage (plan 476). Sweep stage, so it runs after the code crons above.
+    { cron: EVERY_HOUR, run: (tick) => sweepPlanRecords(tick.env, tick.context, tick.worker) },
     // Anomaly scores over the last completed hour (plan 365 W4). It reads the hour
     // BEFORE this tick, so the usage rollback writing this tick's rows alongside
     // it lands in the next bucket rather than racing this one.
     { cron: EVERY_HOUR, run: withStore(sweepAnomalies) },
     // Monthly usage thresholds, against the ledger the previous tick's readback filled.
     { cron: EVERY_HOUR, run: withStore(sweepUsageAlerts) },
-    // Account deletions whose after-delete cleanup did not finish: memberships of a user the auth layer no longer has.
-    { cron: EVERY_HOUR, run: sweepAccountErasure },
     { cron: EVERY_MINUTE, run: withStore(sweepUptime) },
     // Metric-window rules (error_rate/latency_p95/llm_cost) re-evaluated each
     // minute so quiet windows the ingest never re-examines still fire/clear —
