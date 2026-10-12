@@ -2971,6 +2971,7 @@ interface StudioFeaturesResult {
         name: string;
         unsupported: string[];
     };
+    privacy: boolean;
     queues: boolean;
     scheduler: boolean;
     storage: boolean;
