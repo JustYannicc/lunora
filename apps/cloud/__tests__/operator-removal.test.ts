@@ -2,11 +2,7 @@ import type { AuthAdmin } from "@lunora/auth";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { internal } from "../lunora/_generated/internal";
-<<<<<<< HEAD
-import { DELETED_ACTOR, eraseUser, ERASURE_ACTOR, OWNER_REMOVED_ACTION } from "../lunora/account";
-=======
 import { DELETED_ACTOR, eraseUser, OWNERLESS_ACTION, soleOwnedOrganizations } from "../lunora/account";
->>>>>>> d97f1349c (feat(cloud): refuse operator removal of an organization's only owner)
 import { list as listAuditLog } from "../lunora/audit-log";
 import { OPERATOR_ACTOR, operatorPromoteOwner, setRole } from "../lunora/members";
 import { handleAccountEraseRoute, handleOwnerPromoteRoute } from "../src/deploy/routes/account";
@@ -71,10 +67,6 @@ describe("operator erasure", () => {
 
         const result = await eraseUser.handler(ctx, { operator: true, userId: "usr_me" });
 
-<<<<<<< HEAD
-        expect(result).toStrictEqual({ erased: true, retainedOwnerOf: [{ id: "org_1", name: "Acme" }] });
-        expect(deletes(ops)).toStrictEqual(["m3"]);
-=======
         expect(result).toStrictEqual({ ownerless: [], refused: [{ id: "org_1", name: "Acme" }] });
         expect(ops).toStrictEqual([]);
     });
@@ -87,7 +79,6 @@ describe("operator erasure", () => {
 
         expect(result).toStrictEqual({ ownerless: [] });
         expect(deletes(ops).toSorted((a, b) => a.localeCompare(b))).toStrictEqual(["m1", "m3"]);
->>>>>>> d97f1349c (feat(cloud): refuse operator removal of an organization's only owner)
         expect(patches(ops)).toStrictEqual([
             { id: "a1", patch: { actorUserId: DELETED_ACTOR } },
             { id: "a3", patch: { actorUserId: DELETED_ACTOR } },
@@ -118,21 +109,12 @@ describe("operator erasure", () => {
     });
 
     it("still refuses a self-service deletion by a sole owner", async () => {
+        // Self-service refuses in the before-delete check, which writes nothing; eraseUser runs after it.
         const { ctx, ops } = makeCtx(operatorTables());
 
-        await expect(eraseUser.handler(ctx, { userId: "usr_me" })).resolves.toStrictEqual({ erased: false, soleOwnerOf: [{ id: "org_1", name: "Acme" }] });
+        await expect(soleOwnedOrganizations.handler(ctx, { userId: "usr_me" })).resolves.toStrictEqual([{ id: "org_1", name: "Acme" }]);
         expect(ops).toStrictEqual([]);
     });
-<<<<<<< HEAD
-});
-
-describe("operator erasure route", () => {
-    it("passes the operator flag to the mutation and answers with the kept owner memberships", async () => {
-        const runMutation = vi.fn<(reference: unknown, args: unknown) => Promise<unknown>>(async () => {
-            return { erased: true, retainedOwnerOf: [{ id: "org_1", name: "Acme" }] };
-        });
-        const environment = {
-=======
 
     it("still flags a co-owned organization whose other owner left at the same moment", async () => {
         // org_2 has a co-owner at the operator check, who leaves before the re-read after the writes.
@@ -174,7 +156,6 @@ describe("operator erasure route", () => {
 describe("operator erasure route", () => {
     const environmentWith = (runMutation: (reference: unknown, args: unknown) => Promise<unknown>): RouterEnv =>
         ({
->>>>>>> d97f1349c (feat(cloud): refuse operator removal of an organization's only owner)
             __lunoraCtx: { runAction: vi.fn<() => Promise<unknown>>(), runMutation, runQuery: vi.fn<() => Promise<unknown>>() },
         }) as unknown as RouterEnv;
 
@@ -205,11 +186,6 @@ describe("operator erasure route", () => {
         );
 
         expect(response.status).toBe(200);
-<<<<<<< HEAD
-        await expect(response.json()).resolves.toStrictEqual({ erased: true, retainedOwnerOf: [{ id: "org_1", name: "Acme" }] });
-        expect(runMutation).toHaveBeenCalledWith(internal.account.eraseUser, { operator: true, userId: "usr_me" });
-    });
-=======
         await expect(response.json()).resolves.toStrictEqual({ erased: true, ownerless: [] });
     });
 
@@ -242,7 +218,6 @@ describe("operator erasure route", () => {
         await expect(response.json()).resolves.toStrictEqual({ erased: true, ownerless: [] });
         expect(runMutation).toHaveBeenCalledWith(internal.account.eraseUser, { userId: "usr_me" });
     });
->>>>>>> d97f1349c (feat(cloud): refuse operator removal of an organization's only owner)
 });
 
 describe("operator owner promotion", () => {

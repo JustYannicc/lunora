@@ -28,7 +28,7 @@ import { LunoraError } from "@lunora/errors";
 import { getAuthTables } from "better-auth/db";
 
 import { quoteIdentifier } from "../../../shared/quote-identifier";
-import { decodeWire, encodeWire } from "../../../shared/wire-codec";
+import { decodeWire, encodeWire } from "@lunora/wire";
 import { AUTH_AUDIT_TABLE } from "./audit";
 import type { LunoraAuthOptions } from "./create-auth";
 import type { SqlExecutor } from "./sql-store";

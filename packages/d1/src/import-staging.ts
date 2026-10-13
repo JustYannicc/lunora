@@ -21,7 +21,7 @@
  */
 import type { DatabaseWriterLike, SchemaLike } from "@lunora/shard-engine";
 
-import { decodeWire, encodeWire } from "../../../shared/wire-codec";
+import { decodeWire, encodeWire } from "@lunora/wire";
 import type { ExportRow, ImportError, ImportResult } from "./admin-export-import";
 import { explicitIdConflicts, prepareReplaceRows, writeRow } from "./admin-export-import";
 import type { D1Exec } from "./d1-ctx-db";

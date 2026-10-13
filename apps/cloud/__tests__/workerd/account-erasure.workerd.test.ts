@@ -15,12 +15,6 @@ import { env } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import type { MutationCtx, QueryCtx } from "../../lunora/_generated/server";
-<<<<<<< HEAD
-import { DELETED_ACTOR, eraseUser, OWNERLESS_ACTION, soleOwnedOrganizations } from "../../lunora/account";
-import schema from "../../lunora/schema";
-import { authExistingUserIds, ensureAuth } from "../../src/auth";
-import { buildExec, controlPlaneDatabase } from "../../src/d1-store";
-=======
 import type { EraseUserResult } from "../../lunora/account";
 import { DELETED_ACTOR, eraseUser, OWNERLESS_ACTION, soleOwnedOrganizations } from "../../lunora/account";
 import { OPERATOR_ACTOR, operatorPromoteOwner } from "../../lunora/members";
@@ -29,7 +23,6 @@ import { authExistingUserIds, ensureAuth } from "../../src/auth";
 import { buildExec, controlPlaneDatabase } from "../../src/d1-store";
 import type { AccountErasurePorts } from "../../src/sweeps/account-erasure";
 import { runAccountErasureSweep } from "../../src/sweeps/account-erasure";
->>>>>>> d97f1349c (feat(cloud): refuse operator removal of an organization's only owner)
 
 const database = controlPlaneDatabase(env.DB);
 
@@ -62,6 +55,26 @@ const rows = async (table: string, where: Record<string, unknown>): Promise<Reco
     return page as Record<string, unknown>[];
 };
 
+/** A seeder of organizations in a fresh cell, created at `now`. */
+const organizationSeeder = async (now: number): Promise<(name: string) => Promise<string>> => {
+    const cellId = (await database.insert("cells", {
+        cloudflareAccountId: "acc",
+        createdAt: now,
+        dispatchNamespacePrefix: "ns",
+        name: `cell-${crypto.randomUUID()}`,
+        status: "active",
+    })) as string;
+
+    return async (name) =>
+        (await database.insert("organizations", {
+            cellId,
+            createdAt: now,
+            name,
+            plan: "free",
+            slug: `${name.toLowerCase()}-${crypto.randomUUID()}`,
+        })) as string;
+};
+
 describe("account erasure (workerd, real D1)", () => {
     beforeAll(async () => {
         await runD1GlobalTableMigrations(buildExec(env.DB), schema as unknown as D1CtxDbOptions["schema"]);
@@ -69,21 +82,7 @@ describe("account erasure (workerd, real D1)", () => {
 
     it("removes the memberships, replaces the audit actor, and flags an organization left without an owner", async () => {
         const now = Date.now();
-        const cellId = (await database.insert("cells", {
-            cloudflareAccountId: "acc",
-            createdAt: now,
-            dispatchNamespacePrefix: "ns",
-            name: `cell-${crypto.randomUUID()}`,
-            status: "active",
-        })) as string;
-        const organization = async (name: string): Promise<string> =>
-            (await database.insert("organizations", {
-                cellId,
-                createdAt: now,
-                name,
-                plan: "free",
-                slug: `${name.toLowerCase()}-${crypto.randomUUID()}`,
-            })) as string;
+        const organization = await organizationSeeder(now);
         const shared = await organization("Shared");
         const abandoned = await organization("Abandoned");
         const member = (organizationId: string, userId: string, role: string) => database.insert("members", { createdAt: now, organizationId, role, userId });
@@ -120,8 +119,6 @@ describe("account erasure (workerd, real D1)", () => {
         // Idempotent: a second run (the sweep re-running a finished cleanup) changes nothing and flags nothing new.
         await expect(eraseUser.handler(context(), { userId: "usr_me" })).resolves.toStrictEqual({ ownerless: [] });
     });
-<<<<<<< HEAD
-=======
 
     it("refuses an operator removal of a sole owner with nothing written, and the sweep leaves them alone until another member is promoted", async () => {
         const now = Date.now();
@@ -201,7 +198,6 @@ describe("account erasure (workerd, real D1)", () => {
         await expect(rows("members", { organizationId: lone })).resolves.toStrictEqual([]);
         await expect(rows("auditLog", { organizationId: lone })).resolves.toStrictEqual([]);
     });
->>>>>>> d97f1349c (feat(cloud): refuse operator removal of an organization's only owner)
 });
 
 /**

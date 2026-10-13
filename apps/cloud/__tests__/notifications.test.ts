@@ -183,10 +183,8 @@ const fakeDatabase = (tables: Record<string, Row[]>): ControlPlaneDatabase & { r
 
     return {
         delete: (id, table) => {
-            // The fake owns this record: the alias makes that explicit rather than writing through the parameter.
-            const store = tables;
-
-            store[table ?? ""] = (store[table ?? ""] ?? []).filter((row) => row._id !== id);
+            // eslint-disable-next-line no-param-reassign -- the fake's state is the record the test passed in and reads back
+            tables[table ?? ""] = (tables[table ?? ""] ?? []).filter((row) => row._id !== id);
 
             return Promise.resolve(undefined);
         },

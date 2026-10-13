@@ -23,7 +23,7 @@
  */
 import { LunoraError } from "@lunora/errors";
 
-import { decodeWire, encodeWire } from "../../../shared/wire-codec";
+import { decodeWire, encodeWire } from "@lunora/wire";
 import type { SqlExec } from "./ctx-db";
 import { runSql } from "./do-exec";
 

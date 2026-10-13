@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { COLUMN_LABEL } from "@/lib/typography";
 import { cn } from "@/lib/utils";
 
 import { api } from "../../lunora/_generated/api.js";
@@ -13,7 +14,6 @@ import type { NotificationEvent, NotificationKind } from "../notifications/event
 import { NOTIFICATION_EVENTS, NOTIFICATION_KINDS } from "../notifications/events";
 import { AsyncList } from "./AsyncList";
 import { formatDateTime } from "./format";
-import { COLUMN_LABEL } from "./section-classes";
 import { Field, FieldForm, FormError, Row, RowActions, RowList, StatusBadge } from "./section-ui";
 import type { OrgId } from "./types";
 
@@ -64,10 +64,17 @@ const createChannelRequest = async (body: Record<string, unknown>): Promise<{ id
         method: "POST",
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
-    const payload = (await response.json().catch(() => null)) as { error?: string; id?: string; signingSecret?: string } | null;
 
-    if (!response.ok || !payload?.id) {
-        throw new Error(payload?.error ?? `could not create channel (HTTP ${String(response.status)})`);
+    if (!response.ok) {
+        const failure = (await response.json().catch(() => null)) as { error?: string } | null;
+
+        throw new Error(failure?.error ?? `could not create channel (HTTP ${String(response.status)})`);
+    }
+
+    const payload = (await response.json().catch(() => null)) as { id?: string; signingSecret?: string } | null;
+
+    if (!payload?.id) {
+        throw new Error(`could not create channel (HTTP ${String(response.status)})`);
     }
 
     return payload.signingSecret === undefined ? { id: payload.id } : { id: payload.id, signingSecret: payload.signingSecret };

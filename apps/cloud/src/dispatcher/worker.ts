@@ -516,7 +516,7 @@ const dispatchTo = async (
         // returning it verbatim hands the hibernatable socket back to the
         // eyeball (Lunora's `/_lunora/ws` subscription path). Post-upgrade
         // message invocations run inside the tenant's DO, not back through
-        // this dispatcher — see spikes/ws-dispatch for the live validation.
+        // this dispatcher — see plans/cloud-spikes/ws-dispatch for the live validation.
         const response = await userWorker.fetch(admitted.request);
 
         meterRequest(env.USAGE_ANALYTICS, request, response, route, url, startedAt);
