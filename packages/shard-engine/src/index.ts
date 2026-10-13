@@ -274,6 +274,7 @@ export {
 export type { CapturedMailRow, RecordMailInput } from "./mail-catcher";
 export { clearCapturedMail, ensureMailTable, MAIL_RETENTION, MAIL_TABLE, readCapturedMail, recordCapturedMail } from "./mail-catcher";
 export { NotFoundError } from "./not-found-error";
+export { assertPatchAllowed, operatorFields, patchDependsOnRow, readPatchField, resolvePatch } from "./patch-operators";
 export type { PitrBookmarkResult, PitrRestoreArgs, PitrRestoreResult, PitrStorage } from "./pitr";
 export { armRestore, readBookmark } from "./pitr";
 export {
@@ -285,6 +286,8 @@ export {
     encodeCursor,
     equalityPinnedFields,
     normalizeOrderKeys,
+    nullsFirstOf,
+    nullsOrderSuffix,
     type OrderKeyConstraints,
     softDeleteScope,
     tiebreakDirectionFor,
@@ -322,11 +325,14 @@ export type { RelationExistsMarker, ResolveRelationPredicatesOptions } from "./r
 export {
     assertFlatPredicate,
     assertShapeShardable,
+    composeReadPredicate,
     containsRelationPredicate,
     DEFAULT_MAX_RELATION_KEYS,
     isRelationPredicate,
     resolveRelationPredicates,
 } from "./relation-predicates";
+export type { RelationWriteInfo, RelationWriteMap } from "./relation-writes";
+export { describeRelationWrites } from "./relation-writes";
 export type { ApplyOnDeleteOptions } from "./relations";
 export { applyOnDelete, distinctValues, fanOutScalarCounts, relationHooks, resolveWith, runRowValidators } from "./relations";
 export type {
@@ -375,12 +381,16 @@ export type {
     IndexDefinitionLike,
     IndexRangeBuilderLike,
     NestedWith,
+    NullPlacement,
     OnDeleteActionLike,
     OrderByInput,
     OrderKey,
     PaginationOptions,
+    PatchVerifier,
+    PatchWriteOptions,
     QueryArgs,
     QueryPage,
+    QueryPlan,
     RankBeforeOptions,
     RankBeforeResult,
     RankDirection,
@@ -482,7 +492,7 @@ export type {
 } from "./types";
 export type { VectorBackfillProgress } from "./vector-backfill";
 export { backfillVectorIndexes, VECTOR_BACKFILL_MAX_PAGES } from "./vector-backfill";
-export type { WhereSqlStrategy } from "./where-sql";
+export type { RangeOperandType, WhereSqlStrategy } from "./where-sql";
 export { compileWhereSql, serverInList } from "./where-sql";
 export type { FieldOperators, WhereInput } from "./where-types";
 export { RELATION_EXISTS_KEY } from "./where-types";

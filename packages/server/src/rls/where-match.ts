@@ -22,6 +22,7 @@
  */
 import { LunoraError } from "@lunora/errors";
 
+import { isFieldPath, rangeOperandType, readFieldPath } from "../../../../shared/json-field-path";
 import { isRelationPredicate } from "../../../../shared/relation-operators";
 // `isPlainObject` comes from the wire codec rather than being re-declared here.
 // The prototype check it carries is load-bearing: a local `typeof === "object"`
@@ -131,6 +132,10 @@ const ORDERED_COMPARATORS: Record<string, (left: unknown, right: unknown) => boo
  * so `NOT (col > NULL)` matches every row, NULL cells included. A NULL *cell*
  * against a real operand is UNKNOWN like any other comparison. A non-orderable
  * pair (an object, a boolean) is FALSE rather than coercing.
+ *
+ * A range over a PATH follows the SQL stores' rule instead: it is bracketed to the operand's JSON type
+ * (`rangeOperandType`, shared with the compiler), so `"30" > 5` is FALSE, a boolean operand compares booleans, and an
+ * operand that is none of number, string or boolean (a bigint, an object) matches nothing.
  */
 const matchesOrderedOperators = (field: string, documentValue: unknown, operators: Record<string, unknown>): Ternary => {
     let result: Ternary = TRUE;
@@ -144,14 +149,17 @@ const matchesOrderedOperators = (field: string, documentValue: unknown, operator
 
         assertOperandDefined(field, operator, operand);
 
-        if (!isOrderable(operand)) {
+        const onPath = isFieldPath(field);
+
+        if (onPath ? rangeOperandType(operand) === undefined : !isOrderable(operand)) {
             result = kleeneAnd(result, FALSE);
         } else if (isSqlNull(documentValue)) {
             result = kleeneAnd(result, UNKNOWN);
         } else {
             const compare = ORDERED_COMPARATORS[operator] as (left: unknown, right: unknown) => boolean;
+            const comparable = onPath ? typeof documentValue === typeof operand : isOrderable(documentValue);
 
-            result = kleeneAnd(result, ternaryOf(isOrderable(documentValue) && compare(documentValue, operand)));
+            result = kleeneAnd(result, ternaryOf(comparable && compare(documentValue, operand)));
         }
     }
 
@@ -401,7 +409,8 @@ const evaluateWhere = (document: Record<string, unknown>, where: WhereInput): Te
             continue;
         }
 
-        const documentValue = document[key];
+        // A dotted key reads into an object column, the same way the SQL path does.
+        const documentValue = readFieldPath(document, key);
 
         if (isOperatorBag(value)) {
             result = kleeneAnd(result, matchesOperators(key, documentValue, value));

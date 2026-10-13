@@ -94,12 +94,15 @@
 import { LunoraError } from "@lunora/errors";
 
 import { fnv1aHex } from "../../../../shared/fnv1a";
+import { rootOfFieldPath } from "../../../../shared/json-field-path";
 import { isRelationPredicate } from "../../../../shared/relation-operators";
 import type { Middleware } from "../builder/types";
+import type { QueryPlan } from "../data-model";
 import type { FacadeEntry } from "../facade";
 import { bindOrm, bindTableFacade } from "../facade";
 import { optionalWriterOverride } from "../optional-writer-override";
 import type { ShardRankPageResultLike } from "../rank-page-rows-shape";
+import type { RelationWriteInfosLike } from "../relation-writes";
 import type { AuthLike } from "../rls/middleware";
 import { indexRolePermissions, isFacadeEntry, resolvePolicyAuth } from "../rls/middleware";
 import type { IndexFieldsByTable } from "../schema";
@@ -179,6 +182,7 @@ interface MaskDatabase {
     delete: (id: string, expectedTable?: string) => Promise<void>;
     deleteMany: (ids: ReadonlyArray<string>, options?: { limit?: number }) => Promise<{ deleted: number }>;
     deleteWhere?: (tableName: string, where: Record<string, unknown>, options?: { limit?: number }) => Promise<{ deleted: number }>;
+    explain: (tableName: string, args?: QueryArgs) => Promise<QueryPlan>;
     findFirst: (tableName: string, args?: QueryArgs) => Promise<Record<string, unknown> | null>;
     findFirstOrThrow: (tableName: string, args?: QueryArgs) => Promise<Record<string, unknown>>;
     findMany: (tableName: string, args?: QueryArgs) => Promise<QueryPage>;
@@ -221,6 +225,8 @@ interface MaskDatabase {
         start: Record<string, unknown>,
         options?: { relationMask?: (table: string, rows: Record<string, unknown>[]) => Record<string, unknown>[] },
     ) => Promise<{ continueCursor: null | string; isDone: boolean; nodes: { document: Record<string, unknown> }[] }>;
+
+    relationWrites?: Readonly<Record<string, RelationWriteInfosLike>>;
     replace: (id: string, document: Record<string, unknown>, expectedTable?: string) => Promise<void>;
 }
 
@@ -293,6 +299,18 @@ const maskPage = <Context>(page: QueryPage, columns: MaskColumns<Context>, base:
 };
 
 /**
+ * Is `field` a masked column, or a path into one? A dotted key (`profile.ssn`) reaches INSIDE its first
+ * segment's column, so it is as much a probe of a masked `profile` as `profile` itself. Every guard that compares
+ * a name from the caller to the masked columns goes through here, so the next one cannot forget the path case.
+ * `masked` is a column map or a set of column names.
+ */
+const isMaskedField = (masked: ReadonlySet<string> | Readonly<Record<string, unknown>>, field: string): boolean => {
+    const root = rootOfFieldPath(field);
+
+    return masked instanceof Set ? masked.has(root) : Object.hasOwn(masked, root);
+};
+
+/**
  * SECURITY (value oracle on the index path): `withIndex` / `withSearchIndex`
  * constrain WHICH rows are fetched by a caller-supplied range/search over a
  * column. If that column is masked, a caller can
@@ -355,7 +373,7 @@ const assertIndexFieldsAllowed = <Context>(
     builderCallback(makeRecorder());
 
     for (const field of referenced) {
-        if (field in columns) {
+        if (isMaskedField(columns, field)) {
             throw new LunoraError("MASK_UNSUPPORTED", `${method}() filtering "${tableName}" by masked column "${field}" is not supported`);
         }
     }
@@ -464,7 +482,7 @@ const wrapDatabase = <Context>(
             return;
         }
 
-        const offending = declaredFields.find((field) => field in columns);
+        const offending = declaredFields.find((field) => isMaskedField(columns, field));
 
         if (offending !== undefined) {
             throw new LunoraError(
@@ -665,7 +683,7 @@ const wrapDatabase = <Context>(
             return;
         }
 
-        const offending = fields.find((field): field is string => typeof field === "string" && field in columns);
+        const offending = fields.find((field): field is string => typeof field === "string" && isMaskedField(columns, field));
 
         if (offending !== undefined) {
             throw new LunoraError("MASK_UNSUPPORTED", `${method}() over masked column "${offending}" on "${tableName}" is not supported`);
@@ -739,7 +757,7 @@ const wrapDatabase = <Context>(
         // Column check FIRST: a masked column is refused whatever its value looks
         // like, so `{ ssn: { is: … } }` cannot dress a column filter up as a
         // relation node and walk past the guard.
-        if (scope.has(key)) {
+        if (isMaskedField(scope, key)) {
             throw new LunoraError("MASK_UNSUPPORTED", `${method}() filtering "${label}" by masked column "${key}" is not supported`);
         }
 
@@ -798,8 +816,8 @@ const wrapDatabase = <Context>(
      * rank oracle across pages. Fail closed when an `orderBy` entry references a
      * masked column, mirroring `assertWhereAllowed` and the index-reader guard
      * (`order()` over a masked `withIndex` already throws). `orderBy` is a
-     * `Partial<Record<column, "asc" | "desc">>[]`, so each entry's keys are the
-     * ordered columns.
+     * `Partial<Record<column, direction | { sort, nulls }>>[]`, so each entry's keys
+     * are the ordered columns.
      *
      * `scope` is the masked-column set this level is checked against — the same
      * split `assertWhereScope` makes: {@link rootScope} at the root, and
@@ -817,7 +835,7 @@ const wrapDatabase = <Context>(
             }
 
             for (const field of Object.keys(entry as Record<string, unknown>)) {
-                if (scope.has(field)) {
+                if (isMaskedField(scope, field)) {
                     throw new LunoraError("MASK_UNSUPPORTED", `${method}() ordering "${label}" by masked column "${field}" is not supported`);
                 }
             }
@@ -904,8 +922,43 @@ const wrapDatabase = <Context>(
         assertWithAllowed(tableName, wrapper?.["with"], method);
     };
 
+    // A relation write copies a value between rows: a to-one `connect` stores the target's `references` value in
+    // this row's key, and a to-many one stores this row's `references` value in each child. Both are read through
+    // this middleware, so a masked key or referenced column would be stored as its masked form (a null or a hash
+    // token), and a masked key would never match on `disconnect`. Writes pass through a mask untouched elsewhere,
+    // so the relation is refused rather than let it corrupt stored data.
+    const maskedColumnOf = (tableName: string, column: string): string | undefined =>
+        Object.hasOwn(perTable.get(tableName) ?? {}, column) ? column : undefined;
+
+    const guardedRelationWrites = (): MaskDatabase["relationWrites"] => {
+        if (base.relationWrites === undefined) {
+            return undefined;
+        }
+
+        const guarded: Record<string, Record<string, RelationWriteInfosLike[string]>> = {};
+
+        for (const [tableName, infos] of Object.entries(base.relationWrites)) {
+            guarded[tableName] = Object.fromEntries(
+                Object.entries(infos).map(([name, info]) => {
+                    // The key lives on this table for a to-one and on the target for a to-many; the referenced column is the other.
+                    const [keyTable, referencedTable] = info.kind === "one" ? [tableName, info.table] : [info.table, tableName];
+                    const masked = maskedColumnOf(keyTable, info.field) ?? maskedColumnOf(referencedTable, info.references);
+
+                    return [
+                        name,
+                        masked === undefined ? info : { ...info, refusal: `"${masked}" is masked for this caller, so its stored value cannot be copied` },
+                    ];
+                }),
+            );
+        }
+
+        return guarded;
+    };
+
     const wrapped: MaskDatabase = {
         ...base,
+
+        relationWrites: guardedRelationWrites(),
 
         async deleteWhere(tableName, where, options) {
             assertWhereAllowed(tableName, where, "deleteMany({ where })");
@@ -985,6 +1038,15 @@ const wrapDatabase = <Context>(
             const columns = perTable.get(tableName);
 
             return columns ? maskRow(row, columns, context) : row;
+        },
+
+        // `explain` returns no rows, but it compiles the same statement, and a relation filter is resolved
+        // by reading the child table and inlining the matching ids into `params`. A filter on a masked
+        // column would therefore be the same value oracle `findMany` refuses, so it gets the same guard.
+        async explain(tableName, args) {
+            assertReadArgsAllowed(tableName, args, "explain");
+
+            return base.explain(tableName, args);
         },
 
         async findMany(tableName, args) {

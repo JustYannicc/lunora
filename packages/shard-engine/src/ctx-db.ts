@@ -72,10 +72,10 @@ import {
     AGG_VALUE,
     decodeGroupKeyValue,
     DOC_COLUMN,
+    doWhereSqlStrategy,
     encodeDocJson,
     geoTableName,
     isFtsAvailable,
-    jsonPath,
     jsonPathSql,
     qualifiedJsonPath,
     qualifiedJsonPathSql,
@@ -88,16 +88,8 @@ import {
 import { renderSql, sqliteInList, unionAll, WORKERD_SQLITE_LIMITS } from "./drizzle";
 import { boundingBoxGeohashes, coveringGeohashes, haversineMeters, pointInBoundingBox } from "./geo";
 import { NotFoundError } from "./not-found-error";
-import {
-    applySelect,
-    buildSeekWhere,
-    decodeCursor,
-    encodeCursor,
-    equalityPinnedFields,
-    normalizeOrderKeys,
-    softDeleteScope,
-    uniqueIndexFields,
-} from "./query-args";
+import { assertPatchAllowed, operatorFields, readPatchField, resolvePatch } from "./patch-operators";
+import { applySelect, encodeCursor, softDeleteScope } from "./query-args";
 import { encodePartitionKey, RANK_TIEBREAK, rankPivotConditionSql, rankTableName, resolveRankPartition, sortColumnName } from "./rank";
 import type { ReactiveCache } from "./reactive-cache";
 import { UNVOUCHABLE_DEP } from "./read-footprint";
@@ -108,7 +100,8 @@ import { compileOrderByText, doWhereTextStrategy, paginateStage, scanKeyset, sel
 import { isPushableWhere, whereOfFilter } from "./reader-where-filter";
 import { deriveRelationEdges, findRelated } from "./relation-graph";
 import type { RelationExistsMarker } from "./relation-predicates";
-import { assertFlatPredicate as assertFlatRelationPredicate, resolveRelationPredicates } from "./relation-predicates";
+import { assertFlatPredicate as assertFlatRelationPredicate, composeReadPredicate, resolveRelationPredicates } from "./relation-predicates";
+import { describeRelationWrites } from "./relation-writes";
 import { applyOnDelete, fanOutScalarCounts, relationHooks, resolveWith, runRowValidators } from "./relations";
 import { guardWriter } from "./rls-guard";
 import { CHANGES_PROBE_SQL, deleteRowSql, insertRowSql, patchRowSql, replaceRowSql, rowProbeParams, rowProbeSql } from "./row-statements";
@@ -984,9 +977,6 @@ const runGeoTerminalScored = (
     return filtered ? takeMatching(entries, filters, limit, (entry) => entry.document) : entries;
 };
 
-/** DO drizzle `where` strategy (flat): fields via `json_extract`, values via {@link serializeSqlValue}. */
-const doWhereSqlStrategy: WhereSqlStrategy = { fieldRef: jsonPathSql, serialize: serializeSqlValue };
-
 /**
  * Refuse a SQL-side reduce or group over a column that MAY be stored as an
  * order-preserving sort key. `json_extract` hands SQL the key, not the value:
@@ -1038,7 +1028,7 @@ const makeRelationExistsSqlStrategy = (onRead: ReadHook): WhereSqlStrategy => {
     const scopeStack: string[] = [];
 
     const strategy: WhereSqlStrategy = {
-        fieldRef: jsonPathSql,
+        ...doWhereSqlStrategy,
         relationExists: (request) => {
             const { childWhere, negated, parentTable, relation } = request as RelationExistsMarker;
             const alias = `__rel_${String(aliasCounter)}`;
@@ -1062,7 +1052,6 @@ const makeRelationExistsSqlStrategy = (onRead: ReadHook): WhereSqlStrategy => {
 
             return negated ? dsql`NOT ${body}` : body;
         },
-        serialize: serializeSqlValue,
     };
 
     return strategy;
@@ -1079,7 +1068,7 @@ const makeRelationExistsTextStrategy = (onRead: ReadHook): WhereSqlStrategy<Text
     const scopeStack: string[] = [];
 
     const strategy: WhereSqlStrategy<TextFragment> = {
-        fieldRef: (field) => rawText(jsonPath(field)),
+        ...doWhereTextStrategy,
         relationExists: (request) => {
             const { childWhere, negated, parentTable, relation } = request as RelationExistsMarker;
             const alias = `__rel_${String(aliasCounter)}`;
@@ -1103,7 +1092,6 @@ const makeRelationExistsTextStrategy = (onRead: ReadHook): WhereSqlStrategy<Text
 
             return negated ? joinText("NOT ", body) : body;
         },
-        serialize: serializeSqlValue,
     };
 
     return strategy;
@@ -1935,6 +1923,7 @@ const createShardCtxDb = (options: CtxDbOptions): DatabaseWriterLike => {
      * already the expensive part.
      */
     const relationEdges = deriveRelationEdges(schema);
+    const relationWrites = describeRelationWrites(schema);
 
     /**
      * This mutation's `_commitSeq`, allocated on first use and reused for every
@@ -2263,7 +2252,9 @@ const createShardCtxDb = (options: CtxDbOptions): DatabaseWriterLike => {
      * @returns `true` when the patch must be dropped
      */
     const isStalePatch = (tableName: string, id: string, patch: Record<string, unknown>, current: Record<string, unknown>): boolean => {
-        if (schema.tables[tableName]?.dropStalePatchesMode !== true || !cdcEnabled) {
+        const definition = schema.tables[tableName];
+
+        if (definition?.dropStalePatchesMode !== true || !cdcEnabled) {
             return false;
         }
 
@@ -2283,7 +2274,16 @@ const createShardCtxDb = (options: CtxDbOptions): DatabaseWriterLike => {
         // `bigint`/`Date`/bytes, and the plain stringifier throws on the first of
         // those rather than comparing it. Sorted-key encoding also means two
         // structurally identical objects compare equal regardless of key order.
-        return Object.keys(stripReservedPatchFields(patch)).some((field) => stableWireKey(seen[field]) !== stableWireKey(current[field]));
+        // An operator (`{ increment: 1 }`) is a function of whatever the row holds when it runs,
+        // not a value the caller saw, so a moved field can never make it stale. Judging it by
+        // `seen` would drop an offline client's queued increment whenever anyone else bumped
+        // the counter, and report success.
+        const relative = operatorFields(definition, patch);
+
+        // A dotted key is judged by the value at the end of its path, so a sibling edit inside the same object column is not a conflict.
+        return Object.keys(stripReservedPatchFields(patch)).some(
+            (field) => !relative.has(field) && stableWireKey(readPatchField(seen, field)) !== stableWireKey(readPatchField(current, field)),
+        );
     };
 
     /** True when `tableName` is declared `.global()` (i.e. lives in D1, not this DO). */
@@ -2890,6 +2890,36 @@ const createShardCtxDb = (options: CtxDbOptions): DatabaseWriterLike => {
         return { applied: true, doc: locateRowById(id, tableName)?.row ?? null };
     };
 
+    /**
+     * Compile a `findMany` read down to its SQL statement. The predicate, ordering and page size come
+     * from {@link composeReadPredicate}; this only emits them as text. `read` only feeds the EXISTS
+     * push-down stamps; a semijoin lookup goes through the ordinary related-table read and stamps like
+     * any read. Dependency stamping for the main table is the caller's: `findMany` does it, `explain`
+     * does not, because describing a query must not make a live query subscribe to the table it describes.
+     */
+    const compileFindMany = async (tableName: string, definition: TableDefinitionLike, args: QueryArgs, read: typeof onRead) => {
+        const { fetchLimit, limit, orderKeys, predicate } = await composeReadPredicate(definition, args, {
+            canPushExists: relationExistsPushDownEnabled ? canPushRelationExists : undefined,
+            existsPushMode: relationExistsPushDown === "always" ? "always" : "auto",
+            fetcher: relationPredicateFetcher,
+            maxRelationKeys,
+            schema,
+            tableName,
+        });
+
+        // A pushed-down relation node leaves a `__relationExists` marker in
+        // the tree; compile it with the EXISTS-aware strategy. Without the
+        // fast path (or with no relation predicates) the flat strategy is
+        // equivalent and cheaper, so only build the per-query strategy when
+        // the push-down is enabled.
+        const whereStrategy = relationExistsPushDownEnabled ? makeRelationExistsTextStrategy(read) : doWhereTextStrategy;
+        const whereCondition = compileWhereSql(predicate, whereStrategy, textFragments);
+
+        const statement = selectPageSql(tableName, whereCondition, compileOrderByText(orderKeys), fetchLimit);
+
+        return { limit, orderKeys, statement };
+    };
+
     const writer: DatabaseWriterLike = {
         // `ctx.db.system` — best-effort read-only system tables. Assigned here so
         // it rides along on the same `DatabaseWriterLike` the generated ctx hands
@@ -3118,7 +3148,8 @@ const createShardCtxDb = (options: CtxDbOptions): DatabaseWriterLike => {
             // Soft delete unless the caller forced a physical removal (`hard`).
             // `softField` undefined ⇒ the legacy physical path.
             const hard = deleteOptions?.hard === true;
-            const softField = !hard && definition?.softDeleteMode ? definition.softDeleteMode.field : undefined;
+            const softDeleteTable = !hard && definition?.softDeleteMode ? definition : undefined;
+            const softField = softDeleteTable?.softDeleteMode?.field;
 
             // Idempotent: a second soft delete of an already-soft-deleted row is a
             // no-op (re-running the cascade + broadcast would be spurious).
@@ -3165,7 +3196,7 @@ const createShardCtxDb = (options: CtxDbOptions): DatabaseWriterLike => {
             ensureBackfilledForTable(tableName);
             ensureRankBackfilledForTable(tableName);
 
-            if (softField) {
+            if (softDeleteTable && softField) {
                 // Soft delete: keep the row, stamp the marker column. Mechanically
                 // an UPDATE, so companions re-sync to the merged doc and the delta
                 // broadcasts as `update` — live LIST queries re-run and drop the
@@ -3179,7 +3210,11 @@ const createShardCtxDb = (options: CtxDbOptions): DatabaseWriterLike => {
                 // the row and advances `_commitSeq` like any other — otherwise a
                 // changefeed paging on the sequence would never observe the
                 // tombstone and would keep serving a row its source considers gone.
-                const merged: Record<string, unknown> = { ...existing, ...commitSeqFields(tableName), [softField]: clock(), _id: id };
+                const marker = { [softField]: clock() };
+                const merged: Record<string, unknown> = { ...existing, ...commitSeqFields(tableName), ...marker, _id: id };
+
+                // The marker is this write's explicit field; every other `$onUpdateFn` column restamps like any other update.
+                applyOnUpdate(softDeleteTable, marker, merged, auth);
 
                 runGuardedWrite(sql, tableName, patchRowSql(tableName), [encodeDocJson(merged), id, existingJson]);
 
@@ -3393,53 +3428,8 @@ const createShardCtxDb = (options: CtxDbOptions): DatabaseWriterLike => {
                 onRead(tableName);
             }
 
-            const orderKeys = normalizeOrderKeys(args.orderBy, findManyDefinition.shape, {
-                pinned: equalityPinnedFields(args.where),
-                uniqueBy: uniqueIndexFields(findManyDefinition.indexes, findManyDefinition.shape),
-            });
-            const seek = args.cursor ? buildSeekWhere(orderKeys, decodeCursor(args.cursor)) : undefined;
+            const { limit, orderKeys, statement } = await compileFindMany(tableName, findManyDefinition, args, onRead);
 
-            // RLS (3.2) / aggregates (3.1) inject a `baseWhere` we AND-merge
-            // before the keyset seek so policy + cursor compose cleanly.
-            let predicate: WhereInput | undefined = mergeWhere(args.baseWhere, args.where);
-
-            // Soft delete: hide rows whose marker column is set, unless the caller
-            // opted in via `includeDeleted`. AND-merged like a baseWhere so it
-            // composes with RLS + the keyset seek; relation `with` loads route back
-            // through this `findMany`, so they inherit the scope automatically.
-            predicate = mergeWhere(predicate, softDeleteScope(findManyDefinition.softDeleteMode, args.includeDeleted));
-
-            // Rewrite any relation-crossing predicate (`{ author: { is: W } }`,
-            // `{ posts: { some: W } }`, …) into a flat `IN`/`NOT IN` via a
-            // backend-routed child fetch, *before* compiling — the predicate may
-            // arrive from caller `where` or an injected RLS `baseWhere`. A read
-            // with no relation predicates returns unchanged (no extra query).
-            predicate = await resolveRelationPredicates(predicate, {
-                canPushExists: relationExistsPushDownEnabled ? canPushRelationExists : undefined,
-                existsPushMode: relationExistsPushDown === "always" ? "always" : "auto",
-                fetcher: relationPredicateFetcher,
-                maxRelationKeys,
-                relationBaseWhere: args.relationBaseWhere,
-                schema,
-                tableName,
-            });
-
-            if (seek) {
-                predicate = predicate ? { AND: [predicate, seek] } : seek;
-            }
-
-            // A pushed-down relation node leaves a `__relationExists` marker in
-            // the tree; compile it with the EXISTS-aware strategy. Without the
-            // fast path (or with no relation predicates) the flat strategy is
-            // equivalent and cheaper, so only build the per-query strategy when
-            // the push-down is enabled.
-            const whereStrategy = relationExistsPushDownEnabled ? makeRelationExistsTextStrategy(onRead) : doWhereTextStrategy;
-            const whereCondition = compileWhereSql(predicate, whereStrategy, textFragments);
-
-            const limit = typeof args.limit === "number" ? Math.max(0, Math.floor(args.limit)) : undefined;
-            // Over-fetch by one row to learn whether another page exists without
-            // issuing a second query.
-            const statement = selectPageSql(tableName, whereCondition, compileOrderByText(orderKeys), limit === undefined ? undefined : limit + 1);
             const rows = runSql(sql, statement.text, ...statement.params).toArray();
 
             // A full scan stamps ONE `*scan` dep instead of a dep per row, so the
@@ -3510,6 +3500,25 @@ const createShardCtxDb = (options: CtxDbOptions): DatabaseWriterLike => {
                 isDone: !hasMore,
                 page: applySelect(page, args.select, args.with),
             };
+        },
+
+        async explain(tableName, args = {}) {
+            const global = globalWriterFor(tableName, "explain");
+
+            if (global) {
+                return global.explain(tableName, args);
+            }
+
+            const definition = schema.tables[tableName];
+
+            if (!definition) {
+                throw new LunoraError("INTERNAL", `unknown table: ${tableName}`);
+            }
+
+            const { statement } = await compileFindMany(tableName, definition, args, () => undefined);
+            const steps = runSql(sql, `EXPLAIN QUERY PLAN ${statement.text}`, ...statement.params).toArray();
+
+            return { params: statement.params, plan: steps.map((step) => String(step["detail"])), sql: statement.text };
         },
 
         async get(id, expectedTable) {
@@ -4008,7 +4017,7 @@ const createShardCtxDb = (options: CtxDbOptions): DatabaseWriterLike => {
             return normalizeIdStructurally(schema, tableName, id);
         },
 
-        async patch(id, patch, expectedTable) {
+        async patch(id, patch, expectedTable, patchOptions) {
             // Single probe — eliminates the redundant `tableNameFromId` +
             // `writer.get` chain that doubled the SQL round-trips per patch
             // on the prior code path.
@@ -4032,7 +4041,7 @@ const createShardCtxDb = (options: CtxDbOptions): DatabaseWriterLike => {
                     // actually sends.
                     meterWrite(patch);
 
-                    await global.patch(id, patch, expectedTable);
+                    await global.patch(id, patch, expectedTable, patchOptions);
                     return;
                 }
 
@@ -4063,9 +4072,15 @@ const createShardCtxDb = (options: CtxDbOptions): DatabaseWriterLike => {
                 return;
             }
 
-            const merged = { ...existing, ...stripReservedPatchFields(patch), ...commitSeqFields(tableName), _id: id };
+            // Atomic field operators (`{ increment: 1 }`, …) resolve against the row just
+            // read; the DO runs one mutation at a time, so no other write can land between.
+            const effectivePatch = resolvePatch(tableDefinition, patch, existing);
+            const merged = { ...existing, ...stripReservedPatchFields(effectivePatch), ...commitSeqFields(tableName), _id: id };
 
-            applyOnUpdate(tableDefinition, patch, merged, auth);
+            applyOnUpdate(tableDefinition, effectivePatch, merged, auth);
+
+            // The caller's authorization verdict, taken on the row this write actually produces.
+            assertPatchAllowed(patchOptions, existing, merged);
 
             // Run column refinements on the merged row so a patch that flips a
             // field to an invalid value (e.g. negative amount) is rejected
@@ -4145,7 +4160,9 @@ const createShardCtxDb = (options: CtxDbOptions): DatabaseWriterLike => {
             // a bounded number of times, so a row that no longer matches reports `applied: false`.
             for (let attempt = 1; attempt <= PATCH_IF_MAX_ATTEMPTS; attempt += 1) {
                 // eslint-disable-next-line no-await-in-loop -- each attempt re-reads the row after a conflict
-                const outcome = await patchIfAttempt(tableName, id, args, attempt < PATCH_IF_MAX_ATTEMPTS, (patch) => writer.patch(id, patch, tableName));
+                const outcome = await patchIfAttempt(tableName, id, args, attempt < PATCH_IF_MAX_ATTEMPTS, (patch) =>
+                    writer.patch(id, patch, tableName, { verify: args.verify }),
+                );
 
                 if (outcome !== undefined) {
                     return outcome;
@@ -4212,6 +4229,9 @@ const createShardCtxDb = (options: CtxDbOptions): DatabaseWriterLike => {
          * per table can run it itself — see `DatabaseWriterLike.relationEdges`.
          */
         relationEdges,
+
+        /** Published for the table facade's nested relation writes — see `DatabaseWriterLike.relationWrites`. */
+        relationWrites,
 
         query(tableName) {
             const global = globalWriterFor(tableName, "query");

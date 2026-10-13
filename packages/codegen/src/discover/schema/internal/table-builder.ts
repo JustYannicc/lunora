@@ -43,12 +43,14 @@ const ON_DELETE_ACTIONS = new Set(["cascade", "restrict", "set null"]);
 const RESERVED_TABLE_NAMES = new Set([
     "aggregate",
     "asId",
+    "assertPatchAllowed",
     "cdcChangedTables",
     "count",
     "delete",
     "deleteAll",
     "deleteMany",
     "deleteWhere",
+    "explain",
     "findFirst",
     "findFirstOrThrow",
     "findMany",
@@ -70,6 +72,7 @@ const RESERVED_TABLE_NAMES = new Set([
     "rankPageRows",
     "related",
     "relationEdges",
+    "relationWrites",
     "replace",
     "restore",
     "system",
@@ -455,25 +458,45 @@ interface TableBuilderAccumulator {
     searchIndexes: SearchIndexIR[];
     shardMode: TableIR["shardMode"];
     softDelete?: { field: string };
+    /** One entry per `.timestamps()` call; more than one is refused. */
+    timestampsFields: string[];
     ttl?: TtlIR;
     vectorIndexes: VectorIndexIR[];
 }
 
-/** Read the marker-column name off a `.softDelete({ field })` options arg; defaults to `deletedAt`. */
-const softDeleteFieldOf = (optionsArgument: Node | undefined): string => {
-    if (optionsArgument && Node.isObjectLiteralExpression(optionsArgument)) {
-        const fieldProperty = findObjectProperty(optionsArgument, "field");
-
-        if (fieldProperty && Node.isPropertyAssignment(fieldProperty)) {
-            const initializer = fieldProperty.getInitializer();
-
-            if (initializer && Node.isStringLiteral(initializer)) {
-                return initializer.getLiteralText();
-            }
-        }
+/**
+ * Read the column name off a `.softDelete({ field })` / `.timestamps({ field })` options arg; `fallback` when absent.
+ * Codegen cannot evaluate an expression, and silently falling back would generate types for a column the runtime
+ * never creates, so a `field` that is not a string literal is refused.
+ */
+const fieldOptionOf = (optionsArgument: Node | undefined, fallback: string): string => {
+    if (optionsArgument === undefined) {
+        return fallback;
     }
 
-    return "deletedAt";
+    if (!Node.isObjectLiteralExpression(optionsArgument)) {
+        throw diagnosticAt(
+            optionsArgument,
+            "the options must be an object literal — codegen reads the column name from the source and cannot evaluate a variable or an expression here.",
+        );
+    }
+
+    const fieldProperty = findObjectProperty(optionsArgument, "field");
+
+    if (fieldProperty === undefined) {
+        return fallback;
+    }
+
+    const initializer = Node.isPropertyAssignment(fieldProperty) ? fieldProperty.getInitializer() : undefined;
+
+    if (initializer && Node.isStringLiteral(initializer)) {
+        return initializer.getLiteralText();
+    }
+
+    throw diagnosticAt(
+        fieldProperty,
+        "`field` must be a string literal — codegen reads the column name from the source and cannot evaluate a constant or an expression here.",
+    );
 };
 
 /**
@@ -594,7 +617,7 @@ const applyTableMethod = (accumulator: TableBuilderAccumulator, method: string, 
         case "softDelete": {
             // `.softDelete()` or `.softDelete({ field: "removedAt" })` — read the
             // optional marker-column name off the options object (default `deletedAt`).
-            accumulator.softDelete = { field: softDeleteFieldOf(args[0]) };
+            accumulator.softDelete = { field: fieldOptionOf(args[0], "deletedAt") };
 
             break;
         }
@@ -605,6 +628,13 @@ const applyTableMethod = (accumulator: TableBuilderAccumulator, method: string, 
             // ingest loop, not a discoverable `ctx.db.insert`).
             accumulator.externalSource = parseSourceCall(args);
             accumulator.externallyManaged = true;
+
+            break;
+        }
+
+        case "timestamps": {
+            // `.timestamps()` or `.timestamps({ field: "modifiedAt" })`.
+            accumulator.timestampsFields.push(fieldOptionOf(args[0], "updatedAt"));
 
             break;
         }
@@ -704,6 +734,48 @@ const assertNoGlobalTtl = (expression: Expression, table: string, accumulator: T
     }
 };
 
+/**
+ * `.softDelete()` and `.timestamps()` inject a column into the shape, mirroring the runtime builder, so `Doc_*` /
+ * `Insert_*` carry it. A column the author declared wins, and the runtime builder's refusals are repeated here so
+ * a schema that throws at load fails at codegen too: a second `.timestamps()`, the soft-delete field reused, or a
+ * declared column that would not restamp on update.
+ */
+const withInjectedColumns = (expression: Expression, shape: Record<string, ValidatorIR>, accumulator: TableBuilderAccumulator): Record<string, ValidatorIR> => {
+    const { softDelete, timestampsFields } = accumulator;
+    const injected: Record<string, ValidatorIR> = {};
+
+    if (softDelete && !(softDelete.field in shape)) {
+        injected[softDelete.field] = { inner: { column: { notNull: false }, kind: "number" }, kind: "optional" };
+    }
+
+    const [timestamps] = timestampsFields;
+
+    if (timestamps === undefined) {
+        return { ...shape, ...injected };
+    }
+
+    if (timestampsFields.length > 1) {
+        throw diagnosticAt(expression, "`.timestamps()` was called more than once; one table tracks one last-change column.");
+    }
+
+    if (timestamps === softDelete?.field) {
+        throw diagnosticAt(expression, `\`.softDelete()\` and \`.timestamps()\` both use "${timestamps}"; give one of them another field.`);
+    }
+
+    const declared = shape[timestamps];
+
+    if (declared === undefined) {
+        injected[timestamps] = { column: { hasDefault: true, hasOnUpdate: true, notNull: true }, kind: "timestamp" };
+    } else if (declared.kind !== "timestamp" || declared.column?.hasOnUpdate !== true || declared.column.hasDefault !== true) {
+        throw diagnosticAt(
+            expression,
+            `\`.timestamps()\` would add "${timestamps}", but the table already declares it as something other than \`v.timestamp().defaultNow().$onUpdateFn(() => Date.now())\`; remove the column or declare it that way.`,
+        );
+    }
+
+    return { ...shape, ...injected };
+};
+
 const parseTableBuilder = (expression: Expression, name: string): TableIR => {
     const accumulator: TableBuilderAccumulator = {
         commitOrdered: false,
@@ -716,6 +788,7 @@ const parseTableBuilder = (expression: Expression, name: string): TableIR => {
         relations: [],
         searchIndexes: [],
         shardMode: "root",
+        timestampsFields: [],
         vectorIndexes: [],
     };
     let shape: Record<string, ValidatorIR> = {};
@@ -755,13 +828,7 @@ const parseTableBuilder = (expression: Expression, name: string): TableIR => {
         }
     }
 
-    // `.softDelete()` injects the marker column into the shape (mirrors the
-    // runtime builder) so `Doc_*`/`Insert_*` carry it — optional + nullable
-    // (`number | null | undefined`), absent on a live row. The user's own
-    // declaration of the column wins (matches the runtime `if (!(field in shape))`).
-    if (accumulator.softDelete && !(accumulator.softDelete.field in shape)) {
-        shape = { ...shape, [accumulator.softDelete.field]: { inner: { column: { notNull: false }, kind: "number" }, kind: "optional" } };
-    }
+    shape = withInjectedColumns(expression, shape, accumulator);
 
     assertNoFtsShadowCollision(expression, name, accumulator.searchIndexes);
 

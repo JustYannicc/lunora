@@ -1,4 +1,5 @@
 import type { IndexKeyEntry } from "./read-write-set";
+import type { RelationWriteMap } from "./relation-writes";
 import type { SystemDatabaseReader } from "./system-reader";
 import type { SubscriptionIdentity } from "./types";
 import type { WhereInput } from "./where-types";
@@ -98,6 +99,9 @@ export interface ValidatorLike {
         readonly column?: ColumnMetaLike;
         readonly inner?: ValidatorLike;
         readonly members?: ReadonlyArray<ValidatorLike>;
+
+        /** A `v.object({...})`'s fields: what a dotted path into the column is checked against. */
+        readonly shape?: Readonly<Record<string, ValidatorLike>>;
         readonly tableName?: string;
         readonly value?: unknown;
     };
@@ -166,6 +170,21 @@ export interface GuardableSchema {
 export interface SchemaLike {
     readonly rlsMode?: "required";
     readonly tables: Record<string, TableDefinitionLike>;
+}
+
+/**
+ * Decides whether an update may be written, given the row as the store read it and the row it is
+ * about to write. A layer that authorizes writes (the RLS gate) passes one so the verdict is taken
+ * against the store's own read, not an earlier one: an atomic operator (`{ increment: 1 }`)
+ * resolves to a value that depends on the row, so a check made before the store reads can approve
+ * a different post-image than the one that lands.
+ */
+export type PatchVerifier = (previous: Record<string, unknown>, next: Record<string, unknown>) => boolean;
+
+/** Optional extras for a single `patch` call. */
+export interface PatchWriteOptions {
+    /** Checked on every attempt, after operators resolve and before the write; `false` raises FORBIDDEN. */
+    verify?: PatchVerifier;
 }
 
 /** Structural mirror of `@lunora/server`'s `TableDefinition`. */
@@ -268,8 +287,15 @@ export interface ResolveWithResult {
 
 export type SortDirection = "asc" | "desc";
 
-/** A single `{ field: "asc" | "desc" }` entry; `orderBy` is an ordered list of these. */
-export type OrderByInput = Record<string, SortDirection>;
+/** Where rows holding SQL NULL sort among the others. */
+export type NullPlacement = "first" | "last";
+
+/**
+ * A single `{ field: "asc" | "desc" }` entry; `orderBy` is an ordered list of these. The object form
+ * `{ field: { sort: "desc", nulls: "last" } }` also says where NULLs go. Without it NULLs sort
+ * first ascending and last descending, as SQLite orders them.
+ */
+export type OrderByInput = Record<string, SortDirection | { nulls: NullPlacement; sort: SortDirection }>;
 
 export interface QueryArgs {
     baseWhere?: WhereInput;
@@ -346,6 +372,16 @@ export interface CrossShardReadArgs {
  * `toCrossShardArgs` in `@lunora/sql-store`.
  */
 export type RelationMask = (table: string, rows: Record<string, unknown>[]) => Record<string, unknown>[];
+
+/** What `explain` returns: the SQL a read compiles to and the database's plan for it. */
+export interface QueryPlan {
+    /** The bound parameters, in order. */
+    params: unknown[];
+    /** One line per plan step, as the database reports it (`SEARCH messages USING INDEX by_room (room=?)`). */
+    plan: string[];
+    /** The statement the read compiles to. */
+    sql: string;
+}
 
 export interface QueryPage {
     continueCursor: null | string;
@@ -480,6 +516,13 @@ export interface OrderKey {
      * which is the row-losing direction.
      */
     nullable: boolean;
+
+    /**
+     * Where this key's NULLs sort, when the caller asked for something other than the default. Set
+     * only on a nullable key: on a column that never holds NULL the placement is moot, and the
+     * clause it would add can cost the index.
+     */
+    nulls?: NullPlacement;
 }
 
 /** Query-options shape shared by every aggregate reader. */
@@ -699,6 +742,14 @@ export interface DatabaseWriterLike {
     asId?: (tableName: string, id: string) => string;
 
     /**
+     * Check that the caller's update policy would let row `id` be written, without writing it: no row changes,
+     * no trigger fires, no timestamp, version or change-data-capture entry moves. A relation-only patch uses it to
+     * gate its parent row, which it never writes. Optional: the RLS middleware evaluates the update policy here, and
+     * a writer with no policy layer has no update rule to check. The guard gates only the table.
+     */
+    assertPatchAllowed?: (id: string, expectedTable?: string) => Promise<void>;
+
+    /**
      * Which tables this store's change-data-capture log recorded a write to
      * after `sinceSeq`, plus the log's current head — a metadata-only probe that
      * reads no documents.
@@ -749,7 +800,14 @@ export interface DatabaseWriterLike {
     delete: (id: string, expectedTable?: string, options?: { hard?: boolean }) => Promise<void>;
     deleteAll?: (tableName: string, options?: { chunkSize?: number; hard?: boolean }) => Promise<{ deleted: number }>;
     deleteMany?: (ids: ReadonlyArray<string>, options?: { limit?: number }, expectedTable?: string) => Promise<{ deleted: number }>;
+
     deleteWhere?: (tableName: string, where: WhereInput, options?: { limit?: number }) => Promise<{ deleted: number }>;
+
+    /**
+     * Describe how the store would run `findMany(tableName, args)`: the statement, its bound
+     * parameters, and the database's own plan for it, one line per step.
+     */
+    explain: (tableName: string, args?: QueryArgs) => Promise<QueryPlan>;
     findFirst: (tableName: string, args?: QueryArgs) => Promise<Record<string, unknown> | null>;
     findFirstOrThrow: (tableName: string, args?: QueryArgs) => Promise<Record<string, unknown>>;
     findMany: (tableName: string, args?: QueryArgs) => Promise<QueryPage>;
@@ -768,7 +826,8 @@ export interface DatabaseWriterLike {
     ) => Promise<string[]>;
     lookupById?: (id: string, expectedTable?: string) => Promise<null | { row: Record<string, unknown>; tableName: string }>;
     normalizeId: (tableName: string, id: string) => null | string;
-    patch: (id: string, patch: Record<string, unknown>, expectedTable?: string) => Promise<void>;
+
+    patch: (id: string, patch: Record<string, unknown>, expectedTable?: string, options?: PatchWriteOptions) => Promise<void>;
 
     /**
      * Conditional patch: apply `patch` to row `id` of `tableName` only while the
@@ -792,7 +851,7 @@ export interface DatabaseWriterLike {
     patchIf?: (
         tableName: string,
         id: string,
-        args: { patch: Record<string, unknown>; where: WhereInput },
+        args: { patch: Record<string, unknown>; verify?: PatchVerifier; where: WhereInput },
     ) => Promise<{ applied: boolean; doc: Record<string, unknown> | null }>;
     patchMany?: (
         patches: ReadonlyArray<{ id: string; patch: Record<string, unknown> }>,
@@ -840,6 +899,9 @@ export interface DatabaseWriterLike {
      * otherwise gate.
      */
     relationEdges?: ReadonlyArray<RelationEdge>;
+
+    /** Per-relation facts the table facade needs for nested relation writes (`connect`/`disconnect`/`set`). */
+    relationWrites?: RelationWriteMap;
     replace: (id: string, document: Record<string, unknown>, expectedTable?: string, options?: { allowExplicitId?: boolean }) => Promise<void>;
     restore?: (id: string, expectedTable?: string) => Promise<void>;
 

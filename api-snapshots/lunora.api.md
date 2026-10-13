@@ -6481,6 +6481,10 @@ Re-exported from `@lunora/server` — signature tracked at its source.
 
 Re-exported from `@lunora/server` — signature tracked at its source.
 
+### `InsertValues` (type)
+
+Re-exported from `@lunora/server` — signature tracked at its source.
+
 ### `LoadWith` (type)
 
 Re-exported from `@lunora/server` — signature tracked at its source.
@@ -6497,6 +6501,10 @@ Re-exported from `@lunora/server` — signature tracked at its source.
 
 Re-exported from `@lunora/server` — signature tracked at its source.
 
+### `PatchValues` (type)
+
+Re-exported from `@lunora/server` — signature tracked at its source.
+
 ### `QueryArgs` (interface)
 
 Re-exported from `@lunora/server` — signature tracked at its source.
@@ -6509,11 +6517,19 @@ Re-exported from `@lunora/server` — signature tracked at its source.
 
 Re-exported from `@lunora/server` — signature tracked at its source.
 
+### `QueryPlan` (interface)
+
+Re-exported from `@lunora/server` — signature tracked at its source.
+
 ### `RankPage` (interface)
 
 Re-exported from `@lunora/server` — signature tracked at its source.
 
 ### `RankResult` (interface)
+
+Re-exported from `@lunora/server` — signature tracked at its source.
+
+### `RelationWrites` (type)
 
 Re-exported from `@lunora/server` — signature tracked at its source.
 
@@ -6562,6 +6578,14 @@ Re-exported from `@lunora/server` — signature tracked at its source.
 Re-exported from `@lunora/server` — signature tracked at its source.
 
 ### `TableWriterFacade` (interface)
+
+Re-exported from `@lunora/server` — signature tracked at its source.
+
+### `ToManyRelationWrite` (type)
+
+Re-exported from `@lunora/server` — signature tracked at its source.
+
+### `ToOneRelationWrite` (type)
 
 Re-exported from `@lunora/server` — signature tracked at its source.
 

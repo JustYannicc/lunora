@@ -556,6 +556,7 @@ interface FacadeEntry {
         }>;
     };
     exists: (where?: unknown) => Promise<boolean>;
+    explain: (args?: unknown) => Promise<unknown>;
     findFirst: (args?: unknown) => Promise<unknown>;
     findFirstOrThrow: (args?: unknown) => Promise<unknown>;
     findMany: (args?: unknown) => Promise<unknown>;
@@ -616,6 +617,7 @@ interface FacadeWriterLike {
     }): Promise<{
         deleted: number;
     }>;
+    explain(tableName: string, args?: unknown): Promise<unknown>;
     findFirst(tableName: string, args?: unknown): Promise<unknown>;
     findFirstOrThrow(tableName: string, args?: unknown): Promise<unknown>;
     findMany(tableName: string, args?: unknown): Promise<unknown>;
@@ -649,6 +651,7 @@ interface FacadeWriterLike {
     };
     rank(tableName: string, indexName: string, options: unknown): Promise<unknown>;
     rankPage(tableName: string, indexName: string, options?: unknown): Promise<unknown>;
+    readonly relationWrites?: Readonly<Record<string, RelationWriteInfosLike>>;
     replace(id: string, document: Record<string, unknown>, expectedTable?: string): Promise<void>;
     restore?(id: string, expectedTable?: string): Promise<void>;
 }
@@ -2518,6 +2521,9 @@ interface TableBuilder<Shape extends Record<string, Validator> = Record<string, 
         field?: string;
     }) => TableBuilder<Shape>;
     source: (definition: ExternalSourceDefinition) => TableBuilder<Shape>;
+    timestamps: <Field extends string = "updatedAt">(options?: {
+        field?: Field;
+    }) => TableBuilder<string extends Field ? Shape : Field extends keyof Shape ? Shape : Record<Field, ColumnValidator<number, number | undefined>> & Shape>;
     triggers: (build: (t: TriggerBuilder<Shape>) => Record<string, TriggerDefinition>) => TableBuilder<Shape>;
     ttl: (field: keyof Shape & string, options?: {
         after?: number;
@@ -3650,6 +3656,12 @@ type Id<TName extends string> = string & {
 };
 ```
 
+### `InsertValues` (type)
+
+```ts
+type InsertValues<DM, IM extends Record<keyof DM, object>, REL extends Record<keyof DM, object>, T extends keyof DM> = IM[T] | (Omit<IM[T], OneRelationFields<REL[T]>> & RelationWrites<DM, REL, T>);
+```
+
 ### `LoadWith` (type)
 
 ```ts
@@ -3678,7 +3690,18 @@ interface OneRelationWhere<W> {
 ### `OrderBy` (type)
 
 ```ts
-type OrderBy<TDocument> = Partial<Record<keyof TDocument, "asc" | "desc">>;
+type OrderBy<TDocument> = Partial<Record<keyof TDocument | ScalarPaths<TDocument>, "asc" | "desc" | {
+    nulls: "first" | "last";
+    sort: "asc" | "desc";
+}>>;
+```
+
+### `PatchValues` (type)
+
+```ts
+type PatchValues<Row> = PathPatch<Row> & {
+    [K in keyof Row]?: Row[K] | OperatorFor<NonNullable<Row[K]>>;
+};
 ```
 
 ### `QueryArgs` (interface)
@@ -3715,6 +3738,16 @@ interface QueryPage<TDocument> {
 }
 ```
 
+### `QueryPlan` (interface)
+
+```ts
+interface QueryPlan {
+    params: unknown[];
+    plan: string[];
+    sql: string;
+}
+```
+
 ### `RankPage` (interface)
 
 ```ts
@@ -3732,6 +3765,24 @@ interface RankResult {
     position: number;
     total: number;
 }
+```
+
+### `RelationWrites` (type)
+
+```ts
+type RelationWrites<DM, REL extends Record<keyof DM, object>, T extends keyof DM> = [
+    keyof REL[T]
+] extends [
+    never
+] ? unknown : {
+    [K in keyof REL[T]]?: REL[T][K] extends {
+        __relationKind: "one";
+        __target: infer Target extends keyof DM;
+    } ? ToOneRelationWrite<Id<string & Target>> : REL[T][K] extends {
+        __relationKind: "many";
+        __target: infer Target extends keyof DM;
+    } ? ToManyRelationWrite<Id<string & Target>> : never;
+};
 ```
 
 ### `RestrictableQueryOptions` (interface)
@@ -3844,6 +3895,7 @@ interface TableReaderFacade<DM, REL extends Record<keyof DM, object>, RANK exten
     aggregate: (options: TableAggregateOptionsOf<DM, REL, T>) => Promise<null | number>;
     count: (where?: RestrictableQueryOptionsOf<DM, REL, T> | WhereOf<DM, REL, T>) => Promise<number>;
     exists: (where?: WhereOf<DM, REL, T>) => Promise<boolean>;
+    explain: (args?: QueryArgsOf<DM, REL, T>) => Promise<QueryPlan>;
     findFirst: <W extends WithArg<DM, REL, T> = {}, S extends ReadonlyArray<keyof DM[T] & string> | undefined = undefined>(args?: QueryArgsOf<DM, REL, T> & {
         select?: S;
         with?: W;
@@ -3889,10 +3941,10 @@ interface TableWriterFacade<DM, IM extends Record<keyof DM, object>, REL extends
     };
     hardDelete: (id: Id<string & T>) => Promise<void>;
     insert: {
-        (values: IM[T], options: {
+        (values: InsertValues<DM, IM, REL, T>, options: {
             skipDuplicates: true;
         }): Promise<Id<string & T> | null>;
-        (values: IM[T], options?: {
+        (values: InsertValues<DM, IM, REL, T>, options?: {
             skipDuplicates?: boolean;
         }): Promise<Id<string & T>>;
     };
@@ -3906,11 +3958,11 @@ interface TableWriterFacade<DM, IM extends Record<keyof DM, object>, REL extends
             skipDuplicates?: boolean;
         }): Promise<Id<string & T>[]>;
     };
-    patch: (id: Id<string & T>, values: Partial<IM[T]>) => Promise<void>;
+    patch: (id: Id<string & T>, values: PatchValues<IM[T]> & RelationWrites<DM, REL, T>) => Promise<void>;
     patchMany: {
         (patches: ReadonlyArray<{
             id: Id<string & T>;
-            values: Partial<IM[T]>;
+            values: PatchValues<IM[T]>;
         }>, options?: {
             limit?: number;
         }): Promise<{
@@ -3918,7 +3970,7 @@ interface TableWriterFacade<DM, IM extends Record<keyof DM, object>, REL extends
         }>;
         (args: {
             limit?: number;
-            values: Partial<IM[T]>;
+            values: PatchValues<IM[T]>;
             where: Partial<DM[T]>;
         }): Promise<{
             patched: number;
@@ -3927,17 +3979,17 @@ interface TableWriterFacade<DM, IM extends Record<keyof DM, object>, REL extends
     replace: (id: Id<string & T>, values: IM[T]) => Promise<void>;
     restore: (id: Id<string & T>) => Promise<void>;
     upsert: (args: {
-        create: IM[T];
+        create: InsertValues<DM, IM, REL, T>;
         target: UpsertTargetOf<DM, T>;
-        update?: Partial<IM[T]>;
+        update?: PatchValues<IM[T]> & RelationWrites<DM, REL, T>;
     }) => Promise<{
         created: boolean;
         id: Id<string & T>;
     }>;
     upsertMany: (args: {
         rows: ReadonlyArray<{
-            create: IM[T];
-            update?: Partial<IM[T]>;
+            create: InsertValues<DM, IM, REL, T>;
+            update?: PatchValues<IM[T]> & RelationWrites<DM, REL, T>;
         }>;
         target: UpsertTargetOf<DM, T>;
     }) => Promise<{
@@ -3945,6 +3997,32 @@ interface TableWriterFacade<DM, IM extends Record<keyof DM, object>, REL extends
         id: Id<string & T>;
     }[]>;
 }
+```
+
+### `ToManyRelationWrite` (type)
+
+```ts
+type ToManyRelationWrite<TargetId> = {
+    connect?: never;
+    disconnect?: never;
+    set: ReadonlyArray<TargetId>;
+} | {
+    connect?: ReadonlyArray<TargetId>;
+    disconnect?: ReadonlyArray<TargetId>;
+    set?: never;
+};
+```
+
+### `ToOneRelationWrite` (type)
+
+```ts
+type ToOneRelationWrite<TargetId> = {
+    connect: TargetId;
+    disconnect?: never;
+} | {
+    connect?: never;
+    disconnect: true;
+};
 ```
 
 ### `UpsertTargetOf` (type)
@@ -3956,7 +4034,7 @@ type UpsertTargetOf<DM, T extends keyof DM> = ReadonlyArray<keyof DM[T] & string
 ### `Where` (type)
 
 ```ts
-type Where<TDocument> = {
+type Where<TDocument> = PathWhere<TDocument> & {
     [K in keyof TDocument]?: TDocument[K] | WhereOperators<TDocument[K]>;
 } & {
     AND?: Where<TDocument>[];
@@ -3968,7 +4046,7 @@ type Where<TDocument> = {
 ### `WhereOf` (type)
 
 ```ts
-type WhereOf<DM, REL extends Record<keyof DM, object>, T extends keyof DM> = RelationWhere<DM, REL, T> & {
+type WhereOf<DM, REL extends Record<keyof DM, object>, T extends keyof DM> = PathWhere<DM[T]> & RelationWhere<DM, REL, T> & {
     [K in keyof DM[T]]?: DM[T][K] | WhereOperators<DM[T][K]>;
 } & {
     AND?: WhereOf<DM, REL, T>[];
@@ -5668,6 +5746,27 @@ interface BatchWriteOptions {
 }
 ```
 
+### `BooleanFieldOperator` (interface)
+
+```ts
+interface BooleanFieldOperator {
+    toggle: true;
+}
+```
+
+### `ColumnPaths` (type)
+
+```ts
+type ColumnPaths<Doc> = {
+    [K in keyof Doc & string]-?: [
+        IsPlainObject<NonNullable<Doc[K]>>
+    ] extends [
+        true
+    ] ? `${K}.${SubPaths<NonNullable<Doc[K]>, [
+    ]>}` : never;
+}[keyof Doc & string];
+```
+
 ### `ComposedOut` (type)
 
 ```ts
@@ -5717,6 +5816,7 @@ const DOCUMENT_HISTORY_KEY = "documentHistory";
 ```ts
 interface DatabaseWriterLike {
     aggregate: (tableName: string, options: AggregateArgs$1) => Promise<null | number>;
+    assertPatchAllowed?: (id: string, expectedTable?: string) => Promise<void>;
     count: (tableName: string, whereOrArgs?: CountArgs | WhereInput) => Promise<number>;
     delete: (id: string, expectedTable?: string, options?: {
         hard?: boolean;
@@ -5737,6 +5837,7 @@ interface DatabaseWriterLike {
     }) => Promise<{
         deleted: number;
     }>;
+    explain: (tableName: string, args?: QueryArgs$1) => Promise<QueryPlan>;
     findFirst: (tableName: string, args?: QueryArgs$1) => Promise<Record<string, unknown> | null>;
     findFirstOrThrow: (tableName: string, args?: QueryArgs$1) => Promise<Record<string, unknown>>;
     findMany: (tableName: string, args?: QueryArgs$1) => Promise<QueryPage$1>;
@@ -5760,9 +5861,10 @@ interface DatabaseWriterLike {
         row: Record<string, unknown>;
         tableName: string;
     }>;
-    patch: (id: string, patch: Record<string, unknown>, expectedTable?: string) => Promise<void>;
+    patch: (id: string, patch: Record<string, unknown>, expectedTable?: string, options?: PatchWriteOptions) => Promise<void>;
     patchIf?: (tableName: string, id: string, args: {
         patch: Record<string, unknown>;
+        verify?: PatchVerifier;
         where: WhereInput;
     }) => Promise<{
         applied: boolean;
@@ -5829,6 +5931,12 @@ interface DefinePluginFunction {
     };
     <TExtension extends Record<string, TableDefinition>, TContextIn = unknown, TContextOut = TContextIn>(key: string, options: DefinePluginOptions<TExtension, TContextIn, TContextOut>): Plugin<TExtension, TContextIn, TContextOut>;
 }
+```
+
+### `DocPathValue` (type)
+
+```ts
+type DocPathValue<Doc, P extends string> = P extends `${infer Column}.${infer Rest}` ? Column extends keyof Doc ? PathValue<NonNullable<Doc[Column]>, Rest> : never : never;
 ```
 
 ### `Exception` (type)
@@ -5966,6 +6074,12 @@ type InstalledTables<T extends Record<string, TableDefinition>, Plugins extends 
 ] ? InstalledTables<ExtensionTablesOf<Head> & T, Rest> : T;
 ```
 
+### `IsPlainObject` (type)
+
+```ts
+type IsPlainObject<V> = V extends string | number | boolean | bigint | symbol ? false : V extends ReadonlyArray<unknown> ? false : V extends Date | Uint8Array | ArrayBuffer | bigint | ((...arguments_: never[]) => unknown) ? false : V extends object ? true : false;
+```
+
 ### `Link` (interface)
 
 ```ts
@@ -6042,6 +6156,7 @@ interface MaskDatabase {
     }) => Promise<{
         deleted: number;
     }>;
+    explain: (tableName: string, args?: QueryArgs) => Promise<QueryPlan>;
     findFirst: (tableName: string, args?: QueryArgs) => Promise<Record<string, unknown> | null>;
     findFirstOrThrow: (tableName: string, args?: QueryArgs) => Promise<Record<string, unknown>>;
     findMany: (tableName: string, args?: QueryArgs) => Promise<QueryPage>;
@@ -6103,6 +6218,7 @@ interface MaskDatabase {
             document: Record<string, unknown>;
         }[];
     }>;
+    relationWrites?: Readonly<Record<string, RelationWriteInfosLike>>;
     replace: (id: string, document: Record<string, unknown>, expectedTable?: string) => Promise<void>;
 }
 ```
@@ -6123,10 +6239,113 @@ type NestedWithArgument<WK> = WK extends {
 } ? NW : {};
 ```
 
+### `NumberFieldOperator` (type)
+
+```ts
+type NumberFieldOperator = {
+    decrement: number;
+    divide?: never;
+    increment?: never;
+    multiply?: never;
+} | {
+    decrement?: never;
+    divide: number;
+    increment?: never;
+    multiply?: never;
+} | {
+    decrement?: never;
+    divide?: never;
+    increment: number;
+    multiply?: never;
+} | {
+    decrement?: never;
+    divide?: never;
+    increment?: never;
+    multiply: number;
+};
+```
+
+### `OneRelationFields` (type)
+
+```ts
+type OneRelationFields<RelT> = {
+    [K in keyof RelT]: RelT[K] extends {
+        __field: infer Field extends string;
+        __relationKind: "one";
+    } ? Field : never;
+}[keyof RelT];
+```
+
+### `OperatorFor` (type)
+
+```ts
+type OperatorFor<T> = [
+    T
+] extends [
+    number
+] ? [
+    number
+] extends [
+    T
+] ? NumberFieldOperator : never : [
+    T
+] extends [
+    boolean
+] ? [
+    boolean
+] extends [
+    T
+] ? BooleanFieldOperator : never : never;
+```
+
 ### `PRESENCE_KEY` (const)
 
 ```ts
 const PRESENCE_KEY = "presence";
+```
+
+### `PatchVerifier` (type)
+
+```ts
+type PatchVerifier = (previous: Record<string, unknown>, next: Record<string, unknown>) => boolean;
+```
+
+### `PatchWriteOptions` (interface)
+
+```ts
+interface PatchWriteOptions {
+    verify?: PatchVerifier;
+}
+```
+
+### `PathPatch` (type)
+
+```ts
+type PathPatch<Doc, Paths extends string = ColumnPaths<Doc>> = [
+    Paths
+] extends [
+    never
+] ? unknown : {
+    [P in Paths]?: DocPathValue<Doc, P>;
+};
+```
+
+### `PathValue` (type)
+
+```ts
+type PathValue<V, P extends string> = P extends `${infer Head}.${infer Rest}` ? Head extends keyof V ? PathValue<NonNullable<V[Head]>, Rest> : never : P extends keyof V ? V[P] : never;
+```
+
+### `PathWhere` (type)
+
+```ts
+type PathWhere<Doc, Paths extends string = ScalarPaths<Doc>> = [
+    Paths
+] extends [
+    never
+] ? unknown : {
+    [P in Paths]?: DocPathValue<Doc, P> | WhereOperators<DocPathValue<Doc, P>>;
+};
 ```
 
 ### `ProjectDoc` (type)
@@ -6305,6 +6524,26 @@ type RelationWhere<DM, REL extends Record<keyof DM, object>, T extends keyof DM>
 };
 ```
 
+### `RelationWriteInfoLike` (interface)
+
+```ts
+interface RelationWriteInfoLike {
+    readonly colocated: boolean;
+    readonly field: string;
+    readonly kind: "many" | "one";
+    readonly nullable: boolean;
+    readonly references: string;
+    readonly refusal?: string;
+    readonly table: string;
+}
+```
+
+### `RelationWriteInfosLike` (type)
+
+```ts
+type RelationWriteInfosLike = Readonly<Record<string, RelationWriteInfoLike>>;
+```
+
 ### `RestCachePolicy` (interface)
 
 ```ts
@@ -6392,6 +6631,24 @@ const SYSTEM_INDEX_FIELDS: readonly [
     "_creationTime",
     "_id"
 ];
+```
+
+### `ScalarLeaf` (type)
+
+```ts
+type ScalarLeaf = boolean | number | string | null | undefined;
+```
+
+### `ScalarPaths` (type)
+
+```ts
+type ScalarPaths<Doc> = {
+    [P in ColumnPaths<Doc>]: [
+        DocPathValue<Doc, P>
+    ] extends [
+        ScalarLeaf
+    ] ? P : never;
+}[ColumnPaths<Doc>];
 ```
 
 ### `SchedulableTarget` (type)
@@ -6619,6 +6876,21 @@ interface StorageRange {
 interface StreamOptions {
     durable?: boolean | DurableStreamOptions;
 }
+```
+
+### `SubPaths` (type)
+
+```ts
+type SubPaths<V, Depth extends unknown[]> = Depth["length"] extends 3 ? never : [
+    IsPlainObject<V>
+] extends [
+    true
+] ? {
+    [K in keyof V & string]-?: K | `${K}.${SubPaths<NonNullable<V[K]>, [
+        ...Depth,
+        0
+    ]>}`;
+}[keyof V & string] : never;
 ```
 
 ### `SystemDocMap` (interface)

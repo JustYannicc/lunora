@@ -88,6 +88,7 @@ interface FakeDatabase {
         count: (tableName: string, whereOrArgs?: unknown) => Promise<number>;
         delete: (id: string) => Promise<void>;
         deleteWhere: (tableName: string, where: Record<string, unknown>, options?: { limit?: number }) => Promise<{ deleted: number }>;
+        explain: (tableName: string, args?: unknown) => Promise<{ params: unknown[]; plan: string[]; sql: string }>;
         findFirst: (tableName: string, args?: unknown) => Promise<Record<string, unknown> | null>;
         findFirstOrThrow: (tableName: string, args?: unknown) => Promise<Record<string, unknown>>;
         findMany: (tableName: string, args?: unknown) => Promise<{ continueCursor: null | string; isDone: boolean; page: Record<string, unknown>[] }>;
@@ -179,6 +180,11 @@ const createFakeDatabase = (rows: (Record<string, unknown> & { _id: string; tabl
                 }
 
                 return result;
+            },
+            async explain(tableName, args) {
+                calls.push({ args, method: "explain", tableOrId: tableName });
+
+                return { params: [], plan: [], sql: "" };
             },
             async findMany(tableName, args) {
                 calls.push({ args, method: "findMany", tableOrId: tableName });
@@ -1057,6 +1063,44 @@ describe("mask — relation-depth value oracle fails closed (regression)", () =>
         await expect(handler.handler(makeContext(database, "u1"), {})).rejects.toMatchObject({ code: "MASK_UNSUPPORTED", name: "LunoraError" });
     });
 
+    it("refuses explain with a relation PREDICATE on a masked column, since it would inline the matching ids into params", async () => {
+        expect.assertions(2);
+
+        const database = oracleDatabase();
+        const run = async (where: Record<string, unknown>) =>
+            lunora.query
+                .use(maskForTest({ users: { ssn: "redact" } }))
+                .query(async ({ ctx }) => (ctx as unknown as TestContext).db.explain("posts", { where }))
+                .handler(makeContext(database, "u1"), {});
+
+        await expect(run({ author: { is: { ssn: { eq: SSN } } } })).rejects.toMatchObject({ code: "MASK_UNSUPPORTED", name: "LunoraError" });
+        // An unmasked filter is described normally.
+        await expect(run({ authorId: "u1" })).resolves.toStrictEqual({ params: [], plan: [], sql: "" });
+    });
+
+    it("refuses a relation write whose key or referenced column is masked, since it would copy the masked value", async () => {
+        expect.assertions(3);
+
+        const info = { colocated: true, field: "authorId", kind: "one", nullable: false, references: "_id", table: "users" } as const;
+        const database = createFakeDatabase([]);
+
+        (database.writer as unknown as Record<string, unknown>)["relationWrites"] = {
+            comments: { post: { ...info, field: "postId", table: "posts" } },
+            posts: { author: info, comments: { colocated: true, field: "postId", kind: "many", nullable: false, references: "_id", table: "comments" } },
+        };
+
+        const seen = await lunora.query
+            .use(maskForTest({ posts: { authorId: "redact" } }))
+            .query(async ({ ctx }) => (ctx as unknown as { db: { relationWrites: Record<string, Record<string, { refusal?: string }>> } }).db.relationWrites)
+            .handler(makeContext(database, "u1"), {});
+
+        // `posts.authorId` is masked, so connecting `posts.author` would store its masked form.
+        expect(seen["posts"]?.["author"]?.refusal).toContain("authorId");
+        // Relations that do not touch a masked column are left alone.
+        expect(seen["posts"]?.["comments"]?.refusal).toBeUndefined();
+        expect(seen["comments"]?.["post"]?.refusal).toBeUndefined();
+    });
+
     it("refuses the same filter nested one level deeper in `with`", async () => {
         expect.assertions(1);
 
@@ -1214,6 +1258,39 @@ describe("mask — value oracle via filter/sort fails closed (regression)", () =
         // the mask hides (row present ⇒ value matched) — must fail closed.
         await expect(handler.handler(makeContext(database, "u1"), {})).rejects.toMatchObject({ code: "MASK_UNSUPPORTED", name: "LunoraError" });
         expect(database.calls.some((call) => call.method === "findMany")).toBe(false);
+    });
+
+    it.each([
+        ["a where key", (db: TestContext["db"]) => db.findMany("users", { where: { "profile.ssn": { eq: "123-45-6789" } } })],
+        ["a where key under OR", (db: TestContext["db"]) => db.findMany("users", { where: { OR: [{ "profile.ssn": "123-45-6789" }] } })],
+        ["an orderBy key", (db: TestContext["db"]) => db.findMany("users", { orderBy: [{ "profile.ssn": "asc" }] })],
+        ["an aggregate field", (db: TestContext["db"]) => db.aggregate("users", { field: "profile.ssn", op: "sum" })],
+        ["a count where", (db: TestContext["db"]) => db.count("users", { "profile.ssn": "123-45-6789" })],
+    ])("a dotted path into a masked column is rejected as %s", async (_label, read) => {
+        expect.assertions(2);
+
+        const database = createFakeDatabase([{ _id: "u1", profile: { ssn: "123-45-6789" }, table: "users" }]);
+
+        const handler = lunora.query.use(maskForTest({ users: { profile: "redact" } })).query(async ({ ctx }) => read((ctx as unknown as TestContext).db));
+
+        // `profile.ssn` is a probe of the masked `profile` column just as `profile` is: the path must not
+        // slip past a guard that compares whole field names.
+        await expect(handler.handler(makeContext(database, "u1"), {})).rejects.toMatchObject({ code: "MASK_UNSUPPORTED", name: "LunoraError" });
+        expect(database.calls).toHaveLength(0);
+    });
+
+    it("lets a dotted path into an unmasked column through", async () => {
+        expect.assertions(1);
+
+        const database = createFakeDatabase([{ _id: "u1", profile: { plan: "pro" }, table: "users" }]);
+
+        const handler = lunora.query
+            .use(maskForTest({ users: { ssn: "redact" } }))
+            .query(async ({ ctx }) => (ctx as unknown as TestContext).db.findMany("users", { where: { "profile.plan": "pro" } }));
+
+        await handler.handler(makeContext(database, "u1"), {});
+
+        expect(database.calls.some((call) => call.method === "findMany")).toBe(true);
     });
 
     it("a masked column nested under an OR/NOT where is still rejected", async () => {

@@ -39,7 +39,7 @@
  *
  * Every other key here — `authJurisdictionMove`, `conditionalWrites`, `edgeRequestMetadata`, `hostTraceFusion`, `httpCache`,
  * `identityProxy`, `localSql`, `logArchive`, `memoryTables`,
- * `objectStorageBackups`, `objectStorageCdcArchive`, `pointInTimeRecovery`,
+ * `objectColumnPaths`, `objectStorageBackups`, `objectStorageCdcArchive`, `pointInTimeRecovery`, `queryExplain`,
  * `serverReactors`,
  * `shardAlarms`, `shardedState`, `shardPlacement`, `shardReadReplicas`,
  * `websocketHibernation` — is
@@ -441,6 +441,20 @@ export interface PlatformCapabilities {
         memoryTables?: Capability;
 
         /**
+         * Paths into an object column — `where: { "profile.plan": "pro" }` and
+         * `patch(id, { "profile.plan": "pro" })`.
+         *
+         * Carried by no host contract: a shard-local table reads into its JSON document with SQLite's
+         * `json_extract`, and a `.global()` table does the same over its JSON-text column through
+         * `@lunora/sql-store`, so it follows the `globalTables` backend. Postgres and MySQL behind
+         * Hyperdrive read the same paths with their own JSON operators (`->` and `JSON_EXTRACT`), verified
+         * against PGlite (Postgres 18) and MySQL 8.0; Postgres needs 16 or later for `pg_input_is_valid`. Every
+         * path form works on all three, `contains` included, with no refusal. The partial update is made in the
+         * engine and works everywhere. Advisory by nature (see the module header).
+         */
+        objectColumnPaths?: Capability;
+
+        /**
          * Object storage (R2 / S3 / MinIO).
          *
          * `ctx.storage.deleteAfterCommit(key)` rides on this rating and gets no
@@ -496,6 +510,18 @@ export interface PlatformCapabilities {
          * (`lunora backup`) is {@link PlatformCapabilities.features.objectStorageBackups}.
          */
         pointInTimeRecovery?: Capability;
+
+        /**
+         * Query plans — `ctx.db.<table>.explain(args)`, which returns the SQL a `findMany`
+         * compiles to and the database's own plan for it.
+         *
+         * Carried by no host contract: it prefixes a statement the engines already build with
+         * `EXPLAIN QUERY PLAN` (SQLite, D1) or `EXPLAIN` (Postgres, MySQL), on `localSql` for a
+         * shard-local table and through `@lunora/sql-store` on the `globalTables` backend. The plan
+         * text is the database's own, so its wording differs by backend. Advisory by nature (see the
+         * module header).
+         */
+        queryExplain?: Capability;
         /** Queue-backed workpools. */
         queues?: Capability;
 

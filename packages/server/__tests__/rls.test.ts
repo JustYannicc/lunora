@@ -9,6 +9,8 @@
  */
 import { describe, expect, it } from "vitest";
 
+import type { FacadeWriterLike } from "../src/facade";
+import { bindTableFacade } from "../src/facade";
 import type { Middleware, Policy, Role } from "../src/index";
 import { definePermission, definePolicies, definePolicy, defineRole, initLunora, LunoraError, rls } from "../src/index";
 
@@ -31,6 +33,7 @@ interface CapturedCall {
     args: unknown;
     method: string;
     tableOrId?: string;
+    verify?: (previous: Record<string, unknown>, next: Record<string, unknown>) => boolean;
 }
 
 interface FakeDatabase {
@@ -41,6 +44,7 @@ interface FakeDatabase {
         delete: (id: string, expectedTable?: string, options?: { hard?: boolean }) => Promise<void>;
         deleteMany: (ids: ReadonlyArray<string>, options?: { limit?: number }) => Promise<{ deleted: number }>;
         deleteWhere: (tableName: string, args: { limit?: number; where: Record<string, unknown> }) => Promise<{ deleted: number }>;
+        explain: (tableName: string, args?: unknown) => Promise<{ params: unknown[]; plan: string[]; sql: string }>;
         findFirst: (tableName: string, args?: unknown) => Promise<Record<string, unknown> | null>;
         findFirstOrThrow: (tableName: string, args?: unknown) => Promise<Record<string, unknown>>;
         findMany: (tableName: string, args?: unknown) => Promise<{ continueCursor: null | string; isDone: boolean; page: Record<string, unknown>[] }>;
@@ -58,7 +62,7 @@ interface FakeDatabase {
             options?: { allowExplicitId?: boolean; limit?: number },
         ) => Promise<string[]>;
         lookupById?: (id: string) => Promise<null | { row: Record<string, unknown>; tableName: string }>;
-        patch: (id: string, patch: Record<string, unknown>) => Promise<void>;
+        patch: (id: string, patch: Record<string, unknown>, expectedTable?: string, options?: { verify?: CapturedCall["verify"] }) => Promise<void>;
         patchIf: (
             tableName: string,
             id: string,
@@ -149,6 +153,11 @@ const createFakeDatabase = (rows: (Record<string, unknown> & { _id: string; tabl
 
                 return result;
             },
+            async explain(tableName, args) {
+                calls.push({ args, method: "explain", tableOrId: tableName });
+
+                return { params: [], plan: [], sql: "" };
+            },
             async findMany(tableName, args) {
                 calls.push({ args, method: "findMany", tableOrId: tableName });
 
@@ -185,8 +194,8 @@ const createFakeDatabase = (rows: (Record<string, unknown> & { _id: string; tabl
 
                 return documents.map((document, index) => (document["_id"] as string | undefined) ?? `new-id-${String(index)}`);
             },
-            async patch(id, patchValue) {
-                calls.push({ args: patchValue, method: "patch", tableOrId: id });
+            async patch(id, patchValue, _expectedTable, writeOptions) {
+                calls.push({ args: patchValue, method: "patch", tableOrId: id, verify: writeOptions?.verify });
             },
             async patchIf(tableName, id, args) {
                 calls.push({ args, method: "patchIf", tableOrId: id });
@@ -296,6 +305,13 @@ const insertWithPolicy = (policy: Policy<TestContext>) => (document: Record<stri
  * Tests
  * ---------------------------------------------------------------------- */
 
+/** Runs `patch("a1", …)` through the RLS middleware as user `u1`, against `database`. */
+const patchAccount = (policy: ReturnType<typeof definePolicy<TestContext>>, database: FakeDatabase) => async (patch: Record<string, unknown>) =>
+    lunora.mutation
+        .use(rlsForTest<TestContext>([policy]))
+        .mutation(async ({ ctx }) => ctx.db.patch("a1", patch))
+        .handler(makeContext(database, "u1"), {});
+
 describe("rls — read path", () => {
     it("and-merges a policy WhereInput into findMany via baseWhere", async () => {
         expect.assertions(1);
@@ -324,6 +340,31 @@ describe("rls — read path", () => {
         const findManyCall = database.calls.find((call) => call.method === "findMany");
 
         expect(findManyCall?.args).toMatchObject({
+            baseWhere: { ownerId: "u1" },
+            where: { archived: false },
+        });
+    });
+
+    it("merges the read policy into explain, so the plan is the one this caller's read gets", async () => {
+        expect.assertions(1);
+
+        const policies = definePolicies([
+            definePolicy<TestContext>({
+                on: "read",
+                table: "documents",
+                when: ({ auth }) => {
+                    return { ownerId: auth.userId };
+                },
+            }),
+        ]);
+        const database = createFakeDatabase([]);
+        const handler = lunora.query
+            .use(rlsForTest<TestContext>(policies))
+            .query(async ({ ctx }) => ctx.db.explain("documents", { where: { archived: false } }));
+
+        await handler.handler(makeContext(database, "u1"), {});
+
+        expect(database.calls.find((call) => call.method === "explain")?.args).toMatchObject({
             baseWhere: { ownerId: "u1" },
             where: { archived: false },
         });
@@ -898,6 +939,91 @@ describe("rls — write path", () => {
         expect(database.calls.some((call) => call.method === "patch")).toBe(false);
     });
 
+    it("gates each child of a nested relation write by that child's own update policy", async () => {
+        expect.assertions(2);
+
+        const policy = definePolicy<TestContext>({
+            on: "update",
+            table: "documents",
+            when: ({ auth, row }) => row?.["ownerId"] === auth.userId,
+        });
+        const database = createFakeDatabase([
+            { _id: "f1", table: "folders" },
+            { _id: "d1", ownerId: "u2", table: "documents" },
+        ]);
+
+        (database.writer as unknown as Record<string, unknown>)["relationWrites"] = {
+            folders: { documents: { colocated: true, field: "folderId", kind: "many", nullable: true, references: "_id", table: "documents" } },
+        };
+
+        const handler = lunora.mutation
+            .use(rlsForTest<TestContext>([policy]))
+            .mutation(async ({ ctx }) => bindTableFacade(ctx.db as unknown as FacadeWriterLike, "folders").patch("f1", { documents: { connect: ["d1"] } }));
+
+        // The caller may read the document but not update it, so pointing it at the folder is refused.
+        await expect(handler.handler(makeContext(database, "u1"), {})).rejects.toMatchObject({ code: "FORBIDDEN", name: "LunoraError" });
+        expect(database.calls.some((call) => call.method === "patch")).toBe(false);
+    });
+
+    /** A folder with one document, and the relation-only patch that attaches the document to it. */
+    const relationOnlyFolderPatch = (folderOwner: string, documentOwner: string) => {
+        const folderPolicy = definePolicy<TestContext>({
+            on: "update",
+            table: "folders",
+            when: ({ auth, row }) => row?.["ownerId"] === auth.userId,
+        });
+        const documentPolicy = definePolicy<TestContext>({
+            on: "update",
+            table: "documents",
+            when: ({ auth, row }) => row?.["ownerId"] === auth.userId,
+        });
+        const database = createFakeDatabase([
+            { _id: "f1", ownerId: folderOwner, table: "folders" },
+            { _id: "d1", ownerId: documentOwner, table: "documents" },
+        ]);
+
+        (database.writer as unknown as Record<string, unknown>)["relationWrites"] = {
+            folders: { documents: { colocated: true, field: "folderId", kind: "many", nullable: true, references: "_id", table: "documents" } },
+        };
+
+        const handler = lunora.mutation
+            .use(rlsForTest<TestContext>([folderPolicy, documentPolicy]))
+            .mutation(async ({ ctx }) => bindTableFacade(ctx.db as unknown as FacadeWriterLike, "folders").patch("f1", { documents: { connect: ["d1"] } }));
+
+        return { database, handler };
+    };
+
+    it("denies a relation-only patch whose parent the caller may read but not update, before any child is written", async () => {
+        expect.assertions(2);
+
+        const { database, handler } = relationOnlyFolderPatch("u2", "u1");
+
+        await expect(handler.handler(makeContext(database, "u1"), {})).rejects.toMatchObject({ code: "FORBIDDEN", name: "LunoraError" });
+        expect(database.calls.some((call) => call.method === "patch")).toBe(false);
+    });
+
+    it("still gates each child when the parent's update policy allows the relation-only patch", async () => {
+        expect.assertions(2);
+
+        const { database, handler } = relationOnlyFolderPatch("u1", "u2");
+
+        await expect(handler.handler(makeContext(database, "u1"), {})).rejects.toMatchObject({ code: "FORBIDDEN", name: "LunoraError" });
+        expect(database.calls.some((call) => call.method === "patch")).toBe(false);
+    });
+
+    it("writes the child of a relation-only patch once both the parent and the child allow it", async () => {
+        expect.assertions(2);
+
+        const { database, handler } = relationOnlyFolderPatch("u1", "u1");
+
+        await handler.handler(makeContext(database, "u1"), {});
+
+        const patches = database.calls.filter((call) => call.method === "patch");
+
+        expect(patches.map((call) => call.tableOrId)).toStrictEqual(["d1"]);
+        expect(patches[0]?.args).toStrictEqual({ folderId: "f1" });
+    });
+
     it.each([
         ["a policy table", "documents"],
         ["a table without policies", "notes"],
@@ -1006,6 +1132,58 @@ describe("rls — write path", () => {
         const patchCall = database.calls.find((call) => call.method === "patch");
 
         expect(patchCall).toBeDefined();
+    });
+
+    it("checks an atomic operator's resolved value, not the operator object, against the update policy", async () => {
+        expect.assertions(7);
+
+        const policy = definePolicy<TestContext>({
+            on: "update",
+            table: "accounts",
+            when: ({ row }) => typeof row?.["balance"] === "number" && row["balance"] >= 0,
+        });
+        const database = createFakeDatabase([{ _id: "a1", balance: 3, table: "accounts" }]);
+        const run = patchAccount(policy, database);
+
+        // 3 - 1 = 2 keeps the post-image valid; 3 - 5 = -2 does not.
+        await expect(run({ balance: { decrement: 1 } })).resolves.toBeUndefined();
+        await expect(run({ balance: { decrement: 5 } })).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+        await run({ balance: 9 });
+
+        // The store, not the gate, performs the arithmetic: the operator is forwarded untouched, with a
+        // verdict the store takes on the row IT reads (it may differ from the gate's, and may retry).
+        const [operatorCall, plainCall] = database.calls.filter((call) => call.method === "patch");
+
+        expect(database.calls.filter((call) => call.method === "patch")).toHaveLength(2);
+        // Every update through the gate carries the verdict, a plain patch included: the row the store reads can
+        // differ from the one the gate read, whatever the patch holds.
+        expect(plainCall?.verify).toBeTypeOf("function");
+        expect(operatorCall?.verify?.({ balance: 3 }, { balance: 2 })).toBe(true);
+        expect(operatorCall?.verify?.({ balance: 1 }, { balance: -4 })).toBe(false);
+        expect(operatorCall?.verify?.({ balance: 3 }, { balance: "x" })).toBe(false);
+    });
+
+    it("checks the merged post-image of a path patch, and hands the store a verdict for it", async () => {
+        expect.assertions(4);
+
+        const policy = definePolicy<TestContext>({
+            on: "update",
+            table: "accounts",
+            when: ({ row }) => (row?.["profile"] as { plan?: string } | undefined)?.plan !== "banned",
+        });
+        const database = createFakeDatabase([{ _id: "a1", profile: { age: 3, plan: "pro" }, table: "accounts" }]);
+        const run = patchAccount(policy, database);
+
+        // The post-image is `{ age: 3, plan: "banned" }`: the policy refuses it, though no column was named.
+        await expect(run({ "profile.plan": "banned" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+        await expect(run({ "profile.plan": "team" })).resolves.toBeUndefined();
+
+        const call = database.calls.find((entry) => entry.method === "patch");
+
+        expect(call?.args).toStrictEqual({ "profile.plan": "team" });
+        // The store takes the verdict on the row IT reads: a path patch is merged into whatever the column holds then.
+        expect(call?.verify?.({ profile: { plan: "pro" } }, { profile: { plan: "banned" } })).toBe(false);
     });
 
     it("boolean update policy denies a patch that reassigns the policy column (WITH-CHECK post-image)", async () => {

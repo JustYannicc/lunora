@@ -311,11 +311,13 @@ interface PlatformCapabilities {
         logArchive?: Capability;
         mail?: Capability;
         memoryTables?: Capability;
+        objectColumnPaths?: Capability;
         objectStorage?: Capability;
         objectStorageBackups?: Capability;
         objectStorageCdcArchive?: Capability;
         pipelines?: Capability;
         pointInTimeRecovery?: Capability;
+        queryExplain?: Capability;
         queues?: Capability;
         relationGraph?: Capability;
         requestOrigin?: Capability;

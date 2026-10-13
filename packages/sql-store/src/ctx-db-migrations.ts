@@ -25,7 +25,17 @@ import { sql } from "drizzle-orm";
 import { validatorAcceptsNull } from "../../../shared/accepts-null";
 import type { SqlDialect } from "./dialect";
 import type { SqlCtxExec } from "./sql-exec";
-import { columnRefSql, createIndexIfNotExists, OCC_VERSION_COLUMN, qualifiedColumnRefSql, queryAll, queryBatch, queryRun, tableColumns } from "./sql-exec";
+import {
+    columnRefSql,
+    createIndexIfNotExists,
+    OCC_VERSION_COLUMN,
+    qualifiedColumnRefSql,
+    queryAll,
+    queryBatch,
+    queryRun,
+    serializeDocumentColumn,
+    tableColumns,
+} from "./sql-exec";
 import {
     BIGINT_KEY_LENGTH,
     bigintSqlKey,
@@ -780,6 +790,92 @@ const rewriteLegacyUntypedNumbers = async (exec: SqlCtxExec, tableName: string, 
     });
 
 /**
+ * `table.column` pairs {@link relaxNullAcceptingColumns} already reported in
+ * this isolate. Provisioning runs once per ctx-db — once per request on a
+ * Hyperdrive binding — so an unconditional warning would repeat on every one.
+ */
+const reportedRelaxations = new Set<string>();
+
+/** Warn once per isolate for `key`. The only channel a provisioning pass has. */
+const warnOnce = (key: string, message: string): void => {
+    if (reportedRelaxations.has(key)) {
+        return;
+    }
+
+    reportedRelaxations.add(key);
+    // eslint-disable-next-line no-console -- the only channel a provisioning pass has; deduplicated per isolate above.
+    console.warn(`[@lunora/sql-store] ${message}`);
+};
+
+/** The value a row gets when none is supplied: `.$defaultFn` evaluated once, else `.default(v)`; `undefined` when neither is declared. */
+const declaredDefaultOf = (validator: ValidatorLike): unknown => {
+    const meta = validator._meta?.column;
+
+    if (meta?.defaultFn) {
+        return meta.defaultFn();
+    }
+
+    return meta && "defaultValue" in meta ? meta.defaultValue : undefined;
+};
+
+/** Is `column` covered by any UNIQUE index, single or composite, or declared `.unique()`? */
+const isUniqueColumn = (definition: SchemaLike["tables"][string], column: string, validator: ValidatorLike): boolean =>
+    validator._meta?.column?.unique === true || definition.indexes.some((index) => index.unique === true && index.fields.includes(column));
+
+/**
+ * Give the rows that predate a newly added REQUIRED column the value its declaration says a row gets when none is
+ * supplied. A column that may hold null (`v.optional`, `.nullable()`, `v.any()`, a union with `v.null()`) needs
+ * nothing: NULL is a valid value there. A required column with no default is left NULL and reported once, and so is
+ * one under a UNIQUE constraint: one default written to every old row would collide the moment the index is built
+ * (NULLs are distinct, so leaving them builds it), and that would fail provisioning of the whole plane on every pass.
+ *
+ * Best-effort, like {@link relaxNullAcceptingColumns}: a statement that fails is reported with the `UPDATE` to run,
+ * not thrown. Throwing would leave the column in place, so the next pass would skip the backfill anyway; undoing the
+ * column instead would loop a persistent failure on every pass and could discard what a concurrent request has since
+ * written to it.
+ */
+const backfillAddedColumn = async (
+    exec: SqlCtxExec,
+    tableName: string,
+    definition: SchemaLike["tables"][string],
+    dialect: SqlDialect,
+    column: string,
+    validator: ValidatorLike,
+): Promise<void> => {
+    if (validator.kind === "optional" || validatorAcceptsNull(validator)) {
+        return;
+    }
+
+    const unique = isUniqueColumn(definition, column, validator);
+    const value = unique ? undefined : declaredDefaultOf(validator);
+    const manual = `UPDATE "${tableName}" SET "${column}" = … WHERE "${column}" IS NULL`;
+
+    if (value === undefined) {
+        const reason = unique ? "is unique, so one default cannot be written to every row" : "has no default";
+
+        warnOnce(
+            `backfill:${tableName}.${column}`,
+            `"${tableName}.${column}" was added as a required field that ${reason}, so rows written before it read NULL. Backfill it with a migration (${manual}).`,
+        );
+
+        return;
+    }
+
+    try {
+        await queryRun(
+            exec,
+            dialect,
+            sql`UPDATE ${sql.identifier(tableName)} SET ${sql.identifier(column)} = ${serializeDocumentColumn(definition, column, value)} WHERE ${sql.identifier(column)} IS NULL`,
+        );
+    } catch (error) {
+        warnOnce(
+            `backfill:${tableName}.${column}`,
+            `could not backfill "${tableName}.${column}" from its default (${error instanceof Error ? error.message : String(error)}); rows written before it read NULL. Run ${manual}.`,
+        );
+    }
+};
+
+/**
  * Add the columns a `.global()` table is missing.
  *
  * `CREATE TABLE IF NOT EXISTS` alone leaves an existing table exactly as it is,
@@ -809,22 +905,27 @@ const rewriteLegacyUntypedNumbers = async (exec: SqlCtxExec, tableName: string, 
  * `__tests__/workerd/global-table-drift.workerd.test.ts`; `node:sqlite` builds
  * with `SQLITE_DQS=0`, so a Node-only suite cannot see the difference.
  *
- * Added columns are always **nullable**, whatever the field declares: existing
- * rows have no value for a field that did not exist, and `ADD COLUMN … NOT NULL`
- * without a default is rejected outright on a non-empty table by all three
- * engines. The declared `notNull` is still enforced on write by the validator.
- * Additive only, like the `CREATE` it follows — a retype or a drop still needs an
- * explicit migration.
+ * Added columns are always **nullable** in the DDL, whatever the field declares:
+ * `ADD COLUMN … NOT NULL` without a default is rejected outright on a non-empty
+ * table by all three engines. The declared `notNull` is still enforced on write
+ * by the validator, so existing rows are then made to satisfy it: a REQUIRED
+ * field that declares a default (`.default(v)`, `.defaultNow()`, `.$defaultFn`)
+ * has that default written to every row that has none, evaluated once. A
+ * required field with no default has no value to invent, so its existing rows
+ * keep reading NULL and a warning names the column; backfill it with an
+ * explicit migration before relying on it. The same goes for a column under a UNIQUE constraint, whatever its
+ * default, and for a backfill statement that fails (see {@link backfillAddedColumn}). Additive only, like the `CREATE` it
+ * follows — a retype or a drop still needs an explicit migration.
  */
 const alterGlobalTableDrift = async (exec: SqlCtxExec, tableName: string, definition: SchemaLike["tables"][string], dialect: SqlDialect): Promise<void> => {
     // The OCC version column leads the list: a table provisioned before it
     // existed carries none, and the guarded-write CAS reads it on every
     // `patch`/`replace`/`delete`.
-    const wanted: [column: string, type: string][] = [
+    const wanted: [column: string, type: string, validator?: ValidatorLike][] = [
         [OCC_VERSION_COLUMN, dialect.companionTypes.integer],
         ...Object.entries(definition.shape)
             .filter(([, validator]) => validator._meta?.column !== undefined)
-            .map(([field, validator]): [string, string] => [field, globalColumnAffinity(validator, dialect)]),
+            .map(([field, validator]): [string, string, ValidatorLike] => [field, globalColumnAffinity(validator, dialect), validator]),
     ];
 
     // The alias the probe's column references are qualified with; see the docblock.
@@ -851,7 +952,7 @@ const alterGlobalTableDrift = async (exec: SqlCtxExec, tableName: string, defini
         return;
     }
 
-    for (const [column, type] of wanted) {
+    for (const [column, type, validator] of wanted) {
         // eslint-disable-next-line no-await-in-loop -- DDL runs sequentially on the single shared connection; each probe gates its own ALTER.
         if (await probe([column])) {
             continue;
@@ -859,25 +960,12 @@ const alterGlobalTableDrift = async (exec: SqlCtxExec, tableName: string, defini
 
         // eslint-disable-next-line no-await-in-loop -- same connection, and a failure here must surface rather than race the next ALTER.
         await queryRun(exec, dialect, sql`ALTER TABLE ${sql.identifier(tableName)} ADD COLUMN ${sql.identifier(column)} ${sql.raw(type)}`);
+
+        if (validator !== undefined) {
+            // eslint-disable-next-line no-await-in-loop -- one UPDATE per added column, on the same connection.
+            await backfillAddedColumn(exec, tableName, definition, dialect, column, validator);
+        }
     }
-};
-
-/**
- * `table.column` pairs {@link relaxNullAcceptingColumns} already reported in
- * this isolate. Provisioning runs once per ctx-db — once per request on a
- * Hyperdrive binding — so an unconditional warning would repeat on every one.
- */
-const reportedRelaxations = new Set<string>();
-
-/** Warn once per isolate for `key`. The only channel a provisioning pass has. */
-const warnOnce = (key: string, message: string): void => {
-    if (reportedRelaxations.has(key)) {
-        return;
-    }
-
-    reportedRelaxations.add(key);
-    // eslint-disable-next-line no-console -- the only channel a provisioning pass has; deduplicated per isolate above.
-    console.warn(`[@lunora/sql-store] ${message}`);
 };
 
 /**

@@ -4,7 +4,6 @@ import { LunoraError } from "@lunora/errors";
 import { MAX_SEARCH_SCAN } from "@lunora/search-core";
 import type { SchemaLike, ValidatorLike } from "@lunora/shard-engine";
 import { CURSOR_PREFIX } from "@lunora/shard-engine";
-import { sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import type { SqlCtxExec } from "../src/ctx-db";
@@ -12,6 +11,7 @@ import { createSqlCtxDb, readSqlCdcChanges } from "../src/ctx-db";
 import type { SqlDialect } from "../src/dialect";
 import { BACKFILL_BATCH_SIZE } from "../src/sql-exec";
 import { sqliteEncode } from "../src/value-codec";
+import { createSqliteHarness, makeSqliteDialect } from "./_helpers/sqlite";
 
 /**
  * In-package end-to-end coverage for the dialect-blind store core. The concrete
@@ -20,98 +20,6 @@ import { sqliteEncode } from "../src/value-codec";
  * engine (D1 is SQLite — the generated SQL behaves identically) plus a tiny
  * recording exec for the cross-dialect rendering checks. No workerd required.
  */
-
-/** Both workerd and `node:sqlite` phrase a UNIQUE-index breach as "UNIQUE constraint failed". */
-const UNIQUE_VIOLATION_RE = /unique constraint failed/iu;
-
-const sqlAffinityForKind = (kind: string | undefined): string => {
-    switch (kind) {
-        case "bigint": {
-            return "TEXT";
-        }
-        case "boolean": {
-            return "INTEGER";
-        }
-        case "number": {
-            return "REAL";
-        }
-        default: {
-            return "TEXT";
-        }
-    }
-};
-
-/** A minimal reference SQLite dialect, mirroring `@lunora/d1`'s sqliteDialect (kept local so sql-store has no dependency on a downstream package). */
-
-/**
- * Does this runtime's `node:sqlite` have the FTS5 module compiled in?
- *
- * It is a property of the RUNTIME, not of the dialect: Node 24 bundles a SQLite
- * with FTS5, Node 22 does not. Hard-coding `supportsFts5: true` made these
- * tests pass on one CI matrix leg and fail on the other with
- * `no such module: fts5`.
- *
- * Probing keeps both legs meaningful rather than skipping: where FTS5 exists
- * the suite exercises the `fts5` search layout, and where it does not it
- * exercises the portable `inverted` layout — which is exactly the split the
- * store already models for backends without FTS5.
- */
-const RUNTIME_HAS_FTS5 = ((): boolean => {
-    const probe = new DatabaseSync(":memory:");
-
-    try {
-        probe.exec("CREATE VIRTUAL TABLE __fts5_probe USING fts5(x)");
-
-        return true;
-    } catch {
-        return false;
-    } finally {
-        probe.close();
-    }
-})();
-
-const makeSqliteDialect = (name: SqlDialect["name"] = "sqlite"): SqlDialect => {
-    return {
-        columnType: (kind) => sqlAffinityForKind(kind),
-        companionTypes: {
-            autoincrementPrimaryKey: "INTEGER PRIMARY KEY AUTOINCREMENT",
-            integer: "INTEGER",
-            key: "TEXT",
-            real: "REAL",
-            text: "TEXT",
-        },
-        maxTableColumns: 100,
-        frameworkColumns: () => [
-            { name: "id", type: "TEXT PRIMARY KEY" },
-            { name: "_creationTime", type: "REAL NOT NULL" },
-        ],
-        isUniqueViolation: (error) => error instanceof Error && UNIQUE_VIOLATION_RE.test(error.message),
-        name,
-        supportsFts5: RUNTIME_HAS_FTS5,
-        supportsReturning: true,
-        tableExists: (table) => sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ${table}`,
-    };
-};
-
-const createSqliteHarness = (): { close: () => void; exec: SqlCtxExec } => {
-    const database = new DatabaseSync(":memory:");
-
-    const all = (query: string, parameters: ReadonlyArray<unknown>): Record<string, unknown>[] => database.prepare(query).all(...(parameters as never[]));
-
-    return {
-        close: () => {
-            database.close();
-        },
-        exec: {
-            all: (query, parameters) => Promise.resolve(all(query, parameters)),
-            run: (query, parameters) => {
-                all(query, parameters);
-
-                return Promise.resolve();
-            },
-        },
-    };
-};
 
 /**
  * Wrap an exec so a bound value over `limitBytes` fails the way the real engine
@@ -2858,6 +2766,35 @@ describe("createSqlCtxDb — patchIf decides in one conditional UPDATE", () => {
         };
     };
 
+    /**
+     * An exec that runs `beforeUpdate` ahead of each UPDATE the writer issues (numbered from 1), standing in for
+     * another writer that wins the row first. Returns the exec and a counter of the UPDATEs seen.
+     */
+    const interceptUpdates = (beforeUpdate: (updateNumber: number) => void): { exec: SqlCtxExec; updates: () => number } => {
+        const base = execOver(database);
+        let updates = 0;
+
+        return {
+            exec: {
+                ...base,
+                all: async (query, parameters) => {
+                    if (/^update/iu.test(query)) {
+                        updates += 1;
+                        beforeUpdate(updates);
+                    }
+
+                    return base.all(query, parameters);
+                },
+            },
+            updates: () => updates,
+        };
+    };
+
+    /** Move the row's version the way a concurrent writer's committed UPDATE would. */
+    const bumpVersion = (set = ""): void => {
+        database.prepare(`UPDATE "counters" SET ${set}"_version" = COALESCE("_version", 0) + 1`).run();
+    };
+
     const makeWriter = (dialect: SqlDialect = makeSqliteDialect(), exec: SqlCtxExec = execOver(database)) =>
         createSqlCtxDb({ clock: () => 1_700_000_000_000, dialect, exec, schema: counterSchema });
 
@@ -2940,25 +2877,458 @@ describe("createSqlCtxDb — patchIf decides in one conditional UPDATE", () => {
     it("gives up with a conflict when every attempt loses the row to another writer", async () => {
         expect.assertions(2);
 
-        const base = execOver(database);
-        let updates = 0;
         // Every conditional UPDATE finds the row's version moved by someone else first.
-        const contended: SqlCtxExec = {
-            ...base,
-            all: async (query, parameters) => {
-                if (/^update/iu.test(query)) {
-                    updates += 1;
-                    database.prepare(`UPDATE "counters" SET "_version" = COALESCE("_version", 0) + 1`).run();
-                }
-
-                return base.all(query, parameters);
-            },
-        };
+        const { exec: contended, updates } = interceptUpdates(() => {
+            bumpVersion();
+        });
         const id = await makeWriter().insert("counters", { name: "a", value: 0 });
 
         await expect(makeWriter(makeSqliteDialect(), contended).patchIf?.("counters", id, { patch: { value: 1 }, where: { value: 0 } })).rejects.toMatchObject({
             code: "CONFLICT",
         });
-        expect(updates).toBe(16);
+        expect(updates()).toBe(16);
+    });
+
+    describe("explain", () => {
+        it("describes the statement a read runs, using the engine's own plan", async () => {
+            expect.assertions(4);
+
+            const writer = makeWriter();
+
+            await writer.insert("counters", { name: "a", value: 1 });
+
+            const indexed = await writer.explain("counters", { where: { name: "a" } });
+            const scanned = await writer.explain("counters", { where: { value: 1 } });
+
+            expect(indexed?.sql).toMatch(/^SELECT .* FROM "counters"/u);
+            expect(indexed?.params).toContain("a");
+            expect(indexed?.plan.join("\n")).toContain("by_name");
+            expect(scanned?.plan.join("\n")).not.toContain("by_name");
+        });
+
+        it.each([
+            ["postgres", "EXPLAIN SELECT", { "QUERY PLAN": "Seq Scan on counters" }, "Seq Scan on counters"],
+            ["mysql", "EXPLAIN SELECT", { id: 1, key: null, table: "counters" }, "1 | null | counters"],
+        ] as const)("uses plain EXPLAIN on %s and reads that dialect's plan row", async (name, prefix, row, line) => {
+            expect.assertions(2);
+
+            const statements: string[] = [];
+            const base = execOver(database);
+            const exec: SqlCtxExec = {
+                ...base,
+                all: async (query, parameters) => {
+                    statements.push(query);
+
+                    return query.startsWith("EXPLAIN") ? [row] : base.all(query, parameters);
+                },
+            };
+            const writer = makeWriter({ ...makeSqliteDialect(), name }, exec);
+            const result = await writer.explain("counters", {});
+
+            expect(statements.some((statement) => statement.startsWith(prefix))).toBe(true);
+            expect(result?.plan).toStrictEqual([line]);
+        });
+    });
+
+    describe("atomic field operators", () => {
+        const contendedWriter = (): { updates: () => number; writer: ReturnType<typeof makeWriter> } => {
+            // Every UPDATE finds the row's version moved by someone else first.
+            const { exec, updates } = interceptUpdates(() => {
+                bumpVersion();
+            });
+
+            return { updates, writer: makeWriter(makeSqliteDialect(), exec) };
+        };
+
+        it("applies an increment to the stored value", async () => {
+            expect.assertions(1);
+
+            const writer = makeWriter();
+            const id = await writer.insert("counters", { name: "a", value: 5 });
+
+            await writer.patch(id, { value: { increment: 3 } });
+
+            await expect(writer.get(id)).resolves.toMatchObject({ value: 8 });
+        });
+
+        it("lands every one of ten concurrent increments instead of conflicting", async () => {
+            expect.assertions(1);
+
+            const writer = makeWriter();
+            const id = await writer.insert("counters", { name: "a", value: 0 });
+
+            await Promise.all(Array.from({ length: 10 }, async () => writer.patch(id, { value: { increment: 1 } })));
+
+            await expect(writer.get(id)).resolves.toMatchObject({ value: 10 });
+        });
+
+        it("gives up with a conflict after the bounded number of re-reads", async () => {
+            expect.assertions(2);
+
+            const { updates, writer } = contendedWriter();
+            const id = await makeWriter().insert("counters", { name: "a", value: 0 });
+
+            await expect(writer.patch(id, { value: { increment: 1 } })).rejects.toMatchObject({ code: "CONFLICT" });
+            expect(updates()).toBe(16);
+        });
+
+        it("still reports a plain patch that loses the version check as a conflict straight away", async () => {
+            expect.assertions(2);
+
+            const { updates, writer } = contendedWriter();
+            const id = await makeWriter().insert("counters", { name: "a", value: 0 });
+
+            await expect(writer.patch(id, { value: 1 })).rejects.toMatchObject({ code: "CONFLICT" });
+            expect(updates()).toBe(1);
+        });
+
+        it("takes the post-image verdict on each attempt's own read, so a retry cannot slip past it", async () => {
+            expect.assertions(3);
+
+            const writer = makeWriter();
+            const id = await writer.insert("counters", { name: "a", value: 3 });
+            // The first UPDATE finds another writer already took the value down to 1.
+            const { exec: racing } = interceptUpdates((updateNumber) => {
+                if (updateNumber === 1) {
+                    bumpVersion(`"value" = 1, `);
+                }
+            });
+            const seen: number[] = [];
+            const nonNegative = (_previous: Record<string, unknown>, next: Record<string, unknown>): boolean => {
+                seen.push(next["value"] as number);
+
+                return (next["value"] as number) >= 0;
+            };
+
+            // 3 - 2 = 1 passes on the first read; after the lost race the row holds 1 and 1 - 2 = -1 must not land.
+            await expect(
+                makeWriter(makeSqliteDialect(), racing).patch(id, { value: { decrement: 2 } }, undefined, { verify: nonNegative }),
+            ).rejects.toMatchObject({
+                code: "FORBIDDEN",
+            });
+            expect(seen).toStrictEqual([1, -1]);
+            await expect(writer.get(id)).resolves.toMatchObject({ value: 1 });
+        });
+
+        it("rejects an operator the stored value cannot take", async () => {
+            expect.assertions(1);
+
+            const writer = makeWriter();
+            const id = await writer.insert("counters", { name: "a", value: 1 });
+
+            await expect(writer.patch(id, { value: { divide: 0 } })).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+        });
+    });
+});
+
+describe("createSqlCtxDb — dotted paths into an object column", () => {
+    const leaf = (kind: string, accepts: (value: unknown) => boolean): ValidatorLike => {
+        return {
+            _meta: { column: { notNull: true } },
+            kind,
+            parse: (value: unknown) => {
+                if (!accepts(value)) {
+                    throw new Error(`must be a ${kind}`);
+                }
+
+                return value;
+            },
+        };
+    };
+    const pathSchema: SchemaLike = {
+        tables: {
+            users: {
+                indexes: [],
+                shape: {
+                    name: col("string"),
+                    profile: {
+                        _meta: {
+                            column: { notNull: false },
+                            shape: {
+                                age: leaf("number", (value) => typeof value === "number"),
+                                plan: leaf("string", (value) => typeof value === "string"),
+                            },
+                        },
+                        kind: "object",
+                    },
+                },
+                shardMode: { kind: "global" },
+            },
+        },
+    } as never;
+
+    let harness: ReturnType<typeof createSqliteHarness>;
+
+    beforeEach(() => {
+        harness = createSqliteHarness();
+    });
+
+    afterEach(() => {
+        harness.close();
+    });
+
+    const seed = async (dialect: SqlDialect = makeSqliteDialect(), exec: SqlCtxExec = harness.exec) => {
+        let now = 1_700_000_000_000;
+        const writer = createSqlCtxDb({
+            clock: () => {
+                now += 1000;
+
+                return now;
+            },
+            dialect,
+            exec,
+            schema: pathSchema,
+        });
+
+        await writer.insert("users", { _id: "a", name: "a", profile: { age: 30, plan: "pro" } }, { allowExplicitId: true });
+        await writer.insert("users", { _id: "b", name: "b", profile: { plan: "free" } }, { allowExplicitId: true });
+        await writer.insert("users", { _id: "c", name: "c", profile: { age: "30", plan: "pro" } }, { allowExplicitId: true });
+        await writer.insert("users", { _id: "d", name: "d" }, { allowExplicitId: true });
+
+        return writer;
+    };
+
+    const idsOf = (page: { page: Record<string, unknown>[] }): string[] =>
+        page.page.map((row) => String(row["_id"])).toSorted((left, right) => left.localeCompare(right));
+
+    it.each([
+        ["a string leaf", { "profile.plan": "pro" }, ["a", "c"]],
+        ["a number, not the same digits as text", { "profile.age": 30 }, ["a"]],
+        ["a missing leaf or missing object as null", { "profile.age": null }, ["b", "d"]],
+        ["an in-list on a path", { "profile.plan": { in: ["free"] } }, ["b"]],
+        ["a path beside a column", { name: "c", "profile.plan": "pro" }, ["c"]],
+    ])("finds %s", async (_label, where, expected) => {
+        expect.assertions(1);
+
+        const writer = await seed();
+
+        expect(idsOf(await writer.findMany("users", { where }))).toStrictEqual(expected);
+    });
+
+    it("orders by a path", async () => {
+        expect.assertions(1);
+
+        const writer = await seed();
+        const page = await writer.findMany("users", { orderBy: [{ "profile.plan": "asc" }], where: { "profile.plan": { in: ["free", "pro"] } } } as never);
+
+        expect(page.page.map((row) => row["_id"])).toStrictEqual(["b", "a", "c"]);
+    });
+
+    // The dialect is named Postgres/MySQL but the exec is a stub: this checks the rendered SQL shape only. The
+    // statements run for real in `@lunora/hyperdrive`'s global-json-paths suite, against PGlite and MySQL.
+    it.each([
+        ["postgres", "pg_input_is_valid"],
+        ["mysql", "JSON_VALID"],
+    ] as const)("renders a path on %s as the guarded JSON read, not a refusal", async (name, guard) => {
+        expect.assertions(2);
+
+        const statements: string[] = [];
+        const stub: SqlCtxExec = {
+            all: (query) => {
+                statements.push(query);
+
+                return Promise.resolve([]);
+            },
+            run: (query) => {
+                statements.push(query);
+
+                return Promise.resolve({ rowsAffected: 0 });
+            },
+        };
+        const writer = createSqlCtxDb({ clock: () => 1, dialect: { ...makeSqliteDialect(), name }, exec: stub, schema: pathSchema });
+
+        await writer.findMany("users", { where: { "profile.plan": "pro" } });
+
+        expect(statements.some((query) => query.includes(guard) && query.includes("profile"))).toBe(true);
+        expect(statements.some((query) => query.includes("json_extract"))).toBe(false);
+    });
+
+    it("rejects a path that is too deep before building any SQL", async () => {
+        expect.assertions(1);
+
+        const writer = await seed();
+
+        await expect(writer.findMany("users", { where: { "profile.a.b.c.d": "x" } })).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    });
+
+    it("does not let a hostile segment break out of the path", async () => {
+        expect.assertions(2);
+
+        const writer = await seed();
+        const hostile = await writer.findMany("users", { where: { "profile.plan') OR 1=1 --": "x" } });
+
+        expect(hostile.page).toStrictEqual([]);
+        expect(idsOf(await writer.findMany("users"))).toStrictEqual(["a", "b", "c", "d"]);
+    });
+
+    it("reads NULL, not an error, where the column holds text that is not JSON (a wire-encoded bigint)", async () => {
+        expect.assertions(2);
+
+        const writer = await seed();
+
+        // A bigint inside an object is stored in a marked, non-JSON form. One such row must not break a path filter
+        // for every other row, the way it would if SQLite's json_extract were left to raise on it.
+        await writer.insert("users", { _id: "e", name: "e", profile: { big: 10n, plan: "pro" } }, { allowExplicitId: true });
+
+        const page = await writer.findMany("users", { where: { "profile.plan": "pro" } });
+
+        expect(idsOf(page)).toStrictEqual(["a", "c"]);
+        expect(idsOf(await writer.findMany("users", { where: { "profile.plan": null } }))).toContain("e");
+    });
+
+    it("pages by a path with no gap and no repeat", async () => {
+        expect.assertions(1);
+
+        const writer = await seed();
+        const ids: string[] = [];
+        let cursor: null | string | undefined;
+
+        for (let guard = 0; guard < 10; guard += 1) {
+            // eslint-disable-next-line no-await-in-loop -- each page needs the previous page's cursor
+            const page = await writer.findMany("users", { cursor, limit: 2, orderBy: [{ "profile.plan": "asc" }] } as never);
+
+            ids.push(...page.page.map((row) => String(row["_id"])));
+
+            if (page.isDone) {
+                break;
+            }
+
+            cursor = page.continueCursor;
+        }
+
+        // `d` has no profile (NULL, first), then free (b), then pro (a, c).
+        expect(ids).toStrictEqual(["d", "b", "a", "c"]);
+    });
+
+    describe("patch", () => {
+        it("sets one nested key and keeps its siblings", async () => {
+            expect.assertions(2);
+
+            const writer = await seed();
+
+            await writer.patch("a", { "profile.plan": "team" });
+
+            const row = await writer.get("a");
+            const untouched = await writer.get("b");
+
+            expect(row?.["profile"]).toStrictEqual({ age: 30, plan: "team" });
+            expect(untouched?.["profile"]).toStrictEqual({ plan: "free" });
+        });
+
+        it("creates the object when the column was empty, and is found by a path filter afterwards", async () => {
+            expect.assertions(2);
+
+            const writer = await seed();
+
+            await writer.patch("d", { "profile.plan": "pro" });
+
+            const row = await writer.get("d");
+
+            expect(row?.["profile"]).toStrictEqual({ plan: "pro" });
+            expect(idsOf(await writer.findMany("users", { where: { "profile.plan": "pro" } }))).toStrictEqual(["a", "c", "d"]);
+        });
+
+        it("re-applies a path patch after losing the version check instead of reporting a conflict", async () => {
+            expect.assertions(2);
+
+            const base = harness.exec;
+            let updates = 0;
+            // The first UPDATE finds a concurrent writer already moved the row's version.
+            const contended: SqlCtxExec = {
+                ...base,
+                all: async (query, parameters) => {
+                    if (/^update/iu.test(query)) {
+                        updates += 1;
+
+                        if (updates === 1) {
+                            await base.all(`UPDATE "users" SET "_version" = COALESCE("_version", 0) + 1`, []);
+                        }
+                    }
+
+                    return base.all(query, parameters);
+                },
+            };
+            const writer = await seed(makeSqliteDialect(), contended);
+
+            await writer.patch("a", { "profile.plan": "team" });
+
+            const row = await writer.get("a");
+
+            expect(row?.["profile"]).toStrictEqual({ age: 30, plan: "team" });
+            expect(updates).toBe(2);
+        });
+
+        it.each([
+            ["a path the schema does not declare", { "profile.nope": 1 }],
+            ["a value of the wrong type", { "profile.age": "old" }],
+            ["a column and a path into it together", { profile: {}, "profile.plan": "x" }],
+        ])("rejects %s and leaves the row alone", async (_label, patch) => {
+            expect.assertions(2);
+
+            const writer = await seed();
+
+            await expect(writer.patch("a", patch as never)).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+
+            const row = await writer.get("a");
+
+            expect(row?.["profile"]).toStrictEqual({ age: 30, plan: "pro" });
+        });
+    });
+});
+
+describe("createSqlCtxDb — $onUpdateFn on a .global() table", () => {
+    let harness: ReturnType<typeof createSqliteHarness>;
+
+    beforeEach(() => {
+        harness = createSqliteHarness();
+    });
+
+    afterEach(() => {
+        harness.close();
+    });
+
+    it("patchIf restamps an `$onUpdateFn` column", async () => {
+        expect.assertions(1);
+
+        const touchedSchema = {
+            tables: {
+                notes: {
+                    indexes: [],
+                    shape: { slug: col("string"), touched: col("number", { defaultValue: 0, onUpdateFn: () => 99 }) },
+                    shardMode: { kind: "global" },
+                },
+            },
+        } as never;
+        const writer = createSqlCtxDb({ clock: () => 1, dialect: makeSqliteDialect(), exec: harness.exec, schema: touchedSchema });
+        const id = await writer.insert("notes", { slug: "a" });
+
+        await writer.patchIf?.("notes", id, { patch: { slug: "b" }, where: { slug: "a" } });
+
+        const row = await writer.get(id);
+
+        expect(row?.touched).toBe(99);
+    });
+
+    it("soft delete restamps an `$onUpdateFn` column like any other update", async () => {
+        expect.assertions(1);
+
+        const touchedSchema = {
+            tables: {
+                notes: {
+                    indexes: [],
+                    shape: { deletedAt: optionalCol("number"), slug: col("string"), touched: col("number", { defaultValue: 0, onUpdateFn: () => 99 }) },
+                    shardMode: { kind: "global" },
+                    softDeleteMode: { field: "deletedAt" },
+                },
+            },
+        } as never;
+        const writer = createSqlCtxDb({ clock: () => 1, dialect: makeSqliteDialect(), exec: harness.exec, schema: touchedSchema });
+        const id = await writer.insert("notes", { slug: "a" });
+
+        await writer.delete(id);
+
+        const row = await writer.findFirst("notes", { includeDeleted: true, where: { slug: "a" } });
+
+        expect(row?.touched).toBe(99);
     });
 });

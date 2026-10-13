@@ -19,6 +19,7 @@ const createFakeWriter = () => {
         delete: vi.fn<(id: string) => Promise<string>>((id: string) => Promise.resolve(`delete:${id}`)),
         deleteAll: vi.fn<(tableName: string) => Promise<string>>((tableName: string) => Promise.resolve(`deleteAll:${tableName}`)),
         deleteMany: vi.fn<(ids: ReadonlyArray<string>) => Promise<string>>((ids: ReadonlyArray<string>) => Promise.resolve(`deleteMany:${ids.join(",")}`)),
+        explain: vi.fn<(tableName: string) => Promise<string>>((tableName: string) => Promise.resolve(`explain:${tableName}`)),
         findFirst: vi.fn<(tableName: string) => Promise<string>>((tableName: string) => Promise.resolve(`findFirst:${tableName}`)),
         findFirstOrThrow: vi.fn<(tableName: string) => Promise<string>>((tableName: string) => Promise.resolve(`findFirstOrThrow:${tableName}`)),
         findMany: vi.fn<(tableName: string) => Promise<string>>((tableName: string) => Promise.resolve(`findMany:${tableName}`)),
@@ -92,6 +93,7 @@ describe("guardWriter — table-named methods under .rls('required')", () => {
         "aggregate",
         "count",
         "deleteAll",
+        "explain",
         "findFirst",
         "findFirstOrThrow",
         "findMany",
@@ -258,6 +260,20 @@ describe("guardWriter — generic id-based access resolves the owning table", ()
         await guarded.patch("orphan_id", { x: 1 });
 
         expect(raw.patch).toHaveBeenCalledTimes(1);
+    });
+
+    it("forwards the write options, so a post-image verdict reaches the store through the guard", async () => {
+        expect.assertions(1);
+
+        const raw = createFakeWriter();
+        const guarded = guardWriter(raw as never, requiredSchema as never, tableOfId) as unknown as {
+            patch: (id: string, p: unknown, table?: string, options?: unknown) => Promise<unknown>;
+        };
+        const options = { verify: () => true };
+
+        await guarded.patch("orphan_id", { x: 1 }, undefined, options);
+
+        expect(raw.patch).toHaveBeenCalledWith("orphan_id", { x: 1 }, undefined, options);
     });
 
     it("denies lookupById(id) for a bare id that resolves to a protected table (plan 254)", async () => {

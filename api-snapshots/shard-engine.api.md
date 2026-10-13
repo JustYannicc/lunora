@@ -634,6 +634,7 @@ type DataMigrationTransform = (document: DataMigrationDocument, context: DataMig
 interface DatabaseWriterLike {
     aggregate: (tableName: string, options: AggregateOptions) => Promise<AggregateResult>;
     asId?: (tableName: string, id: string) => string;
+    assertPatchAllowed?: (id: string, expectedTable?: string) => Promise<void>;
     cdcChangedTables?: (sinceSeq: number, options?: {
         cursorOnly?: boolean;
     }) => Promise<{
@@ -661,6 +662,7 @@ interface DatabaseWriterLike {
     }) => Promise<{
         deleted: number;
     }>;
+    explain: (tableName: string, args?: QueryArgs) => Promise<QueryPlan>;
     findFirst: (tableName: string, args?: QueryArgs) => Promise<Record<string, unknown> | null>;
     findFirstOrThrow: (tableName: string, args?: QueryArgs) => Promise<Record<string, unknown>>;
     findMany: (tableName: string, args?: QueryArgs) => Promise<QueryPage>;
@@ -683,9 +685,10 @@ interface DatabaseWriterLike {
         tableName: string;
     }>;
     normalizeId: (tableName: string, id: string) => null | string;
-    patch: (id: string, patch: Record<string, unknown>, expectedTable?: string) => Promise<void>;
+    patch: (id: string, patch: Record<string, unknown>, expectedTable?: string, options?: PatchWriteOptions) => Promise<void>;
     patchIf?: (tableName: string, id: string, args: {
         patch: Record<string, unknown>;
+        verify?: PatchVerifier;
         where: WhereInput;
     }) => Promise<{
         applied: boolean;
@@ -714,6 +717,7 @@ interface DatabaseWriterLike {
     rankPageRows?: (tableName: string, indexName: string, options?: RankPageOptions) => Promise<ShardRankPageResult>;
     related?: (start: RelatedStart, options?: RelatedOptions) => Promise<RelatedPage>;
     relationEdges?: ReadonlyArray<RelationEdge>;
+    relationWrites?: RelationWriteMap;
     replace: (id: string, document: Record<string, unknown>, expectedTable?: string, options?: {
         allowExplicitId?: boolean;
     }) => Promise<void>;
@@ -1452,6 +1456,12 @@ class NotUniqueError extends LunoraError {
 }
 ```
 
+### `NullPlacement` (type)
+
+```ts
+type NullPlacement = "first" | "last";
+```
+
 ### `OnDeleteActionLike` (type)
 
 ```ts
@@ -1470,7 +1480,10 @@ interface OrderByClause {
 ### `OrderByInput` (type)
 
 ```ts
-type OrderByInput = Record<string, SortDirection>;
+type OrderByInput = Record<string, SortDirection | {
+    nulls: NullPlacement;
+    sort: SortDirection;
+}>;
 ```
 
 ### `OrderKey` (interface)
@@ -1480,6 +1493,7 @@ interface OrderKey {
     direction: SortDirection;
     field: string;
     nullable: boolean;
+    nulls?: NullPlacement;
 }
 ```
 
@@ -1532,6 +1546,20 @@ interface PaginationOptions {
     cursor?: null | string;
     endCursor?: null | string;
     numItems: number;
+}
+```
+
+### `PatchVerifier` (type)
+
+```ts
+type PatchVerifier = (previous: Record<string, unknown>, next: Record<string, unknown>) => boolean;
+```
+
+### `PatchWriteOptions` (interface)
+
+```ts
+interface PatchWriteOptions {
+    verify?: PatchVerifier;
 }
 ```
 
@@ -1634,6 +1662,16 @@ interface QueryPage {
     isDone: boolean;
     page: Record<string, unknown>[];
     splitCursor?: null | string;
+}
+```
+
+### `QueryPlan` (interface)
+
+```ts
+interface QueryPlan {
+    params: unknown[];
+    plan: string[];
+    sql: string;
 }
 ```
 
@@ -1740,6 +1778,12 @@ const REPROJECTION_MIGRATION_PREFIX = "__lunora_reproject__";
 
 ```ts
 const RLS_UNWRAP_SYMBOL: symbol;
+```
+
+### `RangeOperandType` (type)
+
+```ts
+type RangeOperandType = "boolean" | "number" | "string";
 ```
 
 ### `RankBeforeOptions` (interface)
@@ -2124,6 +2168,25 @@ interface RelationExistsMarker {
 
 ```ts
 type RelationGraphReader = Pick<DatabaseWriterLike, "findMany"> & Pick<Partial<DatabaseWriterLike>, "lookupById">;
+```
+
+### `RelationWriteInfo` (interface)
+
+```ts
+interface RelationWriteInfo {
+    readonly colocated: boolean;
+    readonly field: string;
+    readonly kind: "many" | "one";
+    readonly nullable: boolean;
+    readonly references: string;
+    readonly table: string;
+}
+```
+
+### `RelationWriteMap` (type)
+
+```ts
+type RelationWriteMap = Readonly<Record<string, Readonly<Record<string, RelationWriteInfo>>>>;
 ```
 
 ### `RelayAttach` (interface)
@@ -3351,6 +3414,7 @@ interface ValidatorLike {
         readonly column?: ColumnMetaLike;
         readonly inner?: ValidatorLike;
         readonly members?: ReadonlyArray<ValidatorLike>;
+        readonly shape?: Readonly<Record<string, ValidatorLike>>;
         readonly tableName?: string;
         readonly value?: unknown;
     };
@@ -3409,6 +3473,7 @@ interface WhereSqlStrategy<T = SQL> {
     containsExpr?: (reference: T, term: T) => T;
     fieldRef: FieldRefSql<T>;
     inList?: (reference: T, items: ReadonlyArray<unknown>, negated: boolean, budget?: number) => T;
+    rangeTypeGuard: (field: string, type: RangeOperandType) => T;
     relationExists?: (request: unknown) => T;
     serialize: SerializeValue;
 }
@@ -3566,6 +3631,12 @@ const assertFlatPredicate: (where: WhereInput | undefined, schema: ResolveContex
 
 ```ts
 const assertNoExplicitUndefined: (op: "patch" | "patchIf" | "replace", document: Record<string, unknown>) => void;
+```
+
+### `assertPatchAllowed` (const)
+
+```ts
+const assertPatchAllowed: (options: PatchWriteOptions | undefined, previous: Record<string, unknown>, next: Record<string, unknown>) => void;
 ```
 
 ### `assertReadonly` (const)
@@ -3792,6 +3863,17 @@ const compactCdcDocs: (sql: SqlExec, throughSeq: number, maxRows: number) => voi
 const compileWhereSql: <T = SQL>(where: WhereInput | undefined, strategy: WhereSqlStrategy<T>, fragments?: WhereFragments<T>, reservedParams?: number) => T | undefined;
 ```
 
+### `composeReadPredicate` (const)
+
+```ts
+const composeReadPredicate: (definition: TableDefinitionLike, args: QueryArgs, relation: Omit<ResolveRelationPredicatesOptions, "relationBaseWhere">) => Promise<{
+    fetchLimit: number | undefined;
+    limit: number | undefined;
+    orderKeys: OrderKey[];
+    predicate: WhereInput | undefined;
+}>;
+```
+
 ### `computeRankPage` (const)
 
 ```ts
@@ -3970,6 +4052,12 @@ const depKey: (table: string, idOrScan: string) => string;
 
 ```ts
 const deriveRelationEdges: (schema: SchemaLike) => RelationEdge[];
+```
+
+### `describeRelationWrites` (const)
+
+```ts
+const describeRelationWrites: (schema: SchemaLike) => RelationWriteMap;
 ```
 
 ### `diffExternalSource` (const)
@@ -4494,6 +4582,24 @@ const normalizeSourceDocument: (document: Record<string, unknown>) => Record<str
 const normalizeSourceValue: (value: unknown) => unknown;
 ```
 
+### `nullsFirstOf` (const)
+
+```ts
+const nullsFirstOf: (key: Pick<OrderKey, "direction" | "nulls">) => boolean;
+```
+
+### `nullsOrderSuffix` (const)
+
+```ts
+const nullsOrderSuffix: (nullsFirst: boolean) => string;
+```
+
+### `operatorFields` (const)
+
+```ts
+const operatorFields: (definition: TableDefinitionLike, patch: Record<string, unknown>) => ReadonlySet<string>;
+```
+
 ### `param` (const)
 
 ```ts
@@ -4516,6 +4622,12 @@ const parseExportShardArgs: (args: Record<string, unknown>) => ExportShardAdminA
 
 ```ts
 const parseImportShardArgs: (args: Record<string, unknown>) => ImportShardAdminArgs;
+```
+
+### `patchDependsOnRow` (const)
+
+```ts
+const patchDependsOnRow: (definition: TableDefinitionLike, patch: Record<string, unknown>) => boolean;
 ```
 
 ### `planAggregateLookup` (const)
@@ -4738,6 +4850,12 @@ const readIdempotent: (sql: SqlExec, identity: string, mutationId: string) => Id
 const readMigrationStatus: (sql: SqlExec, id?: string) => MigrationStatusRow[];
 ```
 
+### `readPatchField` (const)
+
+```ts
+const readPatchField: (document: Record<string, unknown>, field: string) => unknown;
+```
+
 ### `readQueueMessageById` (const)
 
 ```ts
@@ -4886,6 +5004,12 @@ const reprojectionMigrationId: (table: string) => string;
 
 ```ts
 const reprojectionTables: (schema: SchemaLike) => string[];
+```
+
+### `resolvePatch` (const)
+
+```ts
+const resolvePatch: (definition: TableDefinitionLike, patch: Record<string, unknown>, current: Record<string, unknown>) => Record<string, unknown>;
 ```
 
 ### `resolveRankPartition` (const)

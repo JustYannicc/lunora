@@ -9,9 +9,18 @@
  */
 import type { SqlExec } from "./ctx-db";
 import { runSql } from "./do-exec";
-import { DOC_COLUMN, jsonPath, quoteIdentifier, rowToDocument, serializeSqlValue } from "./do-sql";
-import { buildSeekBeforeWhere, buildSeekWhere, decodeCursor, encodeCursor, normalizeOrderKeys, tiebreakDirectionFor, uniqueIndexFields } from "./query-args";
-import type { OrderKey, PaginationOptions, QueryPage, TableDefinitionLike } from "./schema-types";
+import { DOC_COLUMN, jsonPath, jsonTypeGuard, quoteIdentifier, rowToDocument, serializeSqlValue } from "./do-sql";
+import {
+    buildSeekBeforeWhere,
+    buildSeekWhere,
+    decodeCursor,
+    encodeCursor,
+    normalizeOrderKeys,
+    nullsOrderSuffix,
+    tiebreakDirectionFor,
+    uniqueIndexFields,
+} from "./query-args";
+import type { NullPlacement, OrderKey, PaginationOptions, QueryPage, TableDefinitionLike } from "./schema-types";
 import type { TextFragment } from "./where-fragments";
 import { joinText, rawText, textFragments } from "./where-fragments";
 import type { WhereSqlStrategy } from "./where-sql";
@@ -79,12 +88,24 @@ const selectPageSql = (tableName: string, where: TextFragment | undefined, order
  */
 const doWhereTextStrategy: WhereSqlStrategy<TextFragment> = {
     fieldRef: (field) => rawText(jsonPath(field)),
+    rangeTypeGuard: (field, type) => rawText(jsonTypeGuard(field, type)),
     serialize: serializeSqlValue,
+};
+
+/** The SQL for a requested NULL placement — fixed literals, never the caller's string. */
+const nullsClause = (nulls: NullPlacement | undefined): string => {
+    if (nulls === undefined) {
+        return "";
+    }
+
+    return nullsOrderSuffix(nulls === "first");
 };
 
 /** An ORDER BY for `keys`, with an `id` tiebreak in the last key's direction unless an id field is already ordered. */
 const compileOrderByText = (keys: OrderKey[]): string => {
-    const parts = keys.map((key) => `${jsonPath(key.field)} ${key.direction === "desc" ? "DESC" : "ASC"}`);
+    // `nulls` is only set when it differs from SQLite's default (NULLs first ascending, last descending),
+    // so an un-annotated read compiles exactly as before.
+    const parts = keys.map((key) => `${jsonPath(key.field)} ${key.direction === "desc" ? "DESC" : "ASC"}${nullsClause(key.nulls)}`);
 
     if (!keys.some((key) => key.field === "_id" || key.field === "id")) {
         parts.push(`${jsonPath("id")} ${tiebreakDirectionFor(keys) === "desc" ? "DESC" : "ASC"}`);

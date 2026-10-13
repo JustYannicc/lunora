@@ -89,6 +89,7 @@ type TablesOfIds = (ids: ReadonlyArray<string>, expectedTable?: string) => Promi
  */
 interface GuardableWriter {
     aggregate: (tableName: string, options: unknown) => unknown;
+    assertPatchAllowed?: (id: string, expectedTable?: string) => unknown;
     count: (tableName: string, whereOrArgs?: unknown) => unknown;
     delete: (id: string, expectedTable?: string, options?: { hard?: boolean }) => unknown;
     deleteAll?: (tableName: string, options?: { chunkSize?: number; hard?: boolean }) => unknown;
@@ -107,7 +108,7 @@ interface GuardableWriter {
         options?: { allowExplicitId?: boolean; limit?: number },
     ) => unknown;
     lookupById?: (id: string, expectedTable?: string) => Promise<null | { row: Record<string, unknown>; tableName: string }>;
-    patch: (id: string, patch: unknown, expectedTable?: string) => unknown;
+    patch: (id: string, patch: unknown, expectedTable?: string, options?: unknown) => unknown;
     patchMany: (patches: ReadonlyArray<{ id: string; patch: Record<string, unknown> }>, options?: { limit?: number }, expectedTable?: string) => unknown;
     patchWhere?: (tableName: string, args: { patch: Record<string, unknown>; where: Record<string, unknown> }, options?: { limit?: number }) => unknown;
     query: (tableName: string) => unknown;
@@ -184,6 +185,8 @@ const WRITER_METHOD_GATING = {
     aggregate: "loop-gated",
     /** Pure id formatter — composes a string from `(tableName, id)`, reads and writes nothing. */
     asId: "ungated",
+    /** By-id, and the update gate a relation-only patch runs on its parent row. It writes nothing, so the guard only resolves the table. */
+    assertPatchAllowed: "id-gated",
     /** Metadata-only changelog probe: returns table NAMES and a cursor, never a document. */
     cdcChangedTables: "ungated",
     count: "loop-gated",
@@ -191,6 +194,8 @@ const WRITER_METHOD_GATING = {
     deleteAll: "loop-gated",
     deleteMany: "id-gated",
     deleteWhere: "inline-table-gated",
+    /** Table-name-first, and it compiles a read of that table, so the loop's table gate covers it. */
+    explain: "loop-gated",
     findFirst: "loop-gated",
     findFirstOrThrow: "loop-gated",
     findMany: "loop-gated",
@@ -227,6 +232,9 @@ const WRITER_METHOD_GATING = {
      * `related`'s own entry describes.
      */
     relationEdges: "ungated",
+
+    /** Schema-derived metadata for the facade's nested relation writes: names tables and columns, reaches no row. */
+    relationWrites: "ungated",
     replace: "id-gated",
     restore: "id-gated",
     /** The system-table reader: reserved tables, not user tables, so the per-table policy model does not apply. */
@@ -453,10 +461,10 @@ const guardWriter = <W>(
             // eslint-disable-next-line unicorn/no-null -- mirrors the seam's own `null`-for-absent contract
             return base.lookupById?.(id, expectedTable) ?? null;
         },
-        patch: async (id: string, patch: unknown, expectedTable?: string) => {
+        patch: async (id: string, patch: unknown, expectedTable?: string, options?: unknown) => {
             await guardById(id, expectedTable);
 
-            return base.patch(id, patch, expectedTable);
+            return base.patch(id, patch, expectedTable, options);
         },
         patchMany: async (patches: ReadonlyArray<{ id: string; patch: Record<string, unknown> }>, options?: { limit?: number }, expectedTable?: string) => {
             // `expectedTable` (the facade's bound table) scopes each id, mirroring the single patch gate.
@@ -466,6 +474,11 @@ const guardWriter = <W>(
             );
 
             return base.patchMany(patches, options, expectedTable);
+        },
+        assertPatchAllowed: async (id: string, expectedTable?: string) => {
+            await guardById(id, expectedTable);
+
+            return base.assertPatchAllowed?.(id, expectedTable);
         },
         patchWhere: base.patchWhere
             ? async (tableName: string, args: { patch: Record<string, unknown>; where: Record<string, unknown> }, options?: { limit?: number }) => {

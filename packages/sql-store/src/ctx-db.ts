@@ -35,6 +35,9 @@ import type {
     DatabaseWriterLike,
     GroupByEntry,
     GroupByOptions,
+    NullPlacement,
+    PatchWriteOptions,
+    QueryArgs,
     QueryPage,
     RankIndexDefinitionLike,
     RankPage,
@@ -42,6 +45,7 @@ import type {
     SchedulerLike,
     SchemaLike,
     ServerDefaultContextLike,
+    SortDirection,
     TableDefinitionLike,
     TableReaderLike,
     TriggerContextLike,
@@ -58,23 +62,23 @@ import {
     applySelect,
     assertFlatPredicate,
     assertNoExplicitUndefined,
+    assertPatchAllowed,
     assertValidClientId,
-    buildSeekWhere,
     CDC_LOG_TABLE,
     CDC_LOG_TABLE_SEQ_INDEX,
     cdcForkedError,
     cdcTrimmedError,
     coerceAggregateNumber,
     compileWhereSql,
+    composeReadPredicate,
     ConflictError,
     CountRlsUnsupportedError,
     CURSOR_PREFIX,
     cursorBelowRetainedFloor,
-    decodeCursor,
+    describeRelationWrites,
     encodeAggregateKey,
     encodeCursor,
     encodePartitionKey,
-    equalityPinnedFields,
     fanOutScalarCounts,
     foldAggregateTally,
     hasTrigger,
@@ -84,15 +88,18 @@ import {
     mergeWhere,
     normalizeCountArgument,
     normalizeIdStructurally,
-    normalizeOrderKeys,
     NotFoundError,
     NotUniqueError,
+    nullsFirstOf,
+    nullsOrderSuffix,
+    patchDependsOnRow,
     RANK_TIEBREAK,
     rankPivotConditionSql,
     rankTableName,
     readAggregateValue,
     relationHooks,
     renderSql,
+    resolvePatch,
     resolveRankPartition,
     resolveRankSeekTuple,
     resolveRelationPredicates,
@@ -108,14 +115,13 @@ import {
     stripReservedPatchFields,
     throwingScheduler,
     tiebreakDirectionFor,
-    uniqueIndexFields,
     whereOfFilter,
     WORKERD_SQLITE_LIMITS,
 } from "@lunora/shard-engine";
-import type { SQL } from "drizzle-orm";
-import { sql } from "drizzle-orm";
+import { SQL, sql } from "drizzle-orm";
 
 import { evictOldestEntry } from "../../../shared/evict-oldest";
+import { readFieldPath } from "../../../shared/json-field-path";
 import { decodeWire, encodeWire, needsWireEncoding } from "../../../shared/wire-codec";
 import { runSqlAggregateMigrations, runSqlGlobalTableMigrations, runSqlRankMigrations } from "./ctx-db-migrations";
 import type { SearchStage } from "./ctx-db-search";
@@ -130,15 +136,21 @@ import {
     createIndexIfNotExists,
     decodeRow,
     decodeRows,
+    fieldRefSql,
     forEachRowPaged,
     nextRowVersion,
     nullSafeEqualsSql,
     OCC_VERSION_COLUMN,
+    pathContainsNeedle,
+    pathInList,
+    pathTextReference,
+    pathTypeGuardSql,
     queryAll,
     queryBatch,
     queryRun,
     serializeColumnValue,
     serializeDocumentColumn,
+    serializeFieldValue,
     tableColumns,
 } from "./sql-exec";
 import { effectiveColumnKind, sqliteDecode } from "./value-codec";
@@ -146,8 +158,16 @@ import { effectiveColumnKind, sqliteDecode } from "./value-codec";
 /** Order fields that already provide a stable tiebreak (no extra `id` term needed). */
 const ID_ORDER_FIELDS = new Set(["_id", "id"]);
 
+/** Exhaustiveness guard for the {@link orderTermsFor} switch: a dialect it does not spell out is a compile error here. */
+const assertNeverDialect = (name: never): never => {
+    throw new LunoraError("INTERNAL", `no ORDER BY NULL placement for dialect "${String(name)}"`);
+};
+
+/** One ORDER BY key as {@link orderTermsFor} reads it. */
+type OrderTermKey = { direction: SortDirection; field: string; nullable?: boolean; nulls?: NullPlacement };
+
 /**
- * Where this engine puts NULLs, spelled out, for the keys that can hold one.
+ * The ORDER BY terms for one key, with each dialect's NULL placement spelled out.
  *
  * `buildSeekWhere` is shared and dialect-blind: its NULL-aware pivot assumes the
  * SQLite/MySQL default, NULLs FIRST ascending and LAST descending. Postgres is
@@ -163,18 +183,38 @@ const ID_ORDER_FIELDS = new Set(["_id", "id"]);
  * null-pivot shapes in the same stroke — they disagreed with the seek on
  * Postgres too, just less visibly.
  *
- * Emitted only for a NULLABLE key on Postgres: MySQL has no `NULLS` clause in
- * its grammar at all, SQLite already agrees, and on a non-nullable column the
- * clause is noise that can cost the index — Postgres cannot answer
- * `ORDER BY c DESC NULLS LAST` from a plain btree walk.
- * @returns the ` NULLS FIRST`/` NULLS LAST` suffix, or `""` when the engine default already agrees
+ * A nullable key only: on a non-nullable column the clause is noise that can cost the index.
+ * Postgres always spells the placement out (its default is the mirror of the seek's); SQLite only when
+ * the caller asked for a non-default placement; MySQL has no `NULLS` clause in its grammar, so a
+ * requested placement becomes a leading `(col IS NULL)` key — NULL rows are `1`, so ascending puts
+ * them last and descending first. MySQL's default needs nothing, as it already sorts the seek's way.
+ * @returns the ORDER BY terms for the key, in order
  */
-const nullsPlacement = (dialect: SqlDialect, key: { direction?: string; nullable?: boolean }): string => {
-    if (dialect.name !== "postgres" || key.nullable !== true) {
-        return "";
-    }
+const orderTermsFor = (dialect: SqlDialect, key: OrderTermKey): SQL[] => {
+    const direction = key.direction === "desc" ? "DESC" : "ASC";
+    const nullable = key.nullable === true;
+    const term = (placement: string): SQL => sql`${fieldRefSql(dialect, key.field)} ${sql.raw(`${direction}${placement}`)}`;
 
-    return key.direction === "desc" ? " NULLS LAST" : " NULLS FIRST";
+    switch (dialect.name) {
+        case "mysql": {
+            const column = term("");
+
+            if (!nullable || key.nulls === undefined) {
+                return [column];
+            }
+
+            return [sql`(${fieldRefSql(dialect, key.field)} IS NULL) ${sql.raw(key.nulls === "first" ? "DESC" : "ASC")}`, column];
+        }
+        case "postgres": {
+            return [term(nullable ? nullsOrderSuffix(nullsFirstOf(key)) : "")];
+        }
+        case "sqlite": {
+            return [term(nullable && key.nulls !== undefined ? nullsOrderSuffix(nullsFirstOf(key)) : "")];
+        }
+        default: {
+            return assertNeverDialect(dialect.name);
+        }
+    }
 };
 
 /**
@@ -190,10 +230,10 @@ const nullsPlacement = (dialect: SqlDialect, key: { direction?: string; nullable
  * ahead of the tiebreak, so an ordered read is an index walk on this backend
  * too — a single direction throughout is what keeps it one.
  *
- * NULL placement is the other half of that agreement — see {@link nullsPlacement}.
+ * NULL placement is the other half of that agreement — see {@link orderTermsFor}.
  */
-const compileOrderBySql = (keys: ReadonlyArray<{ direction?: string; field: string; nullable?: boolean }>, dialect: SqlDialect): SQL => {
-    const parts = keys.map((key) => sql`${columnRefSql(key.field)} ${sql.raw(`${key.direction === "desc" ? "DESC" : "ASC"}${nullsPlacement(dialect, key)}`)}`);
+const compileOrderBySql = (keys: ReadonlyArray<OrderTermKey>, dialect: SqlDialect): SQL => {
+    const parts = keys.flatMap((key) => orderTermsFor(dialect, key));
 
     if (!keys.some((key) => ID_ORDER_FIELDS.has(key.field))) {
         // No adaptation: the helper reads `direction` off the last key and
@@ -374,6 +414,16 @@ const applyInsertDefaults = (
     return result;
 };
 
+/**
+ * One `EXPLAIN` row as a line of text. SQLite and D1 report a `detail` column, Postgres one
+ * `QUERY PLAN` column; MySQL reports a wide table row, joined so no column is dropped.
+ */
+const planStepText = (step: Record<string, unknown>): string => {
+    const text = step["detail"] ?? step["QUERY PLAN"];
+
+    return typeof text === "string" ? text : Object.values(step).map(String).join(" | ");
+};
+
 /** Recompute every `.$onUpdateFn()` field the caller did not set explicitly, mutating `target` in place. */
 const applyOnUpdate = (
     definition: TableDefinitionLike,
@@ -552,7 +602,8 @@ const mapGroupByRows = (definition: TableDefinitionLike, by: ReadonlyArray<strin
 const rankIndexFieldsUnchanged = (index: RankIndexDefinitionLike, previous: Record<string, unknown>, next: Record<string, unknown>): boolean => {
     const fields = [...(index.partitionBy ?? []), ...index.sortBy.map((key) => key.field), ...(index.where ? Object.keys(index.where) : [])];
 
-    return fields.every((field) => previous[field] === next[field]);
+    // `where` keys may be dotted paths into an object column; read them the way the SQL and the matcher do.
+    return fields.every((field) => readFieldPath(previous, field) === readFieldPath(next, field));
 };
 
 /**
@@ -1490,11 +1541,11 @@ const throwIfRowTooBig = (dialect: SqlDialect, error: unknown, table: string): v
 };
 
 /**
- * Reads-and-decides a `patchIf` makes before giving up with `ConflictError`.
+ * Reads-and-decides a `patchIf` or an operator `patch` makes before giving up with `ConflictError`.
  * Each miss means another writer changed the row in between, so a run of this
  * length is sustained contention on one row, not bad luck.
  */
-const PATCH_IF_ATTEMPTS = 16;
+const OCC_RETRY_ATTEMPTS = 16;
 
 /** The column `patchIf`'s read evaluates its `where` into; double-underscored so no schema field can take the name. */
 const PATCH_IF_MATCH_COLUMN = "__lunora_patch_if_match__";
@@ -1531,6 +1582,23 @@ const mapWriteError = (dialect: SqlDialect, error: unknown, table: string): neve
  */
 const provisioningByScope = new WeakMap<object, Promise<void>>();
 
+/**
+ * The server `in` renderer, with one change for path values. Their items are SQL fragments (see
+ * `serializeFieldValue`), which the column form's wide branch cannot unpack, so a list holding one goes to
+ * {@link pathInList} whatever its length.
+ */
+const pathAwareInList = (engine: "mysql" | "postgres") => {
+    const serverIn = serverInList(engine);
+
+    return (reference: SQL, items: ReadonlyArray<unknown>, negated: boolean, budget?: number): SQL => {
+        if (items.some((item) => item instanceof SQL)) {
+            return pathInList(engine, reference, items, negated);
+        }
+
+        return serverIn(reference, items, negated, budget);
+    };
+};
+
 const createSqlCtxDb = (options: SqlCtxDbOptions): DatabaseWriterLike => {
     const { crossShardCounter, crossShardReader, exec, maxRelationKeys, schema } = options;
 
@@ -1546,7 +1614,8 @@ const createSqlCtxDb = (options: SqlCtxDbOptions): DatabaseWriterLike => {
     // and (on D1) the bound-parameter budget. `serialize` is per-TABLE — see
     // {@link whereSqlStrategyFor}.
     const whereSqlStrategyBase: Omit<WhereSqlStrategy, "serialize"> = {
-        fieldRef: columnRefSql,
+        fieldRef: (field) => fieldRefSql(dialect, field),
+        rangeTypeGuard: (field, type) => pathTypeGuardSql(dialect, field, type),
         // `contains` keeps whatever case behaviour each engine's substring test
         // already gives callers, which is NOT the same across the three: SQLite is
         // ASCII-case-insensitive (the compiler's `instr(lower(…), lower(…))`
@@ -1557,14 +1626,32 @@ const createSqlCtxDb = (options: SqlCtxDbOptions): DatabaseWriterLike => {
         // is case-SENSITIVE there, not case-insensitive as this comment used to say.
         // Left as-is deliberately: there is no majority to fold toward, and making
         // MySQL insensitive would silently widen every shipped `contains` filter.
-        ...(dialect.name === "mysql" ? { containsExpr: (reference, term) => sql`LOCATE(${term}, ${reference}) > 0` } : {}),
-        ...(dialect.name === "postgres" ? { containsExpr: (reference, term) => sql`strpos(${reference}, ${term}) > 0` } : {}),
+        ...(dialect.name === "mysql"
+            ? {
+                  containsExpr: (reference, term) => {
+                      const text = pathTextReference(reference);
+
+                      // A path searches its leaf's text for the term's text, the same substring test a column gets.
+                      return text === undefined ? sql`LOCATE(${term}, ${reference}) > 0` : sql`LOCATE(${pathContainsNeedle("mysql", term)}, ${text}) > 0`;
+                  },
+              }
+            : {}),
+        ...(dialect.name === "postgres"
+            ? {
+                  containsExpr: (reference, term) => {
+                      const text = pathTextReference(reference);
+
+                      // A path searches its leaf's text for the term's text, the same substring test a column gets.
+                      return text === undefined ? sql`strpos(${reference}, ${term}) > 0` : sql`strpos(${text}, ${pathContainsNeedle("postgres", term)}) > 0`;
+                  },
+              }
+            : {}),
         // The compiler defaults `inList` to SQLite's bounded `json_each` form,
         // because D1 is the same Workerd build as a Durable Object and caps a
         // statement at 100 bound parameters. The other two engines bind
         // thousands and have no `json_each`, so they take a literal list up to
         // a bound and one array/JSON parameter past it.
-        ...(dialect.name === "sqlite" ? {} : { inList: serverInList(dialect.name) }),
+        ...(dialect.name === "sqlite" ? {} : { inList: pathAwareInList(dialect.name) }),
     };
 
     /** One `WhereSqlStrategy` per table definition — see {@link whereSqlStrategyFor}. Definitions come from `defineSchema` and never mutate, so the entry is valid for the ctx-db's life. */
@@ -1603,7 +1690,7 @@ const createSqlCtxDb = (options: SqlCtxDbOptions): DatabaseWriterLike => {
 
         const strategy: WhereSqlStrategy = {
             ...whereSqlStrategyBase,
-            serialize: (value, field) => serializeDocumentColumn(definition, field, value),
+            serialize: (value, field) => serializeFieldValue(dialect, field, value, (bound) => serializeDocumentColumn(definition, field, bound)),
         };
 
         whereStrategyByDefinition.set(definition, strategy);
@@ -1955,7 +2042,7 @@ const createSqlCtxDb = (options: SqlCtxDbOptions): DatabaseWriterLike => {
         // number in a marked form only the column's kind can reproduce, and a
         // kind-blind binding here scoped the recompute to no rows at all.
         const serialize = (key: string, value: unknown): unknown =>
-            definition ? serializeDocumentColumn(definition, key, value) : serializeColumnValue(value);
+            serializeFieldValue(dialect, key, value, (bound) => (definition ? serializeDocumentColumn(definition, key, bound) : serializeColumnValue(bound)));
 
         for (const key of index.by ?? []) {
             // eslint-disable-next-line unicorn/no-null -- canonical key tuple: a missing by-field is matched as NULL, mirroring encodeAggregateKey's null-fill
@@ -1967,8 +2054,10 @@ const createSqlCtxDb = (options: SqlCtxDbOptions): DatabaseWriterLike => {
         for (const [key, expected] of Object.entries(index.where ?? {})) {
             const literal = expected !== null && typeof expected === "object" && !Array.isArray(expected) ? (expected as { eq: unknown }).eq : expected;
             const value = serialize(key, literal);
+            // A static `where` key may be a dotted path into an object column.
+            const reference = fieldRefSql(dialect, key);
 
-            conditions.push(value === null ? sql`${columnRefSql(key)} IS NULL` : sql`${columnRefSql(key)} = ${value}`);
+            conditions.push(value === null ? sql`${reference} IS NULL` : sql`${reference} = ${value}`);
         }
 
         const whereSql = conditions.length > 0 ? sql` WHERE ${sql.join(conditions, sql` AND `)}` : sql``;
@@ -2615,6 +2704,7 @@ const createSqlCtxDb = (options: SqlCtxDbOptions): DatabaseWriterLike => {
         patch: Record<string, unknown>,
         snapshot: Record<string, unknown> | undefined,
         condition?: SQL,
+        patchOptions?: PatchWriteOptions,
     ): Promise<Record<string, unknown> | undefined> => {
         const existing = decodeRow(definition, snapshot);
 
@@ -2622,9 +2712,15 @@ const createSqlCtxDb = (options: SqlCtxDbOptions): DatabaseWriterLike => {
             throw new LunoraError("INTERNAL", `document not found: ${id}`);
         }
 
-        const merged: Record<string, unknown> = { ...existing, ...stripReservedPatchFields(patch), _id: id };
+        // Atomic field operators resolve against THIS read; the version check below
+        // rejects the write if the row has moved since, and `patch` re-reads.
+        const effectivePatch = resolvePatch(definition, patch, existing);
+        const merged: Record<string, unknown> = { ...existing, ...stripReservedPatchFields(effectivePatch), _id: id };
 
-        applyOnUpdate(definition, patch, merged, auth);
+        applyOnUpdate(definition, effectivePatch, merged, auth);
+
+        // The caller's authorization verdict, taken on the row this attempt actually produces.
+        assertPatchAllowed(patchOptions, existing, merged);
 
         // Refinement checks fire on the merged row so a patch that flips
         // a field to an invalid value is rejected before D1 sees it.
@@ -2885,7 +2981,42 @@ const createSqlCtxDb = (options: SqlCtxDbOptions): DatabaseWriterLike => {
         return byId;
     });
 
+    /**
+     * Compile a `findMany` read down to its SQL. The predicate, ordering and page size come from
+     * {@link composeReadPredicate}, so this only emits them as text. Shared by `findMany` and
+     * `explain`, so the statement a plan describes is the one a read runs.
+     */
+    const compileFindMany = async (tableName: string, definition: TableDefinitionLike, args: QueryArgs) => {
+        const { fetchLimit, limit, orderKeys, predicate } = await composeReadPredicate(definition, args, {
+            fetcher: relationPredicateFetcher,
+            maxRelationKeys,
+            schema,
+            tableName,
+        });
+
+        const whereCondition = compileWhereSql(predicate, whereSqlStrategyFor(definition));
+        const orderBy = compileOrderBySql(orderKeys, dialect);
+
+        let query = sql`SELECT * FROM ${sql.identifier(tableName)}`;
+
+        if (whereCondition) {
+            query = sql`${query} WHERE ${whereCondition}`;
+        }
+
+        query = sql`${query} ORDER BY ${orderBy}`;
+
+        if (fetchLimit !== undefined) {
+            query = sql`${query} LIMIT ${sql.raw(String(fetchLimit))}`;
+        }
+
+        return { limit, orderKeys, query };
+    };
+
+    const relationWrites = describeRelationWrites(schema);
+
     const writer: DatabaseWriterLike = {
+        relationWrites,
+
         /**
          * Which tables the changelog saw a write to after `sinceSeq` (see
          * {@link DatabaseWriterLike.cdcChangedTables}) — `undefined` when this
@@ -3125,7 +3256,11 @@ const createSqlCtxDb = (options: SqlCtxDbOptions): DatabaseWriterLike => {
                 // Soft delete: keep the row, stamp the marker via an all-column
                 // UPDATE (same encoding as `patch`). Companions re-sync to the
                 // merged row; read scoping (not companion removal) hides it.
-                const merged: Record<string, unknown> = { ...existing, [softField]: clock() };
+                const marker = { [softField]: clock() };
+                const merged: Record<string, unknown> = { ...existing, ...marker };
+
+                // The marker is this write's explicit field; every other `$onUpdateFn` column restamps like any other update.
+                applyOnUpdate(definition, marker, merged, auth);
                 const assignments = sql.join(
                     Object.keys(definition.shape).map(
                         // eslint-disable-next-line unicorn/no-null -- SQL bind value: an absent column binds `null`, matching the patch path.
@@ -3198,19 +3333,6 @@ const createSqlCtxDb = (options: SqlCtxDbOptions): DatabaseWriterLike => {
             // The primary list read — provision the global tables first so a
             // fresh database returns an empty page instead of `no such table`.
             await ensureMigrated();
-
-            const orderKeys = normalizeOrderKeys(args.orderBy, definition.shape, {
-                pinned: equalityPinnedFields(args.where),
-                uniqueBy: uniqueIndexFields(definition.indexes, definition.shape),
-            });
-            const seek = args.cursor ? buildSeekWhere(orderKeys, decodeCursor(args.cursor)) : undefined;
-
-            // Relation reads routed by the child's backend (shard-local child of
-            // this global parent → injected cross-shard reader; global/same-
-            // backend → local D1 writer). Shared with the aggregate/count paths
-            // as the top-level `relationPredicateFetcher`; aliased here for the
-            // nested `with` load.
-            const relationFetcher = relationPredicateFetcher;
 
             /**
              * Grouped aggregate counter for `_count` relation loading. For
@@ -3288,48 +3410,7 @@ const createSqlCtxDb = (options: SqlCtxDbOptions): DatabaseWriterLike => {
                 return result;
             };
 
-            // RLS (3.2) / aggregates (3.1) inject `baseWhere` we AND-merge
-            // before the keyset seek so policy + cursor compose cleanly.
-            let predicate: undefined | WhereInput = mergeWhere(args.baseWhere, args.where);
-
-            // Soft delete: hide rows whose marker column is set unless the caller
-            // opted in via `includeDeleted`. Relation `with` loads route back
-            // through this `findMany`, so they inherit the scope automatically.
-            predicate = mergeWhere(predicate, softDeleteScope(definition.softDeleteMode, args.includeDeleted));
-
-            // Rewrite relation-crossing predicates into flat `IN`/`NOT IN` via a
-            // backend-routed child fetch before compiling. `relationBaseWhere` is
-            // threaded through so a child table's RLS read filter applies on the
-            // hop — as it is on the `with`-load `resolveWith` calls below.
-            predicate = await resolveRelationPredicates(predicate, {
-                fetcher: relationFetcher,
-                maxRelationKeys,
-                relationBaseWhere: args.relationBaseWhere,
-                schema,
-                tableName,
-            });
-
-            if (seek) {
-                predicate = predicate ? { AND: [predicate, seek] } : seek;
-            }
-
-            const whereCondition = compileWhereSql(predicate, whereSqlStrategyFor(definition));
-            const orderBy = compileOrderBySql(orderKeys, dialect);
-
-            let query = sql`SELECT * FROM ${sql.identifier(tableName)}`;
-
-            if (whereCondition) {
-                query = sql`${query} WHERE ${whereCondition}`;
-            }
-
-            query = sql`${query} ORDER BY ${orderBy}`;
-
-            const limit = typeof args.limit === "number" ? Math.max(0, Math.floor(args.limit)) : undefined;
-
-            if (limit !== undefined) {
-                // Over-fetch by one row to learn whether another page exists.
-                query = sql`${query} LIMIT ${sql.raw(String(limit + 1))}`;
-            }
+            const { limit, orderKeys, query } = await compileFindMany(tableName, definition, args);
 
             const rows = await queryAll(exec, dialect, query);
             const documents = decodeRows(definition, rows);
@@ -3337,7 +3418,7 @@ const createSqlCtxDb = (options: SqlCtxDbOptions): DatabaseWriterLike => {
             if (limit === undefined) {
                 if (args.with) {
                     await resolveWith({
-                        fetcher: relationFetcher,
+                        fetcher: relationPredicateFetcher,
                         groupedCounter: relationGroupedCounter,
                         parents: documents,
                         ...relationHooks(args),
@@ -3357,7 +3438,7 @@ const createSqlCtxDb = (options: SqlCtxDbOptions): DatabaseWriterLike => {
 
             if (args.with) {
                 await resolveWith({
-                    fetcher: relationFetcher,
+                    fetcher: relationPredicateFetcher,
                     groupedCounter: relationGroupedCounter,
                     parents: page,
                     ...relationHooks(args),
@@ -3375,6 +3456,24 @@ const createSqlCtxDb = (options: SqlCtxDbOptions): DatabaseWriterLike => {
                 isDone: !hasMore,
                 page: applySelect(page, args.select, args.with),
             };
+        },
+
+        async explain(tableName, args = {}) {
+            const definition = schema.tables[tableName];
+
+            if (!definition) {
+                throw new LunoraError("INTERNAL", `unknown table: ${tableName}`);
+            }
+
+            await ensureMigrated();
+
+            const { query } = await compileFindMany(tableName, definition, args);
+            // SQLite and D1 spell it `EXPLAIN QUERY PLAN`; Postgres and MySQL, plain `EXPLAIN`.
+            const prefix = dialect.name === "sqlite" ? "EXPLAIN QUERY PLAN" : "EXPLAIN";
+            const steps = await queryAll(exec, dialect, sql`${sql.raw(prefix)} ${query}`);
+            const { params, sql: text } = renderSql(dialect.name, query);
+
+            return { params, plan: steps.map((step) => planStepText(step)), sql: text };
         },
 
         async get(id, expectedTable) {
@@ -3576,7 +3675,7 @@ const createSqlCtxDb = (options: SqlCtxDbOptions): DatabaseWriterLike => {
             return normalizeIdStructurally(schema, tableName, id);
         },
 
-        async patch(id, patch, expectedTable) {
+        async patch(id, patch, expectedTable, patchOptions) {
             // A key present with value `undefined` is a silent-data-loss footgun:
             // `runRowValidators` skips it (`v.optional(x).parse(undefined)` is
             // fine) and `serializeColumnValue(merged[field] ?? null)` then wrote
@@ -3598,15 +3697,24 @@ const createSqlCtxDb = (options: SqlCtxDbOptions): DatabaseWriterLike => {
                 throw new LunoraError("INTERNAL", `document not found: ${id}`);
             }
 
-            // Capture the RAW stored row alongside the decoded `existing` — the
-            // raw values seed the optimistic-concurrency CAS below, before the
-            // before-update trigger's `await` window can let a concurrent write
-            // slip in.
-            const snapshot = await rawRow(tableName, id);
+            // Each attempt reads the RAW stored row alongside the decoded `existing`: the raw values
+            // seed the optimistic-concurrency CAS, before the before-update trigger's `await` window
+            // can let a concurrent write slip in. A plain patch that loses the version check is a real
+            // conflict. An operator patch (`{ increment: 1 }`) is a function of the row, not a value the
+            // caller saw, so it re-reads and re-resolves: concurrent counters must not throw.
+            const attempts = patchDependsOnRow(definition, patch) ? OCC_RETRY_ATTEMPTS : 1;
 
-            if (!(await writePatch(tableName, definition, id, patch, snapshot))) {
-                throw new ConflictError(`optimistic concurrency conflict on "${tableName}" — the row changed during this mutation; refetch and retry`, "occ");
+            for (let attempt = 0; attempt < attempts; attempt += 1) {
+                // eslint-disable-next-line no-await-in-loop -- each attempt re-reads the row a lost race moved
+                const snapshot = await rawRow(tableName, id);
+
+                // eslint-disable-next-line no-await-in-loop -- see above
+                if (await writePatch(tableName, definition, id, patch, snapshot, undefined, patchOptions)) {
+                    return;
+                }
             }
+
+            throw new ConflictError(`optimistic concurrency conflict on "${tableName}" — the row changed during this mutation; refetch and retry`, "occ");
         },
 
         /**
@@ -3631,7 +3739,7 @@ const createSqlCtxDb = (options: SqlCtxDbOptions): DatabaseWriterLike => {
 
             const condition = compileWhereSql(args.where, whereSqlStrategyFor(definition)) ?? sql`1 = 1`;
 
-            for (let attempt = 0; attempt < PATCH_IF_ATTEMPTS; attempt += 1) {
+            for (let attempt = 0; attempt < OCC_RETRY_ATTEMPTS; attempt += 1) {
                 // eslint-disable-next-line no-await-in-loop -- each attempt re-reads the row a lost race moved
                 const [read] = await queryAll(
                     exec,
@@ -3652,7 +3760,7 @@ const createSqlCtxDb = (options: SqlCtxDbOptions): DatabaseWriterLike => {
                 }
 
                 // eslint-disable-next-line no-await-in-loop -- see above
-                const merged = await writePatch(tableName, definition, id, args.patch, snapshot, condition);
+                const merged = await writePatch(tableName, definition, id, args.patch, snapshot, condition, { verify: args.verify });
 
                 if (merged) {
                     return { applied: true, doc: merged };
@@ -3660,7 +3768,7 @@ const createSqlCtxDb = (options: SqlCtxDbOptions): DatabaseWriterLike => {
             }
 
             throw new ConflictError(
-                `patchIf on "${tableName}" lost the row to concurrent writes ${String(PATCH_IF_ATTEMPTS)} times in a row; retry the operation`,
+                `patchIf on "${tableName}" lost the row to concurrent writes ${String(OCC_RETRY_ATTEMPTS)} times in a row; retry the operation`,
                 "occ",
             );
         },
@@ -3743,6 +3851,10 @@ const createSqlCtxDb = (options: SqlCtxDbOptions): DatabaseWriterLike => {
             const mainTableStrategy: WhereSqlStrategy = {
                 ...whereSqlStrategyFor(definition),
                 fieldRef: (field) => sql`m.${columnRefSql(field)}`,
+                // `isPushableWhere` keeps every path out of this `where`, and the inherited guard would not carry the `m.` qualifier.
+                rangeTypeGuard: () => {
+                    throw new LunoraError("INTERNAL", "a path range is never pushed into a search");
+                },
             };
 
             const passesSearchFilters = (document: Record<string, unknown>): boolean => searchFilters.every((predicate) => predicate(document));
@@ -4108,10 +4220,7 @@ const createSqlCtxDb = (options: SqlCtxDbOptions): DatabaseWriterLike => {
             // ascending except the sort columns, which follow their index.
             const rankColumns = rankPageColumns(index, sortColumns);
             const orderBy = sql.join(
-                rankColumns.map(
-                    (col) =>
-                        sql`${sql.identifier(col.column)} ${sql.raw(`${col.direction === "desc" ? "DESC" : "ASC"}${nullsPlacement(dialect, { direction: col.direction, nullable: col.nullable })}`)}`,
-                ),
+                rankColumns.flatMap((col) => orderTermsFor(dialect, { direction: col.direction, field: col.column, nullable: col.nullable })),
                 sql`, `,
             );
 
