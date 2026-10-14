@@ -1,3 +1,17 @@
+## @lunora/server [1.0.0-alpha.197](https://github.com/anolilab/lunora/compare/@lunora/server@1.0.0-alpha.196...@lunora/server@1.0.0-alpha.197) (2026-10-14)
+
+### Features
+
+* **do:** budget ctx.scheduler creations per target ([#1155](https://github.com/anolilab/lunora/issues/1155)) ([f8e657f](https://github.com/anolilab/lunora/commit/f8e657fe502da3a13159fda7b6da01fd831c2bc1))
+
+
+### Dependencies
+
+* **@lunora/scheduler:** upgraded to 1.0.0-alpha.123
+* **@lunora/shard-engine:** upgraded to 1.0.0-alpha.126
+* **@lunora/observability:** upgraded to 1.0.0-alpha.136
+* **@lunora/storage:** upgraded to 1.0.0-alpha.131
+
 ## @lunora/server [1.0.0-alpha.196](https://github.com/anolilab/lunora/compare/@lunora/server@1.0.0-alpha.195...@lunora/server@1.0.0-alpha.196) (2026-10-14)
 
 ### Features
