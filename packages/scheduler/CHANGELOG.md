@@ -1,3 +1,10 @@
+## @lunora/scheduler [1.0.0-alpha.121](https://github.com/anolilab/lunora/compare/@lunora/scheduler@1.0.0-alpha.120...@lunora/scheduler@1.0.0-alpha.121) (2026-10-14)
+
+
+### Dependencies
+
+* **@lunora/errors:** upgraded to 1.0.0-alpha.54
+
 ## @lunora/scheduler [1.0.0-alpha.120](https://github.com/anolilab/lunora/compare/@lunora/scheduler@1.0.0-alpha.119...@lunora/scheduler@1.0.0-alpha.120) (2026-10-13)
 
 
