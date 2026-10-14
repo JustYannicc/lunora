@@ -1,3 +1,22 @@
+## @lunora/platform-node [1.0.0-alpha.137](https://github.com/anolilab/lunora/compare/@lunora/platform-node@1.0.0-alpha.136...@lunora/platform-node@1.0.0-alpha.137) (2026-10-14)
+
+### Features
+
+* **do:** budget ctx.scheduler creations per target ([#1155](https://github.com/anolilab/lunora/issues/1155)) ([f8e657f](https://github.com/anolilab/lunora/commit/f8e657fe502da3a13159fda7b6da01fd831c2bc1))
+
+
+### Dependencies
+
+* **@lunora/d1:** upgraded to 1.0.0-alpha.177
+* **@lunora/platform:** upgraded to 1.0.0-alpha.63
+* **@lunora/queue:** upgraded to 1.0.0-alpha.104
+* **@lunora/runtime:** upgraded to 1.0.0-alpha.197
+* **@lunora/sql-store:** upgraded to 1.0.0-alpha.178
+* **@lunora/do:** upgraded to 1.0.0-alpha.210
+* **@lunora/platform-cloudflare:** upgraded to 1.0.0-alpha.86
+* **@lunora/shard-engine:** upgraded to 1.0.0-alpha.126
+* **@lunora/storage:** upgraded to 1.0.0-alpha.131
+
 ## @lunora/platform-node [1.0.0-alpha.136](https://github.com/anolilab/lunora/compare/@lunora/platform-node@1.0.0-alpha.135...@lunora/platform-node@1.0.0-alpha.136) (2026-10-14)
 
 ### Features
