@@ -1,3 +1,9 @@
+## @lunora/observability [1.0.0-alpha.134](https://github.com/anolilab/lunora/compare/@lunora/observability@1.0.0-alpha.133...@lunora/observability@1.0.0-alpha.134) (2026-10-14)
+
+### Bug Fixes
+
+* **observability:** forward writes through the instrumented ctx.db ([#1147](https://github.com/anolilab/lunora/issues/1147)) ([f30dc4e](https://github.com/anolilab/lunora/commit/f30dc4e46e7332ab5c7ec7efa08c974a4d7f391c))
+
 ## @lunora/observability [1.0.0-alpha.133](https://github.com/anolilab/lunora/compare/@lunora/observability@1.0.0-alpha.132...@lunora/observability@1.0.0-alpha.133) (2026-10-14)
 
 
