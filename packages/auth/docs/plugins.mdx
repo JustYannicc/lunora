@@ -99,6 +99,35 @@ behaviour and the full option reference are better-auth's, linked per row.
 | `oauthDeviceAuthorization`                                    | The device grant (RFC 8628) for third-party clients of the `oauthProvider` above. Split out of `oauthProvider` in better-auth 1.7, so a provider that does not want the device endpoints no longer serves them.                                                                                                                                                                                                   | [better-auth: OAuth provider](https://www.better-auth.com/docs/plugins/oauth-provider)             |
 | `mcp` / `requireMcpAuth` / `createMcpProtectedRequestHandler` | OAuth-protect a Model Context Protocol server. Pairs with [`@lunora/mcp`](/docs/packages/mcp), whose `createAuthedMcpFetchHandler` mounts a Lunora MCP server behind `requireMcpAuth`. `withMcpAuth` was renamed `requireMcpAuth` in better-auth 1.7; `createMcpProtectedRequestHandler` is the split-deployment form (a resource server with no auth instance) and replaced 1.7.0-rc's short-lived `mcpHandler`. | [better-auth: MCP](https://www.better-auth.com/docs/plugins/mcp)                                   |
 
+#### `iss` and `aud` of a `jwt` token
+
+A token minted by `jwt()` carries `iss` and `aud` equal to the `baseURL` you pass
+to `createAuth`, unless you set them. That is the _site_ URL of the app. When the
+app and the Lunora Worker are served from different origins, it is the app's
+origin, not the Worker's, so a verifier that pins `iss`/`aud` to the Worker
+origin rejects every token. A verifier that swallows the failure and falls back
+to the cookie, then to anonymous, makes the app look signed out with nothing
+logged.
+
+Set them explicitly to the value your verifier expects:
+
+```ts
+import { createAuth } from "@lunora/auth";
+import { jwt } from "@lunora/auth/plugins";
+
+createAuth({
+    baseURL: env.AUTH_URL,
+    plugins: [jwt({ jwt: { issuer: WORKER_ORIGIN, audience: WORKER_ORIGIN } })],
+    secret: env.AUTH_SECRET,
+});
+```
+
+A local setup where the app and the Worker share one origin (or where a dynamic
+`baseURL: { allowedHosts }` follows the request host) yields matching values by
+coincidence, so `lunora dev` may not reproduce a mismatch that appears once
+deployed. When verifying with a library such as `jose`, log the error's `code`
+(for example `ERR_JWT_CLAIM_VALIDATION_FAILED`) on failure, never the token.
+
 ### Abuse protection
 
 | Export           | What it adds                                                                                                                      | Reference                                                                       |
