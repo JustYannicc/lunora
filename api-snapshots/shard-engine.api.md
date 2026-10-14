@@ -1292,6 +1292,19 @@ interface KeyRange {
 }
 ```
 
+### `KeyedRelationWriteInfo` (interface)
+
+```ts
+interface KeyedRelationWriteInfo extends RelationWriteBase {
+    readonly field: string;
+    readonly kind: "many" | "one";
+    readonly nullable: boolean;
+    readonly references: string;
+    readonly refusalNow?: never;
+    readonly through?: never;
+}
+```
+
 ### `LifecycleDispatchInfo` (interface)
 
 ```ts
@@ -2129,16 +2142,10 @@ interface RelatedStartReference {
 }
 ```
 
-### `RelationDefinitionLike` (interface)
+### `RelationDefinitionLike` (type)
 
 ```ts
-interface RelationDefinitionLike {
-    readonly field: string;
-    readonly kind: "many" | "one";
-    readonly onDelete?: OnDeleteActionLike;
-    readonly references: string;
-    readonly table: string;
-}
+type RelationDefinitionLike = KeyedRelationDefinitionLike | ThroughRelationDefinitionLike;
 ```
 
 ### `RelationEdge` (interface)
@@ -2160,7 +2167,7 @@ interface RelationExistsMarker {
     childWhere: WhereInput;
     negated: boolean;
     parentTable: string;
-    relation: RelationDefinitionLike;
+    relation: KeyedRelationDefinitionLike;
 }
 ```
 
@@ -2170,17 +2177,10 @@ interface RelationExistsMarker {
 type RelationGraphReader = Pick<DatabaseWriterLike, "findMany"> & Pick<Partial<DatabaseWriterLike>, "lookupById">;
 ```
 
-### `RelationWriteInfo` (interface)
+### `RelationWriteInfo` (type)
 
 ```ts
-interface RelationWriteInfo {
-    readonly colocated: boolean;
-    readonly field: string;
-    readonly kind: "many" | "one";
-    readonly nullable: boolean;
-    readonly references: string;
-    readonly table: string;
-}
+type RelationWriteInfo = KeyedRelationWriteInfo | ThroughRelationWriteInfo;
 ```
 
 ### `RelationWriteMap` (type)
@@ -2387,7 +2387,7 @@ type ReplicaReadiness = "fresh" | "stale" | "unavailable";
 
 ```ts
 interface ResolveRelationPredicatesOptions {
-    canPushExists?: (relation: RelationDefinitionLike) => boolean;
+    canPushExists?: (relation: KeyedRelationDefinitionLike) => boolean;
     existsPushMode?: ExistsPushMode;
     fetcher: (tableName: string, args: QueryArgs) => Promise<QueryPage>;
     maxRelationKeys?: number;
@@ -3298,6 +3298,21 @@ interface TablesIndexesResult {
 }
 ```
 
+### `ThroughRelationWriteInfo` (interface)
+
+```ts
+interface ThroughRelationWriteInfo extends RelationWriteBase {
+    readonly kind: "many";
+    readonly pairIsOnlyUnique: boolean;
+    readonly refusalNow: () => string | undefined;
+    readonly through: {
+        readonly from: string;
+        readonly table: string;
+        readonly to: string;
+    };
+}
+```
+
 ### `TransactionHeadroom` (interface)
 
 ```ts
@@ -4057,7 +4072,7 @@ const deriveRelationEdges: (schema: SchemaLike) => RelationEdge[];
 ### `describeRelationWrites` (const)
 
 ```ts
-const describeRelationWrites: (schema: SchemaLike) => RelationWriteMap;
+const describeRelationWrites: (schema: SchemaLike, inTransaction?: () => boolean) => RelationWriteMap;
 ```
 
 ### `diffExternalSource` (const)
@@ -5562,6 +5577,19 @@ interface GuardableSchema {
 type IndexUseHook = (table: string, indexName: string, kind: "geo" | "index" | "rank" | "search") => void;
 ```
 
+### `KeyedRelationDefinitionLike` (interface)
+
+```ts
+interface KeyedRelationDefinitionLike {
+    readonly field: string;
+    readonly kind: "many" | "one";
+    readonly onDelete?: OnDeleteActionLike;
+    readonly references: string;
+    readonly table: string;
+    readonly through?: never;
+}
+```
+
 ### `OrderedAfterWrites` (type)
 
 ```ts
@@ -5613,6 +5641,26 @@ type RegionHint = (typeof REGION_HINTS)[number];
 type RelationMask = (table: string, rows: Record<string, unknown>[]) => Record<string, unknown>[];
 ```
 
+### `RelationThroughLike` (interface)
+
+```ts
+interface RelationThroughLike {
+    readonly from: string;
+    readonly table: string;
+    readonly to: string;
+}
+```
+
+### `RelationWriteBase` (interface)
+
+```ts
+interface RelationWriteBase {
+    readonly colocated: boolean;
+    readonly refusal?: string;
+    readonly table: string;
+}
+```
+
 ### `RelayLink` (class)
 
 ```ts
@@ -5658,7 +5706,7 @@ abstract class RelayLink {
 
 ```ts
 interface ResolveContext {
-    canPushExists?: (relation: RelationDefinitionLike) => boolean;
+    canPushExists?: (relation: KeyedRelationDefinitionLike) => boolean;
     existsPushMode: ExistsPushMode;
     fetcher: (tableName: string, args: QueryArgs) => Promise<QueryPage>;
     maxRelationKeys: number;
@@ -5778,6 +5826,16 @@ type TableOfId = (id: string, expectedTable?: string) => Promise<string | undefi
 
 ```ts
 type TablesOfIds = (ids: ReadonlyArray<string>, expectedTable?: string) => Promise<ReadonlyMap<string, string>> | ReadonlyMap<string, string>;
+```
+
+### `ThroughRelationDefinitionLike` (interface)
+
+```ts
+interface ThroughRelationDefinitionLike {
+    readonly kind: "many";
+    readonly table: string;
+    readonly through: RelationThroughLike;
+}
 ```
 
 ### `VectorBackfillTarget` (interface)

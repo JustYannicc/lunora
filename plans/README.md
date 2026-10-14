@@ -35,7 +35,6 @@ When a plan ships: delete its file and remove its row here in the same change.
 | [467](./467-client-split-remaining-clusters.md)        | Finish splitting `lunora-client.ts`                                  | replay engine, frame handlers, admin surface; decisions D1–D3                     |
 | [480](./480-scheduler-remove-id-less-complete-shim.md) | Require the job id on `/complete` so a completion frees its own slot | blocked: needs a read-only check of production pool rows for `inFlightIds`        |
 | [482](./482-ratelimit-db-store-atomic-consume.md)      | Make the ratelimit consume atomic on the D1-backed `.global()` table | SQL and KV fixed in #1129; D1 needs a conditional write on `ctx.db` (in progress) |
-| [489](./489-many-to-many-through.md)                   | Many-to-many relations through a join table                          | BLOCKED: design only; decision 4.1 open                                           |
 | [135](./135-stable-1.0-roadmap.md)                     | Road to stable 1.0.0                                                 | umbrella; phase/exit-criteria tracker for `alpha → main`                          |
 | [306](./306-pluggable-queue-drivers.md)                | Pluggable queue-driver package                                       | P2                                                                                |
 | [332](./332-payment-conformance-spike.md)              | Spike: what a payment-provider conformance suite asserts             | spike; deliverable is a decision                                                  |
@@ -57,6 +56,7 @@ landed the plan; a follow-up commit that completed it is listed after the first.
 
 | Plan | Title                                                                       | Commit               |
 | ---- | --------------------------------------------------------------------------- | -------------------- |
+| 489  | Many-to-many relations through a join table                                 | #1146                |
 | 479  | Make `createPayment`'s `authorize` required (default-deny)                  | 360c4f27c            |
 | 483  | Make the `.dev.vars` create exclusive on the final path                     | 58e11f997, 88b7c1997 |
 | 484  | Flag `v.any()` public args reached through an alias, destructure, or helper | e942bdb5f, 88b7c1997 |

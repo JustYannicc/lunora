@@ -10,6 +10,10 @@
  * relation can be written at all are all checked up front, so a malformed or unsupported request fails with the
  * parent row unwritten. After that only a missing target (`NOT_FOUND`) or a gated denial can stop it midway.
  *
+ * A many-to-many relation (`through`) is written the same way, on the join table instead of the target: `connect`
+ * inserts a join row holding the two keys unless the link already exists, `disconnect` deletes it, and `set` diffs
+ * the list against the links already there. The target rows themselves are only read, never written.
+ *
  * Atomicity is the mutation's: both tables live on one shard, so the Durable Object's transaction covers the
  * parent and every child. Where they do not (a relation that crosses a `.global()` backend or another shard) the
  * engine reports it not `colocated` and this refuses up front. A D1 write does not roll back with the Durable
@@ -24,17 +28,37 @@ import { isPlainObject } from "../../../shared/wire-codec";
  * The slice of `@lunora/shard-engine`'s `RelationWriteInfo` this reads. Declared here rather than imported so the
  * facade's public types do not drag `@lunora/shard-engine` into the declarations of every package built on them.
  */
-interface RelationWriteInfoLike {
+interface RelationWriteBaseLike {
     readonly colocated: boolean;
-    readonly field: string;
-    readonly kind: "many" | "one";
-    readonly nullable: boolean;
-    readonly references: string;
 
     /** Set by a wrapper that must forbid writes through this relation, with the reason the caller is told. */
     readonly refusal?: string;
     readonly table: string;
 }
+
+/** A `one` or `many` relation backed by one foreign-key column. */
+interface KeyedRelationWriteInfoLike extends RelationWriteBaseLike {
+    readonly field: string;
+    readonly kind: "many" | "one";
+    readonly nullable: boolean;
+    readonly references: string;
+    readonly refusalNow?: never;
+    readonly through?: never;
+}
+
+/** A many-to-many relation: the link is a row of the join table, so there is no foreign key to null and the owner side is always `_id`. */
+interface ThroughRelationWriteInfoLike extends RelationWriteBaseLike {
+    readonly kind: "many";
+
+    /** Is the (`from`, `to`) pair the join table's only uniqueness rule, so a unique conflict on a join insert can only be that pair? */
+    readonly pairIsOnlyUnique: boolean;
+
+    /** Asked when the write runs: the reason it cannot run right now (outside a transaction), or `undefined`. */
+    readonly refusalNow: () => string | undefined;
+    readonly through: { readonly from: string; readonly table: string; readonly to: string };
+}
+
+type RelationWriteInfoLike = KeyedRelationWriteInfoLike | ThroughRelationWriteInfoLike;
 
 type RelationWriteInfosLike = Readonly<Record<string, RelationWriteInfoLike>>;
 
@@ -42,22 +66,24 @@ type RelationWriteInfosLike = Readonly<Record<string, RelationWriteInfoLike>>;
 interface RelationWriteWriterLike {
     /** Checks the update policy on a relation-only patch's parent row, which is never written. Optional: a writer with no policy layer omits it. */
     assertPatchAllowed?: (id: string, expectedTable?: string) => Promise<void>;
+    delete: (id: string, expectedTable?: string) => Promise<void>;
     findMany: (tableName: string, args?: unknown) => Promise<unknown>;
     get: (id: string, expectedTable?: string) => Promise<unknown>;
+    insert: (tableName: string, document: Record<string, unknown>) => Promise<string>;
     patch: (id: string, patch: Record<string, unknown>, expectedTable?: string) => Promise<void>;
 }
 
 /** A to-one write: point this row's foreign key at `connect`'s target, or clear it. */
 interface OneWrite {
     readonly connect?: string;
-    readonly info: RelationWriteInfoLike;
+    readonly info: KeyedRelationWriteInfoLike;
     readonly name: string;
 }
 
 /** A to-many write: release the `release` rows, attach the `attach` rows, or make `replace` the whole list. */
-interface ManyWrite {
+interface ManyWrite<Info extends RelationWriteInfoLike = RelationWriteInfoLike> {
     readonly attach: ReadonlyArray<string>;
-    readonly info: RelationWriteInfoLike;
+    readonly info: Info;
     readonly name: string;
     readonly release: ReadonlyArray<string>;
     readonly replace?: ReadonlyArray<string>;
@@ -79,6 +105,13 @@ const MAX_RELATION_ROWS = 500;
 const isRelationWrite = (infos: RelationWriteInfosLike | undefined, key: string, value: unknown): infos is RelationWriteInfosLike =>
     infos !== undefined && Object.hasOwn(infos, key) && isPlainObject(value);
 
+/**
+ * Structural detector for `@lunora/do`'s `ConflictError(kind: "unique")`. The facade must not take a runtime dependency
+ * on `@lunora/do`, so it recognises a UNIQUE-constraint breach by the error's own `code`/`kind` properties.
+ */
+const isUniqueConflict = (error: unknown): boolean =>
+    typeof error === "object" && error !== null && (error as { code?: unknown }).code === "CONFLICT" && (error as { kind?: unknown }).kind === "unique";
+
 const fail = (code: "NOT_FOUND" | "UNPROCESSABLE" | "VALIDATION_ERROR", message: string): never => {
     throw new LunoraError(code, message);
 };
@@ -97,13 +130,13 @@ const idList = (value: unknown, label: string): string[] => {
     return ids;
 };
 
-const assertCanEmpty = (name: string, info: RelationWriteInfoLike, operator: string): void => {
+const assertCanEmpty = (name: string, info: KeyedRelationWriteInfoLike, operator: string): void => {
     if (!info.nullable) {
         fail("VALIDATION_ERROR", `${name}.${operator}: "${info.field}" cannot be empty; make it optional or nullable to allow it`);
     }
 };
 
-const parseOne = (name: string, info: RelationWriteInfoLike, operation: Record<string, unknown>): OneWrite => {
+const parseOne = (name: string, info: KeyedRelationWriteInfoLike, operation: Record<string, unknown>): OneWrite => {
     const { connect, disconnect, set } = operation;
 
     if (set !== undefined) {
@@ -131,6 +164,13 @@ const parseOne = (name: string, info: RelationWriteInfoLike, operation: Record<s
     return { info, name };
 };
 
+/** A to-many `set` or `disconnect` empties the relation; a many-to-many one deletes join rows, a keyed one nulls the foreign key. */
+const assertCanEmptyMany = (name: string, info: RelationWriteInfoLike, operator: string): void => {
+    if (info.through === undefined) {
+        assertCanEmpty(name, info, operator);
+    }
+};
+
 const parseMany = (name: string, info: RelationWriteInfoLike, operation: Record<string, unknown>): ManyWrite => {
     const { connect, disconnect, set } = operation;
 
@@ -139,21 +179,25 @@ const parseMany = (name: string, info: RelationWriteInfoLike, operation: Record<
             fail("VALIDATION_ERROR", `${name}: set replaces the whole list and cannot be combined with connect or disconnect`);
         }
 
-        assertCanEmpty(name, info, "set");
+        assertCanEmptyMany(name, info, "set");
 
         return { attach: [], info, name, release: [], replace: idList(set, `${name}.set`) };
     }
 
     if (disconnect !== undefined) {
-        assertCanEmpty(name, info, "disconnect");
+        assertCanEmptyMany(name, info, "disconnect");
     }
 
-    return {
-        attach: connect === undefined ? [] : idList(connect, `${name}.connect`),
-        info,
-        name,
-        release: disconnect === undefined ? [] : idList(disconnect, `${name}.disconnect`),
-    };
+    const attach = connect === undefined ? [] : idList(connect, `${name}.connect`);
+    const release = disconnect === undefined ? [] : idList(disconnect, `${name}.disconnect`);
+    const both = attach.find((id) => release.includes(id));
+
+    // Whether the row ends up connected would depend on the order the two lists are applied in.
+    if (both !== undefined) {
+        fail("VALIDATION_ERROR", `${name}: "${both}" is in both connect and disconnect, which is ambiguous`);
+    }
+
+    return { attach, info, name, release };
 };
 
 /**
@@ -172,8 +216,10 @@ const parseOperation = (tableName: string, key: string, info: RelationWriteInfoL
         return undefined;
     }
 
-    if (info.refusal !== undefined) {
-        fail("UNPROCESSABLE", `ctx.db.${tableName}: relation "${key}" cannot be written: ${info.refusal}`);
+    const refusal = info.refusal ?? info.refusalNow?.();
+
+    if (refusal !== undefined) {
+        fail("UNPROCESSABLE", `ctx.db.${tableName}: relation "${key}" cannot be written: ${refusal}`);
     }
 
     if (!info.colocated) {
@@ -185,6 +231,9 @@ const parseOperation = (tableName: string, key: string, info: RelationWriteInfoL
 
     return info.kind === "one" ? parseOne(key, info, operation) : parseMany(key, info, operation);
 };
+
+/** A to-one write is the only one whose info is a `one` relation. */
+const isOneWrite = (write: ManyWrite | OneWrite): write is OneWrite => write.info.kind === "one";
 
 /**
  * Separate the relation operators from the column values and validate every one, without any I/O. A key that names
@@ -213,10 +262,10 @@ const parseRelationWrites = (tableName: string, infos: RelationWriteInfosLike | 
             continue;
         }
 
-        if (write.info.kind === "one") {
+        if (isOneWrite(write)) {
             ones.push(write);
         } else {
-            manys.push(write as ManyWrite);
+            manys.push(write);
         }
     }
 
@@ -270,7 +319,12 @@ const resolveOnes = async (writer: RelationWriteWriterLike, parsed: ParsedWrite)
     return columns;
 };
 
-const connectChild = async (writer: RelationWriteWriterLike, { info, name }: ManyWrite, id: string, parentValue: unknown): Promise<void> => {
+const connectChild = async (
+    writer: RelationWriteWriterLike,
+    { info, name }: ManyWrite<KeyedRelationWriteInfoLike>,
+    id: string,
+    parentValue: unknown,
+): Promise<void> => {
     const child = await loadRow(writer, name, "connect", info.table, id);
 
     if (child[info.field] !== parentValue) {
@@ -278,7 +332,12 @@ const connectChild = async (writer: RelationWriteWriterLike, { info, name }: Man
     }
 };
 
-const disconnectChild = async (writer: RelationWriteWriterLike, { info }: ManyWrite, child: Record<string, unknown>, parentValue: unknown): Promise<void> => {
+const disconnectChild = async (
+    writer: RelationWriteWriterLike,
+    { info }: ManyWrite<KeyedRelationWriteInfoLike>,
+    child: Record<string, unknown>,
+    parentValue: unknown,
+): Promise<void> => {
     // Disconnecting a row that is not connected to this parent is a no-op, not an error and not a write.
     if (child[info.field] === parentValue) {
         // eslint-disable-next-line unicorn/no-null -- disconnecting clears the child's foreign key
@@ -287,7 +346,11 @@ const disconnectChild = async (writer: RelationWriteWriterLike, { info }: ManyWr
 };
 
 /** The rows `set` must release: those currently pointing at the parent that the list does not name. Reads only rows the caller can see. */
-const currentChildren = async (writer: RelationWriteWriterLike, { info, name }: ManyWrite, parentValue: unknown): Promise<Record<string, unknown>[]> => {
+const currentChildren = async (
+    writer: RelationWriteWriterLike,
+    { info, name }: ManyWrite<KeyedRelationWriteInfoLike>,
+    parentValue: unknown,
+): Promise<Record<string, unknown>[]> => {
     const { page } = (await writer.findMany(info.table, { limit: MAX_RELATION_ROWS + 1, where: { [info.field]: parentValue } })) as {
         page: Record<string, unknown>[];
     };
@@ -297,6 +360,132 @@ const currentChildren = async (writer: RelationWriteWriterLike, { info, name }: 
     }
 
     return page;
+};
+
+/** What a `set` does to a list of linked ids: the ones to release and the ones to attach. */
+const diffReplace = (current: ReadonlyArray<string>, wanted: ReadonlyArray<string>): { attach: string[]; release: Set<string> } => {
+    const currentIds = new Set(current);
+    const wantedIds = new Set(wanted);
+
+    return { attach: wanted.filter((id) => !currentIds.has(id)), release: new Set(current.filter((id) => !wantedIds.has(id))) };
+};
+
+/**
+ * The join rows of `parentValue` (at most {@link MAX_RELATION_ROWS}), read under the join table's own policy,
+ * optionally narrowed to links onto `targets`.
+ */
+const linksOf = async (
+    writer: RelationWriteWriterLike,
+    { name }: ManyWrite,
+    { from, table, to }: ThroughRelationWriteInfoLike["through"],
+    parentValue: unknown,
+    targets: ReadonlyArray<string> | undefined,
+): Promise<Record<string, unknown>[]> => {
+    const where = targets === undefined ? { [from]: parentValue } : { [from]: parentValue, [to]: { in: targets } };
+    const { page } = (await writer.findMany(table, { limit: MAX_RELATION_ROWS + 1, where })) as { page: Record<string, unknown>[] };
+
+    if (page.length > MAX_RELATION_ROWS) {
+        fail("VALIDATION_ERROR", `${name}: the relation already holds more than ${String(MAX_RELATION_ROWS)} rows; disconnect in batches first`);
+    }
+
+    return page;
+};
+
+/** Which of `ids` name `table` rows the caller can read. */
+const readableIds = async (writer: RelationWriteWriterLike, table: string, ids: ReadonlyArray<string>): Promise<Set<string>> => {
+    if (ids.length === 0) {
+        return new Set();
+    }
+
+    const { page } = (await writer.findMany(table, { limit: ids.length, where: { _id: { in: ids } } })) as { page: Record<string, unknown>[] };
+
+    return new Set(page.map((row) => String(row["_id"])));
+};
+
+/**
+ * Apply one many-to-many write: the join rows to delete, then the links to insert. Every target is read first, so a
+ * missing or hidden one stops the write before the first join row changes. As for a one-hop relation, a caller can
+ * only release a target it can read: `disconnect` of one it cannot is `NOT_FOUND`, and `set` leaves such a link alone.
+ * Every join row is written through the bound writer, so the join table's own policy gates it.
+ */
+const applyThrough = async (writer: RelationWriteWriterLike, write: ManyWrite<ThroughRelationWriteInfoLike>, parentValue: unknown): Promise<void> => {
+    const { info, name } = write;
+    const { from, table: joinTable, to } = info.through;
+    let attach: ReadonlyArray<string>;
+    let release: Record<string, unknown>[];
+
+    if (write.replace === undefined) {
+        await Promise.all(write.release.map((id) => loadRow(writer, name, "disconnect", info.table, id)));
+
+        release = write.release.length === 0 ? [] : await linksOf(writer, write, info.through, parentValue, write.release);
+
+        // A link that is already there is left alone, so a repeated connect writes nothing.
+        const existing = write.attach.length === 0 ? [] : await linksOf(writer, write, info.through, parentValue, write.attach);
+        const linked = new Set(existing.map((link) => String(link[to])));
+
+        attach = write.attach.filter((id) => !linked.has(id));
+    } else {
+        const current = await linksOf(writer, write, info.through, parentValue, undefined);
+        const diff = diffReplace(
+            current.map((link) => String(link[to])),
+            write.replace,
+        );
+        const readable = await readableIds(writer, info.table, [...diff.release]);
+
+        ({ attach } = diff);
+        release = current.filter((link) => diff.release.has(String(link[to])) && readable.has(String(link[to])));
+    }
+
+    await Promise.all(attach.map((id) => loadRow(writer, name, "connect", info.table, id)));
+
+    for (const link of release) {
+        // eslint-disable-next-line no-await-in-loop -- one gated delete per join row, in order so a denial stops the write at a known row
+        await writer.delete(String(link["_id"]), joinTable);
+    }
+
+    for (const id of attach) {
+        try {
+            // eslint-disable-next-line no-await-in-loop -- one gated insert per link
+            await writer.insert(joinTable, { [from]: parentValue, [to]: id });
+        } catch (error) {
+            // A link the join table's read policy hides is invisible to the check above but still holds the pair, so the
+            // unique index refuses the insert. The link exists, which is what `connect` asked for; surfacing a conflict
+            // would also tell the caller that a link they cannot read exists. Only when the pair is the table's sole
+            // uniqueness rule: otherwise the conflict may be another constraint and the link was never written.
+            if (!isUniqueConflict(error) || !info.pairIsOnlyUnique) {
+                throw error;
+            }
+        }
+    }
+};
+
+/** Release, attach or replace the children of a one-to-many relation by pointing their foreign key at the parent or clearing it. */
+const applyKeyedMany = async (writer: RelationWriteWriterLike, write: ManyWrite<KeyedRelationWriteInfoLike>, parentValue: unknown): Promise<void> => {
+    let { attach } = write;
+    let release: Record<string, unknown>[];
+
+    if (write.replace === undefined) {
+        release = await Promise.all(write.release.map((id) => loadRow(writer, write.name, "disconnect", write.info.table, id)));
+    } else {
+        const current = await currentChildren(writer, write, parentValue);
+        const diff = diffReplace(
+            current.map((row) => String(row["_id"])),
+            write.replace,
+        );
+
+        ({ attach } = diff);
+        release = current.filter((row) => diff.release.has(String(row["_id"])));
+    }
+
+    for (const child of release) {
+        // eslint-disable-next-line no-await-in-loop -- at most one gated write per row
+        await disconnectChild(writer, write, child, parentValue);
+    }
+
+    for (const id of attach) {
+        // eslint-disable-next-line no-await-in-loop -- one gated read and at most one gated write per row
+        await connectChild(writer, write, id, parentValue);
+    }
 };
 
 /**
@@ -311,37 +500,24 @@ const applyManys = async (
     parentValueOf: (references: string) => Promise<unknown>,
 ): Promise<void> => {
     for (const write of parsed.manys) {
+        const { info } = write;
+        const references = info.through === undefined ? info.references : "_id";
         // eslint-disable-next-line no-await-in-loop -- sequential: later relations may depend on earlier writes in the same mutation
-        const parentValue = await parentValueOf(write.info.references);
+        const parentValue = await parentValueOf(references);
 
         if (parentValue === null || parentValue === undefined) {
-            fail("VALIDATION_ERROR", `ctx.db.${tableName}: ${write.name} is keyed on "${write.info.references}", which this row has no value for`);
+            fail("VALIDATION_ERROR", `ctx.db.${tableName}: ${write.name} is keyed on "${references}", which this row has no value for`);
         }
 
-        let { attach } = write;
-        let release: Record<string, unknown>[];
+        if (info.through !== undefined) {
+            // eslint-disable-next-line no-await-in-loop -- sequential, as the other relations
+            await applyThrough(writer, { ...write, info }, parentValue);
 
-        if (write.replace === undefined) {
-            // eslint-disable-next-line no-await-in-loop -- the reads of one relation run together; relations run in order
-            release = await Promise.all(write.release.map((id) => loadRow(writer, write.name, "disconnect", write.info.table, id)));
-        } else {
-            // eslint-disable-next-line no-await-in-loop -- one gated read of the current list
-            const current = await currentChildren(writer, write, parentValue);
-            const currentIds = new Set(current.map((row) => String(row["_id"])));
-
-            release = current.filter((row) => !write.replace?.includes(String(row["_id"])));
-            attach = write.replace.filter((id) => !currentIds.has(id));
+            continue;
         }
 
-        for (const child of release) {
-            // eslint-disable-next-line no-await-in-loop -- at most one gated write per row
-            await disconnectChild(writer, write, child, parentValue);
-        }
-
-        for (const id of attach) {
-            // eslint-disable-next-line no-await-in-loop -- one gated read and at most one gated write per row
-            await connectChild(writer, write, id, parentValue);
-        }
+        // eslint-disable-next-line no-await-in-loop -- one relation's reads and writes, in order
+        await applyKeyedMany(writer, { ...write, info }, parentValue);
     }
 };
 
@@ -425,5 +601,5 @@ const patchWithRelations = async (
     await applyManys(writer, tableName, parsed, parentValueFor(writer, tableName, id, columns));
 };
 
-export type { RelationWriteInfoLike, RelationWriteInfosLike, RelationWriteWriterLike };
-export { assertNoRelationWrites, insertWithRelations, patchWithRelations };
+export type { KeyedRelationWriteInfoLike, RelationWriteInfoLike, RelationWriteInfosLike, RelationWriteWriterLike, ThroughRelationWriteInfoLike };
+export { assertNoRelationWrites, insertWithRelations, isUniqueConflict, patchWithRelations };

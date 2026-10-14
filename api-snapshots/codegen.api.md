@@ -750,14 +750,24 @@ interface QueueIR {
 }
 ```
 
-### `RelationSnapshot` (interface)
+### `RelationSnapshot` (type)
 
 ```ts
-interface RelationSnapshot {
+type RelationSnapshot = {
     field: string;
     kind: "many" | "one";
     table: string;
-}
+    through?: never;
+} | {
+    field?: never;
+    kind: "many";
+    table: string;
+    through: {
+        from: string;
+        table: string;
+        to: string;
+    };
+};
 ```
 
 ### `RlsMetadataIR` (interface)
@@ -2615,6 +2625,20 @@ interface ImageDeliveryUrlAccessIR {
 type JurisdictionIR = "eu" | "fedramp" | "us";
 ```
 
+### `KeyedRelationIR` (interface)
+
+```ts
+interface KeyedRelationIR {
+    field: string;
+    kind: "many" | "one";
+    name: string;
+    onDelete?: "cascade" | "restrict" | "set null";
+    references: string;
+    table: string;
+    through?: never;
+}
+```
+
 ### `KvKeyAccessIR` (interface)
 
 ```ts
@@ -2843,17 +2867,10 @@ interface RawRowReturnIR {
 }
 ```
 
-### `RelationIR` (interface)
+### `RelationIR` (type)
 
 ```ts
-interface RelationIR {
-    field: string;
-    kind: "many" | "one";
-    name: string;
-    onDelete?: "cascade" | "restrict" | "set null";
-    references: string;
-    table: string;
-}
+type RelationIR = KeyedRelationIR | ThroughRelationIR;
 ```
 
 ### `RelationLoadIR` (interface)
@@ -2991,6 +3008,21 @@ interface TableWriteIR {
     method: string;
     scope: CallSiteScope;
     table: string;
+}
+```
+
+### `ThroughRelationIR` (interface)
+
+```ts
+interface ThroughRelationIR {
+    kind: "many";
+    name: string;
+    table: string;
+    through: {
+        from: string;
+        table: string;
+        to: string;
+    };
 }
 ```
 

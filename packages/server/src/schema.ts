@@ -9,6 +9,7 @@ import { globalTtlMessage } from "../../../shared/global-ttl";
 import { globalVectorIndexMessage } from "../../../shared/global-vector-index";
 import type { PrefixedTables, SchemaExtension } from "./plugin";
 import { mergeSchemaExtension } from "./plugin";
+import validateThroughRelations from "./schema-through";
 import type {
     AggregateIndexDefinition,
     AggregateOp,
@@ -17,10 +18,12 @@ import type {
     GeoIndexDefinition,
     GlobalBackend,
     IndexDefinition,
+    KeyedRelationDefinition,
     OnDeleteAction,
     RankIndexDefinition,
     RankSortKey,
     RelationDefinition,
+    RelationThrough,
     Schema,
     SearchIndexDefinition,
     SearchLanguage,
@@ -28,6 +31,7 @@ import type {
     ShardMode,
     TableDefinition,
     TableVectorIndex,
+    ThroughRelationDefinition,
     TriggerBuilder,
     TriggerDefinition,
     TriggerEvent,
@@ -69,21 +73,33 @@ interface VectorizeOptions<Shape extends Record<string, Validator> = Record<stri
 }
 
 /** A `one` (many-to-one) relation descriptor; phantom `Target` carries the target table name. */
-interface OneRelation<Target extends string = string> extends RelationDefinition {
+interface OneRelation<Target extends string = string> extends KeyedRelationDefinition {
     readonly __target?: Target;
     readonly kind: "one";
 }
 
 /** A `many` (one-to-many) relation descriptor; phantom `Target` carries the target table name. */
-interface ManyRelation<Target extends string = string> extends RelationDefinition {
+interface ManyRelation<Target extends string = string> extends KeyedRelationDefinition {
     readonly __target?: Target;
     readonly kind: "many";
 }
 
+/** A `many` relation through a join table (many-to-many); phantom `Target` carries the target table name. */
+interface ThroughManyRelation<Target extends string = string> extends ThroughRelationDefinition {
+    readonly __target?: Target;
+}
+
 /** The `r` argument passed to `.relations((r) => …)`. */
 interface RelationBuilder {
-    /** One-to-many: the FK `field` lives on the target table, matching this table's `references` (default `_id`). */
-    many: <Target extends string>(table: Target, options: { field: string; references?: string }) => ManyRelation<Target>;
+    /**
+     * One-to-many (`field`): the FK `field` lives on the target table, matching this table's `references` (default `_id`).
+     * Many-to-many (`through`): `through.table` holds one row per linked pair, `through.from` pointing at this table's
+     * `_id` and `through.to` at the target's `_id`.
+     */
+    many: {
+        <Target extends string>(table: Target, options: { field: string; references?: string }): ManyRelation<Target>;
+        <Target extends string>(table: Target, options: { through: RelationThrough }): ThroughManyRelation<Target>;
+    };
     /** Many-to-one: the FK `field` lives on this table, pointing at `table`.`references` (default `_id`). */
     one: <Target extends string>(table: Target, options: { field: string; onDelete?: OnDeleteAction; references?: string }) => OneRelation<Target>;
 }
@@ -385,11 +401,20 @@ interface TableBuilder<Shape extends Record<string, Validator> = Record<string, 
     vectorize: (field: keyof Shape & string, options: VectorizeOptions<Shape>) => TableBuilder<Shape>;
 }
 
-/** Shared relation builder — `one`/`many` produce {@link RelationDefinition}s, defaulting `references` to `_id`. */
+/** `r.many`: one-to-many by `field`, or many-to-many by `through`. */
+function manyRelation<Target extends string>(table: Target, options: { field: string; references?: string }): ManyRelation<Target>;
+function manyRelation<Target extends string>(table: Target, options: { through: RelationThrough }): ThroughManyRelation<Target>;
+function manyRelation(table: string, options: { field: string; references?: string } | { through: RelationThrough }): RelationDefinition {
+    if ("through" in options) {
+        return { kind: "many", table, through: { ...options.through } };
+    }
+
+    return { field: options.field, kind: "many", references: options.references ?? "_id", table };
+}
+
+/** The `r` passed to `.relations((r) => …)`: `one`/`many` produce {@link RelationDefinition}s, defaulting `references` to `_id`. */
 const relationBuilder: RelationBuilder = {
-    many: (table, options) => {
-        return { field: options.field, kind: "many", references: options.references ?? "_id", table };
-    },
+    many: manyRelation,
     one: (table, options) => {
         return { field: options.field, kind: "one", onDelete: options.onDelete, references: options.references ?? "_id", table };
     },
@@ -1603,6 +1628,7 @@ const defineSchema = <T extends Record<string, TableDefinition>>(
     validateTableModes(tables);
     validateGlobalVectors(tables, vectorIndexes);
     validateIndexFields(tables);
+    validateThroughRelations(tables);
 
     return withExtend({ tables, vectorIndexes });
 };
@@ -1637,6 +1663,7 @@ export type {
     RankIndexOptions,
     RelationBuilder,
     TableBuilder,
+    ThroughManyRelation,
     VectorIndexOptions,
     VectorizeOptions,
 };

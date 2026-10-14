@@ -1194,7 +1194,7 @@ type LunoraWideEvent = SpanHandle;
 ### `ManyRelation` (interface)
 
 ```ts
-interface ManyRelation<Target extends string = string> extends RelationDefinition {
+interface ManyRelation<Target extends string = string> extends KeyedRelationDefinition {
     readonly __target?: Target;
     readonly kind: "many";
 }
@@ -1431,7 +1431,7 @@ type OnDeleteAction = "cascade" | "restrict" | "set null";
 ### `OneRelation` (interface)
 
 ```ts
-interface OneRelation<Target extends string = string> extends RelationDefinition {
+interface OneRelation<Target extends string = string> extends KeyedRelationDefinition {
     readonly __target?: Target;
     readonly kind: "one";
 }
@@ -1917,10 +1917,15 @@ interface RelatedStartReference {
 
 ```ts
 interface RelationBuilder {
-    many: <Target extends string>(table: Target, options: {
-        field: string;
-        references?: string;
-    }) => ManyRelation<Target>;
+    many: {
+        <Target extends string>(table: Target, options: {
+            field: string;
+            references?: string;
+        }): ManyRelation<Target>;
+        <Target extends string>(table: Target, options: {
+            through: RelationThrough;
+        }): ThroughManyRelation<Target>;
+    };
     one: <Target extends string>(table: Target, options: {
         field: string;
         onDelete?: OnDeleteAction;
@@ -1929,15 +1934,19 @@ interface RelationBuilder {
 }
 ```
 
-### `RelationDefinition` (interface)
+### `RelationDefinition` (type)
 
 ```ts
-interface RelationDefinition {
-    field: string;
-    kind: "many" | "one";
-    onDelete?: OnDeleteAction;
-    references: string;
+type RelationDefinition = KeyedRelationDefinition | ThroughRelationDefinition;
+```
+
+### `RelationThrough` (interface)
+
+```ts
+interface RelationThrough {
+    from: string;
     table: string;
+    to: string;
 }
 ```
 
@@ -5184,6 +5193,19 @@ Re-exported from `@lunora/server` — signature tracked in that section.
 
 Re-exported from `@lunora/server` — signature tracked in that section.
 
+### `KeyedRelationDefinition` (interface)
+
+```ts
+interface KeyedRelationDefinition {
+    field: string;
+    kind: "many" | "one";
+    onDelete?: OnDeleteAction;
+    references: string;
+    table: string;
+    through?: never;
+}
+```
+
 ### `LifecycleEvent` (interface)
 
 Re-exported from `@lunora/server` — signature tracked in that section.
@@ -5304,7 +5326,11 @@ Re-exported from `@lunora/server` — signature tracked in that section.
 
 Re-exported from `@lunora/server` — signature tracked in that section.
 
-### `RelationDefinition` (interface)
+### `RelationDefinition` (type)
+
+Re-exported from `@lunora/server` — signature tracked in that section.
+
+### `RelationThrough` (interface)
 
 Re-exported from `@lunora/server` — signature tracked in that section.
 
@@ -5487,6 +5513,16 @@ Re-exported from `@lunora/server` — signature tracked in that section.
 ### `TableVectorIndex` (interface)
 
 Re-exported from `@lunora/server` — signature tracked in that section.
+
+### `ThroughRelationDefinition` (interface)
+
+```ts
+interface ThroughRelationDefinition {
+    kind: "many";
+    table: string;
+    through: RelationThrough;
+}
+```
 
 ### `TriggerAggregateOptions` (interface)
 
@@ -6080,6 +6116,19 @@ type InstalledTables<T extends Record<string, TableDefinition>, Plugins extends 
 type IsPlainObject<V> = V extends string | number | boolean | bigint | symbol ? false : V extends ReadonlyArray<unknown> ? false : V extends Date | Uint8Array | ArrayBuffer | bigint | ((...arguments_: never[]) => unknown) ? false : V extends object ? true : false;
 ```
 
+### `KeyedRelationWriteInfoLike` (interface)
+
+```ts
+interface KeyedRelationWriteInfoLike extends RelationWriteBaseLike {
+    readonly field: string;
+    readonly kind: "many" | "one";
+    readonly nullable: boolean;
+    readonly references: string;
+    readonly refusalNow?: never;
+    readonly through?: never;
+}
+```
+
 ### `Link` (interface)
 
 ```ts
@@ -6524,18 +6573,20 @@ type RelationWhere<DM, REL extends Record<keyof DM, object>, T extends keyof DM>
 };
 ```
 
-### `RelationWriteInfoLike` (interface)
+### `RelationWriteBaseLike` (interface)
 
 ```ts
-interface RelationWriteInfoLike {
+interface RelationWriteBaseLike {
     readonly colocated: boolean;
-    readonly field: string;
-    readonly kind: "many" | "one";
-    readonly nullable: boolean;
-    readonly references: string;
     readonly refusal?: string;
     readonly table: string;
 }
+```
+
+### `RelationWriteInfoLike` (type)
+
+```ts
+type RelationWriteInfoLike = KeyedRelationWriteInfoLike | ThroughRelationWriteInfoLike;
 ```
 
 ### `RelationWriteInfosLike` (type)
@@ -6939,6 +6990,29 @@ interface TableReaderLike$1 {
     withGeoIndex: (indexName: string, build: (q: unknown) => unknown) => TableReaderLike$1;
     withIndex: (indexName: string, range?: (q: unknown) => unknown) => TableReaderLike$1;
     withSearchIndex: (indexName: string, search: (q: unknown) => unknown) => TableReaderLike$1;
+}
+```
+
+### `ThroughManyRelation` (interface)
+
+```ts
+interface ThroughManyRelation<Target extends string = string> extends ThroughRelationDefinition {
+    readonly __target?: Target;
+}
+```
+
+### `ThroughRelationWriteInfoLike` (interface)
+
+```ts
+interface ThroughRelationWriteInfoLike extends RelationWriteBaseLike {
+    readonly kind: "many";
+    readonly pairIsOnlyUnique: boolean;
+    readonly refusalNow: () => string | undefined;
+    readonly through: {
+        readonly from: string;
+        readonly table: string;
+        readonly to: string;
+    };
 }
 ```
 
