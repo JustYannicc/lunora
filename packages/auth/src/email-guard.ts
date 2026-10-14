@@ -21,8 +21,8 @@
 
 import { LunoraError } from "@lunora/errors";
 import type { Middleware } from "@lunora/server";
-import { isDisposableDomain, setDomains as setDisposableDomains } from "@visulima/disposable-email-domains";
-import { extractDomain, isFreeDomain, setDomains as setFreeDomains } from "@visulima/free-email-domains";
+import { assertListLoaded as assertDisposableListLoaded, isDisposableDomain, setDomains as setDisposableDomains } from "@visulima/disposable-email-domains";
+import { assertListLoaded as assertFreeListLoaded, extractDomain, isFreeDomain, setDomains as setFreeDomains } from "@visulima/free-email-domains";
 
 /**
  * The resolved trust class of an email address' domain: `disposable` (a
@@ -109,13 +109,14 @@ interface EmailGateMiddlewareOptions<Context> extends EmailGateConfig {
 }
 
 // The list packages lazy-load from `node:fs` by default, which is unavailable on
-// workerd. Inject the statically-importable JSON lists via each package's
-// `setDomains` escape hatch so the classification path is pure-data/edge-safe.
-// The JSON is pulled through a dynamic `import()` (its `.d.ts` uses `export =`,
-// which the repo's strict module-syntax rule forbids as a static default import)
-// and memoized, so the load happens at most once.
+// workerd. Inject the statically-importable lists via each package's `setDomains`
+// escape hatch so the classification path is pure-data/edge-safe. The lists are
+// pulled through a dynamic `import()` — never a static one — so the ~3 MB of data
+// is only evaluated on the first gated check, not when this module (or the
+// `@lunora/auth` barrel) is imported; the load is memoized, so it happens at most
+// once. The package barrels themselves are side-effect free to import.
 
-/** A dynamically-imported list module (`export = string[]`), surfaced as the namespace's `default` under interop. */
+/** A dynamically-imported list module (`export default string[]`), read off the namespace's `default`. */
 const listFromModule = (module: unknown): ReadonlyArray<string> => {
     const value = (module as { default?: unknown }).default ?? module;
 
@@ -138,13 +139,14 @@ const loadEmailDomainLists = async (): Promise<void> => {
 
     const run = (async (): Promise<void> => {
         const [disposable, free] = await Promise.all([
+            // Both `/domains` subpaths resolve to a JS module (`dist/domains.js`) that
+            // imports the JSON itself with the attribute, so these are plain imports:
+            // adding `with { type: "json" }` here would make native ESM reject the JS
+            // module (`ERR_IMPORT_ATTRIBUTE_TYPE_INCOMPATIBLE`). Bundlers inline the data
+            // and never notice either way — only the published `dist/email-guard.mjs`
+            // under real Node does, where a wrong form turns every signup into a 500.
             import("@visulima/disposable-email-domains/domains"),
-            // `with { type: "json" }` is load-bearing: this specifier resolves to a raw
-            // `dist/domains.json`, and native ESM rejects a JSON module imported without
-            // the attribute (`ERR_IMPORT_ATTRIBUTE_MISSING`). Vite and wrangler's esbuild
-            // inline the JSON, so the bundled paths never notice — only the published
-            // `dist/email-guard.mjs` hits it, where it turns every signup into a 500.
-            import("@visulima/free-email-domains/domains", { with: { type: "json" } }),
+            import("@visulima/free-email-domains/domains"),
         ]);
 
         setDisposableDomains(listFromModule(disposable));
@@ -206,6 +208,21 @@ const classifyEmail = (email: string, config: EmailGateConfig = {}): EmailClassi
         return { domain: undefined, emailClass: "business" };
     }
 
+    // The list packages answer "not on the list" for every address when their data
+    // cannot be read (no filesystem on workerd), which would wave every disposable
+    // signup through as `business`. Fail loudly instead.
+    try {
+        assertDisposableListLoaded();
+        assertFreeListLoaded();
+    } catch (error) {
+        throw new Error(
+            "@lunora/auth: the email domain lists are not loaded; `await loadEmailDomainLists()` before calling classifyEmail (assertEmailAllowed does this for you).",
+            {
+                cause: error,
+            },
+        );
+    }
+
     const domain = toAsciiDomain(extracted);
 
     const allowDomains = toDomainSet(config.allowDomains);
@@ -230,7 +247,10 @@ const verifyMx = async (domain: string): Promise<boolean> => {
     const { checkMxRecords } = await import("@visulima/email-verifier/checks/mx");
     const result = await checkMxRecords(domain);
 
-    return result.valid;
+    // A transient resolver failure (SERVFAIL, timeout, EAI_AGAIN) comes back as
+    // `valid: false, deferred: true`. That says nothing about the domain, so it must
+    // not reject the signup as undeliverable; only a definitive "no records" does.
+    return result.valid || result.deferred === true;
 };
 
 /**
