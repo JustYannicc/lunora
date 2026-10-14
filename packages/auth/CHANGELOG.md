@@ -1,3 +1,15 @@
+## @lunora/auth [1.0.0-alpha.208](https://github.com/anolilab/lunora/compare/@lunora/auth@1.0.0-alpha.207...@lunora/auth@1.0.0-alpha.208) (2026-10-14)
+
+### Performance Improvements
+
+* **sql-store:** provision .global() tables in a few batches ([#1149](https://github.com/anolilab/lunora/issues/1149)) ([ccfe208](https://github.com/anolilab/lunora/commit/ccfe208bd5a9dc59928da8ea2e83b754e642493a))
+
+
+### Dependencies
+
+* **@lunora/config:** upgraded to 1.0.0-alpha.345
+* **@lunora/runtime:** upgraded to 1.0.0-alpha.195
+
 ## @lunora/auth [1.0.0-alpha.207](https://github.com/anolilab/lunora/compare/@lunora/auth@1.0.0-alpha.206...@lunora/auth@1.0.0-alpha.207) (2026-10-14)
 
 
