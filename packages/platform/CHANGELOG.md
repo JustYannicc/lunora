@@ -1,3 +1,9 @@
+## @lunora/platform [1.0.0-alpha.63](https://github.com/anolilab/lunora/compare/@lunora/platform@1.0.0-alpha.62...@lunora/platform@1.0.0-alpha.63) (2026-10-14)
+
+### Features
+
+* **do:** budget ctx.scheduler creations per target ([#1155](https://github.com/anolilab/lunora/issues/1155)) ([f8e657f](https://github.com/anolilab/lunora/commit/f8e657fe502da3a13159fda7b6da01fd831c2bc1))
+
 ## @lunora/platform [1.0.0-alpha.62](https://github.com/anolilab/lunora/compare/@lunora/platform@1.0.0-alpha.61...@lunora/platform@1.0.0-alpha.62) (2026-10-14)
 
 ### Features
