@@ -1,3 +1,22 @@
+## @lunora/do [1.0.0-alpha.210](https://github.com/anolilab/lunora/compare/@lunora/do@1.0.0-alpha.209...@lunora/do@1.0.0-alpha.210) (2026-10-14)
+
+### Features
+
+* **do:** budget ctx.scheduler creations per target ([#1155](https://github.com/anolilab/lunora/issues/1155)) ([f8e657f](https://github.com/anolilab/lunora/commit/f8e657fe502da3a13159fda7b6da01fd831c2bc1))
+
+### Bug Fixes
+
+* **do:** size the many-to-many bench under the join-row cap ([#1156](https://github.com/anolilab/lunora/issues/1156)) ([4f08173](https://github.com/anolilab/lunora/commit/4f08173f9e549a7027c5a72ac0aa731ee9f9afe3))
+
+
+### Dependencies
+
+* **@lunora/observability:** upgraded to 1.0.0-alpha.136
+* **@lunora/platform:** upgraded to 1.0.0-alpha.63
+* **@lunora/platform-cloudflare:** upgraded to 1.0.0-alpha.86
+* **@lunora/shard-engine:** upgraded to 1.0.0-alpha.126
+* **@lunora/bindings:** upgraded to 1.0.0-alpha.110
+
 ## @lunora/do [1.0.0-alpha.209](https://github.com/anolilab/lunora/compare/@lunora/do@1.0.0-alpha.208...@lunora/do@1.0.0-alpha.209) (2026-10-14)
 
 ### Features
