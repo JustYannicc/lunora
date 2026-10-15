@@ -1,3 +1,19 @@
+## @lunora/codegen [1.0.0-alpha.304](https://github.com/anolilab/lunora/compare/@lunora/codegen@1.0.0-alpha.303...@lunora/codegen@1.0.0-alpha.304) (2026-10-15)
+
+### Performance Improvements
+
+* **agent:** persist the thread summary and compact only the new delta ([#1183](https://github.com/anolilab/lunora/issues/1183)) ([b61496b](https://github.com/anolilab/lunora/commit/b61496b7977d733a9b619729fb53398600ec9730))
+* **server:** authorise chunked rls deletes on the rows already read ([#1188](https://github.com/anolilab/lunora/issues/1188)) ([244c992](https://github.com/anolilab/lunora/commit/244c9926cd594dfeed3b192274004adb6a553650))
+
+
+### Dependencies
+
+* **@lunora/advisor:** upgraded to 1.0.0-alpha.217
+* **@lunora/agent:** upgraded to 1.0.0-alpha.207
+* **@lunora/do:** upgraded to 1.0.0-alpha.215
+* **@lunora/server:** upgraded to 1.0.0-alpha.201
+* **@lunora/shard-engine:** upgraded to 1.0.0-alpha.129
+
 ## @lunora/codegen [1.0.0-alpha.303](https://github.com/anolilab/lunora/compare/@lunora/codegen@1.0.0-alpha.302...@lunora/codegen@1.0.0-alpha.303) (2026-10-15)
 
 
