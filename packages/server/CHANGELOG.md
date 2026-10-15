@@ -1,3 +1,9 @@
+## @lunora/server [1.0.0-alpha.205](https://github.com/anolilab/lunora/compare/@lunora/server@1.0.0-alpha.204...@lunora/server@1.0.0-alpha.205) (2026-10-15)
+
+### Performance Improvements
+
+* **server:** bind guarded table facades on first access ([#1191](https://github.com/anolilab/lunora/issues/1191)) ([f0c88f0](https://github.com/anolilab/lunora/commit/f0c88f0b671665cfea49a21fcb3d9673199a1c42))
+
 ## @lunora/server [1.0.0-alpha.204](https://github.com/anolilab/lunora/compare/@lunora/server@1.0.0-alpha.203...@lunora/server@1.0.0-alpha.204) (2026-10-15)
 
 ### Bug Fixes
