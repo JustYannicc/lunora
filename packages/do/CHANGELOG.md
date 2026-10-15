@@ -1,3 +1,15 @@
+## @lunora/do [1.0.0-alpha.215](https://github.com/anolilab/lunora/compare/@lunora/do@1.0.0-alpha.214...@lunora/do@1.0.0-alpha.215) (2026-10-15)
+
+### Performance Improvements
+
+* **server:** authorise chunked rls deletes on the rows already read ([#1188](https://github.com/anolilab/lunora/issues/1188)) ([244c992](https://github.com/anolilab/lunora/commit/244c9926cd594dfeed3b192274004adb6a553650))
+
+
+### Dependencies
+
+* **@lunora/observability:** upgraded to 1.0.0-alpha.140
+* **@lunora/shard-engine:** upgraded to 1.0.0-alpha.129
+
 ## @lunora/do [1.0.0-alpha.214](https://github.com/anolilab/lunora/compare/@lunora/do@1.0.0-alpha.213...@lunora/do@1.0.0-alpha.214) (2026-10-15)
 
 ### Performance Improvements
