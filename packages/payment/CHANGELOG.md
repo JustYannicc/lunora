@@ -1,3 +1,11 @@
+## @lunora/payment [1.0.0-alpha.208](https://github.com/anolilab/lunora/compare/@lunora/payment@1.0.0-alpha.207...@lunora/payment@1.0.0-alpha.208) (2026-10-15)
+
+
+### Dependencies
+
+* **@lunora/server:** upgraded to 1.0.0-alpha.204
+* **@lunora/shard-engine:** upgraded to 1.0.0-alpha.131
+
 ## @lunora/payment [1.0.0-alpha.207](https://github.com/anolilab/lunora/compare/@lunora/payment@1.0.0-alpha.206...@lunora/payment@1.0.0-alpha.207) (2026-10-15)
 
 
