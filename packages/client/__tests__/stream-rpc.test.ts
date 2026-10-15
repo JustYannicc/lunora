@@ -8,9 +8,9 @@
  * produced nothing, which is the plan's gate — so the rejection on a body that
  * ends early matters more here than any of the happy paths.
  */
+import { encodeWire } from "@lunora/wire";
 import { describe, expect, it, vi } from "vitest";
 
-import { encodeWire } from "../../../shared/wire-codec";
 import { LunoraClient } from "../src/lunora-client";
 import type { FunctionReference } from "../src/types";
 

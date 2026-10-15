@@ -1,8 +1,8 @@
+import { decodeWire, encodeWire } from "@lunora/wire";
 import { describe, expect, it, vi } from "vitest";
 
 import type { AiRunBinding } from "../../../shared/ai-chat";
 import { MAX_TOOL_CALLS, MAX_TRANSCRIPT_CHARS, MAX_TRANSCRIPT_TURNS } from "../../../shared/ai-chat";
-import { decodeWire, encodeWire } from "../../../shared/wire-codec";
 import { AI_AVAILABLE_OP, AI_CHAT_OP } from "../src/ai-chat-rpc";
 import type { ExecutionContextLike } from "../src/create-worker";
 import { createWorker } from "../src/create-worker";

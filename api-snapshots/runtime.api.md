@@ -2726,6 +2726,12 @@ Not exported, and reachable only through a signature above. Their members
 are part of that signature's meaning, so a change here is a change to the
 public API and is gated as one. Listed once per package, sorted by name.
 
+### `AiOptInLevel` (type)
+
+```ts
+type AiOptInLevel = "disabled" | "schema" | "schema_and_log" | "schema_and_log_and_data";
+```
+
 ### `AppJurisdiction` (type)
 
 ```ts

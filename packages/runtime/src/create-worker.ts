@@ -42,7 +42,7 @@ import { buildAuthAdminRoutes } from "./auth-admin-routes";
 import type { AuthAuditReader } from "./auth-audit-rpc";
 import { buildGetAuthAuditLog, GET_AUTH_AUDIT_LOG_OP } from "./auth-audit-rpc";
 import type { AuthJurisdictionMove } from "./auth-jurisdiction-move-rpc";
-import { buildAuthJurisdictionMoveRpc, COPY_AUTH_TO_JURISDICTION_OP, PURGE_UNPINNED_AUTH_OP } from "./auth-jurisdiction-move-rpc";
+import { buildAuthJurisdictionMoveRpc } from "./auth-jurisdiction-move-rpc";
 import { buildBackupAdminRoutes } from "./backup-admin-routes";
 import { groupBatchCallsByShard } from "./batch";
 import { MAX_BODY_BYTES, readBodyBytesWithLimit, readBodyTextWithLimit, readJsonBodyWithLimit, withBodyLimit } from "./body-readers";
@@ -6164,16 +6164,6 @@ export type {
     WorkerOptions,
 };
 
-// Identity-resolver layer lives in its own module; re-export the public names
-// here so `@lunora/runtime`'s import surface is unchanged.
-export type {
-    ComposeIdentityResolversErrorMode,
-    ComposeIdentityResolversOptions,
-    IdentityContractLike,
-    IdentityResolver,
-    IdentityValidation,
-    ResolvedIdentity,
-} from "./identity-resolvers";
 export { composeIdentityResolvers, routeIdentityResolvers } from "./identity-resolvers";
 export type { KvIntrospector, KvKeyEntry, KvKeyListResult, KvNamespaceSummary, KvValueResult } from "./kv-admin-routes";
 export type { BackupManifest } from "./scheduled-backup";

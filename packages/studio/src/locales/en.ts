@@ -675,7 +675,7 @@ const MESSAGE_IDS = [
     "Whole query",
     "Added",
     "Removed",
-    // Shared by the prompt bar and the inline rewrite — see `features/sql/assistant-reason.ts`.
+    // Shared by the prompt bar and the inline rewrite — see `lib/assistant-reason.ts`.
     "The model could not be reached.",
     "The model returned a statement that is not read-only, so it was discarded.",
     "The model returned nothing usable.",

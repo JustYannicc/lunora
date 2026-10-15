@@ -30,7 +30,7 @@ const lunoraBin = (): string => {
 
 interface EvalJson {
     code: number;
-    evals: { average?: number; items?: unknown[]; name?: string; passed?: boolean }[];
+    data: { evals: { average?: number; items?: unknown[]; name?: string; passed?: boolean }[] };
 }
 
 /**
@@ -66,10 +66,10 @@ describe("lunora eval (built binary, plain Node)", () => {
         const parsed = JSON.parse(stdout) as EvalJson;
 
         expect(parsed.code).toBe(0);
-        expect(parsed.evals).toHaveLength(1);
-        expect(parsed.evals[0]?.name).toBe("studio-ai-chat");
+        expect(parsed.data.evals).toHaveLength(1);
+        expect(parsed.data.evals[0]?.name).toBe("studio-ai-chat");
         // Every case is a behavioural invariant, so the set's own `threshold: 1`
         // is what `passed` was decided against.
-        expect(parsed.evals[0]?.passed).toBe(true);
+        expect(parsed.data.evals[0]?.passed).toBe(true);
     }, 120_000);
 });

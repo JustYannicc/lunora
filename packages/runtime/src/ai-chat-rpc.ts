@@ -18,6 +18,8 @@
  * a builder, and a `*_NOT_CONFIGURED` 400 — deliberately, so there is one
  * worker-RPC idiom rather than two.
  */
+import { decodeWire, encodeWire } from "@lunora/wire";
+
 import type {
     AiOptInLevel,
     AiRunBinding,
@@ -31,7 +33,6 @@ import type {
 } from "../../../shared/ai-chat";
 import { generateChat } from "../../../shared/ai-chat";
 import { SSE_HEADERS, sseFrame } from "../../../shared/sse";
-import { decodeWire, encodeWire } from "../../../shared/wire-codec";
 
 /**
  * Reserved RPC path the studio's chat panel invokes via `useAdminQuery`. Shares
