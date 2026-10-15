@@ -1,3 +1,18 @@
+## @lunora/platform-node [1.0.0-alpha.146](https://github.com/anolilab/lunora/compare/@lunora/platform-node@1.0.0-alpha.145...@lunora/platform-node@1.0.0-alpha.146) (2026-10-15)
+
+### Performance Improvements
+
+* **scheduler:** parse cron expressions with @visulima/cron-parser ([#1213](https://github.com/anolilab/lunora/issues/1213)) ([32fffb3](https://github.com/anolilab/lunora/commit/32fffb368a1ed443b61577a69cc7d2981eb0eaca))
+
+
+### Dependencies
+
+* **@lunora/d1:** upgraded to 1.0.0-alpha.182
+* **@lunora/runtime:** upgraded to 1.0.0-alpha.205
+* **@lunora/sql-store:** upgraded to 1.0.0-alpha.183
+* **@lunora/do:** upgraded to 1.0.0-alpha.217
+* **@lunora/shard-engine:** upgraded to 1.0.0-alpha.131
+
 ## @lunora/platform-node [1.0.0-alpha.145](https://github.com/anolilab/lunora/compare/@lunora/platform-node@1.0.0-alpha.144...@lunora/platform-node@1.0.0-alpha.145) (2026-10-15)
 
 
