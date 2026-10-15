@@ -1,3 +1,23 @@
+## @lunora/platform-node [1.0.0-alpha.139](https://github.com/anolilab/lunora/compare/@lunora/platform-node@1.0.0-alpha.138...@lunora/platform-node@1.0.0-alpha.139) (2026-10-15)
+
+### Performance Improvements
+
+* **platform-node:** cache prepared statements in the shard host ([#1184](https://github.com/anolilab/lunora/issues/1184)) ([e5dddc1](https://github.com/anolilab/lunora/commit/e5dddc145f48847024d5e49ae7b46b2f632ef41b))
+
+
+### Dependencies
+
+* **@lunora/d1:** upgraded to 1.0.0-alpha.179
+* **@lunora/errors:** upgraded to 1.0.0-alpha.55
+* **@lunora/queue:** upgraded to 1.0.0-alpha.106
+* **@lunora/runtime:** upgraded to 1.0.0-alpha.199
+* **@lunora/sql-store:** upgraded to 1.0.0-alpha.180
+* **@lunora/workflow:** upgraded to 1.0.0-alpha.77
+* **@lunora/do:** upgraded to 1.0.0-alpha.213
+* **@lunora/platform-cloudflare:** upgraded to 1.0.0-alpha.88
+* **@lunora/shard-engine:** upgraded to 1.0.0-alpha.128
+* **@lunora/storage:** upgraded to 1.0.0-alpha.133
+
 ## @lunora/platform-node [1.0.0-alpha.138](https://github.com/anolilab/lunora/compare/@lunora/platform-node@1.0.0-alpha.137...@lunora/platform-node@1.0.0-alpha.138) (2026-10-14)
 
 ### Bug Fixes
