@@ -1,3 +1,9 @@
+## @lunora/codegen [1.0.0-alpha.306](https://github.com/anolilab/lunora/compare/@lunora/codegen@1.0.0-alpha.305...@lunora/codegen@1.0.0-alpha.306) (2026-10-15)
+
+### Performance Improvements
+
+* **codegen:** memoise identity resolution per credential ([#1192](https://github.com/anolilab/lunora/issues/1192)) ([1192b53](https://github.com/anolilab/lunora/commit/1192b53ca5719c8ad6b400086e95f6a959fe25dc))
+
 ## @lunora/codegen [1.0.0-alpha.305](https://github.com/anolilab/lunora/compare/@lunora/codegen@1.0.0-alpha.304...@lunora/codegen@1.0.0-alpha.305) (2026-10-15)
 
 ### Performance Improvements
