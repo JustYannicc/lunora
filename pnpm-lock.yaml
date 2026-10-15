@@ -2743,7 +2743,7 @@ importers:
         specifier: workspace:*
         version: link:../values
       '@lunora/wire':
-        specifier: workspace:*
+        specifier: 1.0.0-alpha.1
         version: link:../wire
       '@visulima/disposable-email-domains':
         specifier: catalog:email
@@ -3114,7 +3114,7 @@ importers:
         specifier: workspace:*
         version: link:../testing
       '@lunora/wire':
-        specifier: workspace:*
+        specifier: 1.0.0-alpha.1
         version: link:../wire
       '@types/node':
         specifier: catalog:types
@@ -3928,7 +3928,7 @@ importers:
         specifier: workspace:*
         version: link:../shard-engine
       '@lunora/wire':
-        specifier: workspace:*
+        specifier: 1.0.0-alpha.1
         version: link:../wire
       '@modelcontextprotocol/sdk':
         specifier: catalog:mcp
@@ -4365,7 +4365,7 @@ importers:
         specifier: workspace:*
         version: link:../server
       '@lunora/wire':
-        specifier: workspace:*
+        specifier: 1.0.0-alpha.1
         version: link:../wire
       fflate:
         specifier: catalog:privacy
