@@ -26,6 +26,7 @@ import { definePolicy, initLunora, rls } from "../src/index";
 interface CountingWriter {
     count: (tableName: string, whereOrArgs?: unknown) => Promise<number>;
     delete: (id: string) => Promise<void>;
+    deleteRereadTables?: ReadonlySet<string>;
     findFirst: (tableName: string, args?: { where?: Record<string, unknown> }) => Promise<Record<string, unknown> | null>;
     findFirstOrThrow: (tableName: string, args?: unknown) => Promise<Record<string, unknown>>;
     findMany: (tableName: string, args?: unknown) => Promise<{ continueCursor: null | string; isDone: boolean; page: Record<string, unknown>[] }>;
@@ -144,4 +145,58 @@ describe("rls() get() — table discovery cost vs K policy tables", () => {
             await handlers[k].handler(buildContext(fastWriters[k]), {});
         });
     }
+});
+
+/**
+ * `deleteAll` over 100 rows with 3 policy-gated tables, on the probe-path writer (no
+ * `lookupById`). Two cases: a LOCAL table, where the verdict runs on the rows the scoped read
+ * returned so only the 100 deletes remain, and a table the writer lists in `deleteRereadTables`
+ * (every `.global()` table, and any table a cascade or trigger can reach), where each row is still
+ * re-located (1 get + a findFirst probe) before its verdict.
+ */
+const ERASE_ROWS = 100;
+const eraseRows = Array.from({ length: ERASE_ROWS }, (_, index) => {
+    return { _creationTime: 0, _id: `row_${String(index)}`, ownerId: "user_42" };
+});
+const eraseWriter: CountingWriter = {
+    ...makeWriter(3, false),
+    async findFirst(tableName, args) {
+        const wantsId = (args?.where as { _id?: string } | undefined)?._id;
+
+        return tableName === "t0" ? (eraseRows.find((candidate) => candidate._id === wantsId) ?? null) : null;
+    },
+    async findMany() {
+        return { continueCursor: null, isDone: true, page: eraseRows };
+    },
+    async get(id) {
+        return eraseRows.find((candidate) => candidate._id === id) ?? null;
+    },
+};
+const eraseHandler = lunora.mutation
+    .use(
+        rlsAsAny<BenchContext>([
+            ...policiesFor(3),
+            definePolicy<BenchContext>({
+                on: "delete",
+                table: "t0",
+                when: ({ auth, row }) => String((row as { ownerId?: string }).ownerId) === String(auth.userId),
+            }),
+        ]),
+    )
+    .mutation(async ({ ctx }) =>
+        (ctx.db as unknown as { deleteAll: (table: string, options: { chunkSize: number }) => Promise<unknown> }).deleteAll("t0", {
+            chunkSize: ERASE_ROWS + 1,
+        }),
+    );
+
+const rereadEraseWriter: CountingWriter = { ...eraseWriter, deleteRereadTables: new Set(["t0"]) };
+
+describe("rls() deleteAll — 100 rows, 3 policy tables", () => {
+    bench("deleteAll 100 rows — local table (verdict on the read page)", async () => {
+        await eraseHandler.handler(buildContext(eraseWriter), {});
+    });
+
+    bench("deleteAll 100 rows — re-read table (global / cascade-reachable: re-locate per row)", async () => {
+        await eraseHandler.handler(buildContext(rereadEraseWriter), {});
+    });
 });

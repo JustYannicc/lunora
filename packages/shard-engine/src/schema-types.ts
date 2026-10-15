@@ -819,6 +819,15 @@ export interface DatabaseWriterLike {
     deleteAll?: (tableName: string, options?: { chunkSize?: number; hard?: boolean }) => Promise<{ deleted: number }>;
     deleteMany?: (ids: ReadonlyArray<string>, options?: { limit?: number }, expectedTable?: string) => Promise<{ deleted: number }>;
 
+    /**
+     * Tables whose rows can change under a chunked delete between the page read and the delete: `.global()` tables
+     * (another shard writes the shared D1 rows) and tables where deleting a row can reach, through `cascade` or
+     * `set null` relation delete actions followed transitively, a delete trigger or the table itself (a handler or
+     * cascade may patch a later row). A wrapper that deletes from a page it already read must re-read these.
+     * Metadata only: it names tables and reaches no row.
+     */
+    deleteRereadTables?: ReadonlySet<string>;
+
     deleteWhere?: (tableName: string, where: WhereInput, options?: { limit?: number }) => Promise<{ deleted: number }>;
 
     /**
@@ -843,6 +852,7 @@ export interface DatabaseWriterLike {
         options?: { allowExplicitId?: boolean; limit?: number },
     ) => Promise<string[]>;
     lookupById?: (id: string, expectedTable?: string) => Promise<null | { row: Record<string, unknown>; tableName: string }>;
+
     normalizeId: (tableName: string, id: string) => null | string;
 
     patch: (id: string, patch: Record<string, unknown>, expectedTable?: string, options?: PatchWriteOptions) => Promise<void>;
@@ -881,6 +891,7 @@ export interface DatabaseWriterLike {
     rank: (tableName: string, indexName: string, options: RankOptions) => Promise<null | RankResult>;
     rankBefore?: (tableName: string, indexName: string, options: RankBeforeOptions) => Promise<RankBeforeResult>;
     rankPage: (tableName: string, indexName: string, options?: RankPageOptions) => Promise<RankPage>;
+
     rankPageRows?: (tableName: string, indexName: string, options?: RankPageOptions) => Promise<ShardRankPageResult>;
 
     /**

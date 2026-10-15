@@ -132,7 +132,7 @@ import { createSystemReader } from "./system-reader";
 import { ConflictError } from "./transaction";
 import type { TransactionHeadroomTracker } from "./transaction-headroom";
 import type { SchedulerLike, TriggerContextLike, TriggerEventLike, TriggerOpLike, TriggerTimingLike } from "./triggers";
-import { runTriggers } from "./triggers";
+import { hasTrigger, runTriggers } from "./triggers";
 import type { TextFragment } from "./where-fragments";
 import { identifierText, joinText, rawText, textFragments } from "./where-fragments";
 import type { WhereSqlStrategy } from "./where-sql";
@@ -1911,6 +1911,56 @@ const countRankBefore = (
 
 // CDC (the __cdc_log changelog + __cdc_meta epoch + replay) lives in ./ctx-db-cdc; the __idempotency table in ./ctx-db-idempotency. Both re-exported below so existing import sites resolve unchanged.
 
+/**
+ * The tables a chunked delete cannot trust a page-wide row image for. A table is listed when it is `.global()`
+ * (another shard writes the shared rows), or when deleting one of its rows can reach, through relation delete
+ * actions followed transitively, the table itself or a trigger that can run. A `cascade` holder is deleted, so its
+ * delete triggers fire; a `set null` holder is patched, so its update triggers fire. `restrict` does not propagate.
+ * Conservative: `set null` is followed further than it acts, and a cycle back to the table covers the direct
+ * self-relation.
+ */
+const deriveDeleteRereadTables = (schema: SchemaLike): Set<string> => {
+    const holdersOf = new Map<string, { holder: string; op: "delete" | "update" }[]>();
+
+    for (const [holder, definition] of Object.entries(schema.tables)) {
+        for (const relation of Object.values(definition.relationMap ?? {})) {
+            if (relation.kind === "one" && (relation.onDelete === "cascade" || relation.onDelete === "set null")) {
+                holdersOf.set(relation.table, [
+                    ...(holdersOf.get(relation.table) ?? []),
+                    { holder, op: relation.onDelete === "cascade" ? "delete" : "update" },
+                ]);
+            }
+        }
+    }
+
+    // Walk the holders a delete of `start` reaches; true on a trigger that fires or a cycle back to `start`.
+    const reachesHazard = (start: string): boolean => {
+        const seen = new Set<string>();
+        const queue = [start];
+
+        for (let table = queue.pop(); table !== undefined; table = queue.pop()) {
+            for (const { holder, op } of holdersOf.get(table) ?? []) {
+                if (holder === start || hasTrigger(schema, holder, op)) {
+                    return true;
+                }
+
+                if (!seen.has(holder)) {
+                    seen.add(holder);
+                    queue.push(holder);
+                }
+            }
+        }
+
+        return false;
+    };
+
+    return new Set(
+        Object.entries(schema.tables)
+            .filter(([name, table]) => table.shardMode?.kind === "global" || hasTrigger(schema, name, "delete") || reachesHazard(name))
+            .map(([name]) => name),
+    );
+};
+
 const createShardCtxDb = (options: CtxDbOptions): DatabaseWriterLike => {
     const { baselineSeq, onStalePatchDropped } = options;
     const { sql } = options;
@@ -1924,6 +1974,7 @@ const createShardCtxDb = (options: CtxDbOptions): DatabaseWriterLike => {
      */
     const relationEdges = deriveRelationEdges(schema);
     const relationWrites = describeRelationWrites(schema, options.inTransaction);
+    const deleteRereadTables = deriveDeleteRereadTables(schema);
 
     /**
      * This mutation's `_commitSeq`, allocated on first use and reused for every
@@ -4229,6 +4280,9 @@ const createShardCtxDb = (options: CtxDbOptions): DatabaseWriterLike => {
          * per table can run it itself — see `DatabaseWriterLike.relationEdges`.
          */
         relationEdges,
+
+        /** Published so a chunked delete knows which tables cannot trust a page-wide row image — see `DatabaseWriterLike.deleteRereadTables`. */
+        deleteRereadTables,
 
         /** Published for the table facade's nested relation writes — see `DatabaseWriterLike.relationWrites`. */
         relationWrites,

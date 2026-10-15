@@ -1502,6 +1502,181 @@ describe("rls — batch write path", () => {
         expect(database.calls.some((call) => call.method === "deleteAll")).toBe(false);
     });
 
+    it("deleteAll chunks without re-locating any row it already read", async () => {
+        expect.assertions(5);
+
+        const database = createFakeDatabase(
+            Array.from({ length: 300 }, (_, index) => {
+                return { _id: `d${String(index)}`, ownerId: "u1", table: "documents" };
+            }),
+        );
+
+        const handler = lunora.mutation
+            .use(rlsForTest<TestContext>([deletePolicy]))
+            .mutation(async ({ ctx }) => ctx.db.deleteAll("documents", { chunkSize: 100, hard: true }));
+
+        // The fake ignores `limit` and never drops deleted rows; serve real chunks so the loop drains.
+        const alive = new Set(Array.from({ length: 300 }, (_, index) => `d${String(index)}`));
+        const { delete: recordDelete, findMany } = database.writer;
+
+        const pinnedTables: (string | undefined)[] = [];
+
+        database.writer.delete = async (id, expectedTable, options) => {
+            alive.delete(id);
+            pinnedTables.push(expectedTable);
+
+            return recordDelete(id, expectedTable, options);
+        };
+        database.writer.findMany = async (tableName, args) => {
+            const all = await findMany(tableName, args);
+            const page = all.page.filter((row) => alive.has(String(row["_id"]))).slice(0, (args as { limit?: number } | undefined)?.limit ?? 100);
+
+            return { ...all, page };
+        };
+
+        await expect(handler.handler(makeContext(database, "u1"), {})).resolves.toStrictEqual({ deleted: 300 });
+
+        const deletes = database.calls.filter((call) => call.method === "delete");
+
+        expect(deletes).toHaveLength(300);
+        expect(deletes[0]?.args).toStrictEqual({ hard: true });
+        // Every delete is pinned to the erased table, so the engine probes only that table.
+        expect(pinnedTables.every((table) => table === "documents")).toBe(true);
+        // No per-row `get` / `findFirst` probe: the verdict ran on the page the scoped read returned.
+        expect(database.calls.filter((call) => call.method === "get" || call.method === "findFirst")).toHaveLength(0);
+    });
+
+    /**
+     * Seed a parent P and its child C, and make deleting P null C's `parentId` the way a cascade or a delete trigger
+     * that patches the next row does. `rereadTables` is what the writer publishes as `deleteRereadTables`.
+     */
+    const seedSelfReferential = (rereadTables: ReadonlyArray<string>) => {
+        const rows = [
+            { _id: "P", parentId: "root", table: "documents" },
+            { _id: "C", parentId: "P", table: "documents" },
+        ];
+        const database = createFakeDatabase(rows);
+        const { findMany } = database.writer;
+        const alive = new Set(["C", "P"]);
+
+        Object.assign(database.writer, { deleteRereadTables: new Set(rereadTables) });
+        database.writer.delete = async (id) => {
+            database.calls.push({ args: undefined, method: "delete", tableOrId: id });
+            alive.delete(id);
+
+            for (const row of rows) {
+                if (row.parentId === id) {
+                    row.parentId = null as unknown as string;
+                }
+            }
+        };
+        // Page images are snapshots: a later delete in the page must not reach back into them.
+        database.writer.findMany = async (tableName, args) => {
+            const all = await findMany(tableName, args);
+
+            return {
+                ...all,
+                page: all.page
+                    .filter((row) => alive.has(String(row["_id"])))
+                    .map((row) => {
+                        return { ...row };
+                    }),
+            };
+        };
+
+        return database;
+    };
+
+    const parentIdPolicy = definePolicy<TestContext>({ on: "delete", table: "documents", when: ({ row }) => row?.["parentId"] != null });
+
+    it("deleteAll re-reads a later row of a listed table, so a cascade or trigger patch cannot leave it deletable", async () => {
+        expect.assertions(2);
+
+        const database = seedSelfReferential(["documents"]);
+        const handler = lunora.mutation.use(rlsForTest<TestContext>([parentIdPolicy])).mutation(async ({ ctx }) => ctx.db.deleteAll("documents"));
+
+        // P is deleted first and nulls C's `parentId`; C's current image is denied.
+        await expect(handler.handler(makeContext(database, "u1"), {})).rejects.toMatchObject({ code: "FORBIDDEN", name: "LunoraError" });
+        expect(database.calls.filter((call) => call.method === "delete").map((call) => call.tableOrId)).toStrictEqual(["P"]);
+    });
+
+    it("deleteAll re-reads every row of a .global() table, so another shard's update after the page read is seen", async () => {
+        expect.assertions(2);
+
+        const rows = [
+            { _id: "A", parentId: "x", table: "documents" },
+            { _id: "B", parentId: "x", table: "documents" },
+        ];
+        const database = createFakeDatabase(rows);
+        const { findMany } = database.writer;
+
+        Object.assign(database.writer, { deleteRereadTables: new Set(["documents"]) });
+        // The page is a snapshot; then another shard turns B into a policy-denied row before the delete reaches it.
+        database.writer.findMany = async (tableName, args) => {
+            const result = await findMany(tableName, args);
+            const page = result.page.map((row) => {
+                return { ...row };
+            });
+
+            rows[1]!.parentId = null as unknown as string;
+
+            return { ...result, page };
+        };
+
+        const handler = lunora.mutation.use(rlsForTest<TestContext>([parentIdPolicy])).mutation(async ({ ctx }) => ctx.db.deleteAll("documents"));
+
+        await expect(handler.handler(makeContext(database, "u1"), {})).rejects.toMatchObject({ code: "FORBIDDEN", name: "LunoraError" });
+        expect(database.calls.filter((call) => call.method === "delete").map((call) => call.tableOrId)).toStrictEqual(["A"]);
+    });
+
+    it("deleteAll skips a .global() row another shard deleted after the page read", async () => {
+        expect.assertions(3);
+
+        const rows = [
+            { _id: "A", parentId: "x", table: "documents" },
+            { _id: "B", parentId: "x", table: "documents" },
+        ];
+        const database = createFakeDatabase(rows);
+        const { findMany } = database.writer;
+
+        Object.assign(database.writer, { deleteRereadTables: new Set(["documents"]) });
+        database.writer.get = async (id) => rows.find((row) => row._id === id) ?? null;
+        database.writer.findMany = async (tableName, args) => {
+            const result = await findMany(tableName, args);
+            const page = result.page.map((row) => {
+                return { ...row };
+            });
+
+            // Another shard deletes B between the page read and the delete.
+            rows.splice(1, 1);
+
+            return { ...result, page };
+        };
+
+        const handler = lunora.mutation.use(rlsForTest<TestContext>([parentIdPolicy])).mutation(async ({ ctx }) => ctx.db.deleteAll("documents"));
+
+        // Only A is deleted by this call; the vanished B is skipped, not deleted and not counted.
+        await expect(handler.handler(makeContext(database, "u1"), {})).resolves.toStrictEqual({ deleted: 1 });
+        expect(database.calls.filter((call) => call.method === "delete").map((call) => call.tableOrId)).toStrictEqual(["A"]);
+        expect(rows).toHaveLength(1);
+    });
+
+    it("deleteAll keeps the no-relocate fast path when the table is not listed", async () => {
+        expect.assertions(3);
+
+        // Another listed table must not cost `documents` the fast path.
+        const database = seedSelfReferential(["comments"]);
+
+        enableGetWithTable(database, []);
+
+        const handler = lunora.mutation.use(rlsForTest<TestContext>([parentIdPolicy])).mutation(async ({ ctx }) => ctx.db.deleteAll("documents"));
+
+        // Without a re-read, C's stale image (parentId "P") passes the policy.
+        await expect(handler.handler(makeContext(database, "u1"), {})).resolves.toStrictEqual({ deleted: 2 });
+        expect(database.calls.filter((call) => call.method === "delete")).toHaveLength(2);
+        expect(database.calls.filter((call) => ["findFirst", "get", "lookupById"].includes(call.method))).toHaveLength(0);
+    });
+
     it("deleteAll denies (FORBIDDEN) when a row fails its policy, before deleting it", async () => {
         expect.assertions(2);
 
@@ -1513,7 +1688,7 @@ describe("rls — batch write path", () => {
         expect(database.calls.some((call) => call.method === "delete")).toBe(false);
     });
 
-    it("deleteAll does not pin the table, so a .global() row still routes to its backend", async () => {
+    it("deleteAll pins the erased table; the engine still reaches a .global() row through that pin", async () => {
         expect.assertions(2);
 
         const database = createFakeDatabase([{ _id: "d1", ownerId: "u1", table: "documents" }]);
@@ -1522,10 +1697,8 @@ describe("rls — batch write path", () => {
 
         await handler.handler(makeContext(database, "u1"), {});
 
-        // Pinning `expectedTable` would block the writer's global fallback, making every
-        // delete on a `.global()` table a silent no-op. It costs nothing to omit: the ids
-        // came from this table's own policy-filtered read, and `gateById` still resolves
-        // each row's real table to pick its delete policy.
+        // The ids came from this table's own policy-filtered read, so the delete is pinned to it; the
+        // engine's global fallback honours a pin on a `.global()` table itself.
         const deletes = database.calls.filter((call) => call.method === "delete");
 
         expect(deletes).toHaveLength(1);
