@@ -1,3 +1,10 @@
+## @lunora/server [1.0.0-alpha.206](https://github.com/anolilab/lunora/compare/@lunora/server@1.0.0-alpha.205...@lunora/server@1.0.0-alpha.206) (2026-10-15)
+
+
+### Dependencies
+
+* **@lunora/scheduler:** upgraded to 1.0.0-alpha.129
+
 ## @lunora/server [1.0.0-alpha.205](https://github.com/anolilab/lunora/compare/@lunora/server@1.0.0-alpha.204...@lunora/server@1.0.0-alpha.205) (2026-10-15)
 
 ### Performance Improvements
