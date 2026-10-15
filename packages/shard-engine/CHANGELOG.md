@@ -1,3 +1,9 @@
+## @lunora/shard-engine [1.0.0-alpha.129](https://github.com/anolilab/lunora/compare/@lunora/shard-engine@1.0.0-alpha.128...@lunora/shard-engine@1.0.0-alpha.129) (2026-10-15)
+
+### Performance Improvements
+
+* **server:** authorise chunked rls deletes on the rows already read ([#1188](https://github.com/anolilab/lunora/issues/1188)) ([244c992](https://github.com/anolilab/lunora/commit/244c9926cd594dfeed3b192274004adb6a553650))
+
 ## @lunora/shard-engine [1.0.0-alpha.128](https://github.com/anolilab/lunora/compare/@lunora/shard-engine@1.0.0-alpha.127...@lunora/shard-engine@1.0.0-alpha.128) (2026-10-15)
 
 ### ⚠ BREAKING CHANGES
