@@ -218,7 +218,8 @@
             # step above; its health probe is the last step of this job.
             - "name": "Deploy the control plane"
               "working-directory": "apps/cloud"
-              "run": 'pnpm exec wrangler deploy -c dist/server/wrangler.json --secrets-file "${RUNNER_TEMP}/secrets-control-plane.json"'
+              "run": |
+                  pnpm exec wrangler deploy -c dist/server/wrangler.json --secrets-file "${RUNNER_TEMP}/secrets-control-plane.json"
 
             # The dispatcher, the Outbound Worker and the tail consumer are plain
             # Workers with no Vite build of their own, so they deploy straight from
