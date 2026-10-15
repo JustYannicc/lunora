@@ -1,3 +1,25 @@
+## @lunora/codegen [1.0.0-alpha.308](https://github.com/anolilab/lunora/compare/@lunora/codegen@1.0.0-alpha.307...@lunora/codegen@1.0.0-alpha.308) (2026-10-15)
+
+### Performance Improvements
+
+* **wire:** publish the wire codec once instead of inlining it into every package ([#1198](https://github.com/anolilab/lunora/issues/1198)) ([7020e2c](https://github.com/anolilab/lunora/commit/7020e2cec53c3e5c0f28ab8e569b33ee0ae3a55b))
+
+
+### Dependencies
+
+* **@lunora/advisor:** upgraded to 1.0.0-alpha.219
+* **@lunora/agent:** upgraded to 1.0.0-alpha.210
+* **@lunora/container:** upgraded to 1.0.0-alpha.76
+* **@lunora/errors:** upgraded to 1.0.0-alpha.56
+* **@lunora/queue:** upgraded to 1.0.0-alpha.107
+* **@lunora/scheduler:** upgraded to 1.0.0-alpha.127
+* **@lunora/values:** upgraded to 1.0.0-alpha.66
+* **@lunora/workflow:** upgraded to 1.0.0-alpha.78
+* **@lunora/bindings:** upgraded to 1.0.0-alpha.114
+* **@lunora/do:** upgraded to 1.0.0-alpha.216
+* **@lunora/server:** upgraded to 1.0.0-alpha.203
+* **@lunora/shard-engine:** upgraded to 1.0.0-alpha.130
+
 ## @lunora/codegen [1.0.0-alpha.307](https://github.com/anolilab/lunora/compare/@lunora/codegen@1.0.0-alpha.306...@lunora/codegen@1.0.0-alpha.307) (2026-10-15)
 
 
