@@ -1,3 +1,23 @@
+## @lunora/codegen [1.0.0-alpha.309](https://github.com/anolilab/lunora/compare/@lunora/codegen@1.0.0-alpha.308...@lunora/codegen@1.0.0-alpha.309) (2026-10-15)
+
+### Bug Fixes
+
+* **rls:** re-locate chunked-erase rows outside a mutation transaction ([#1201](https://github.com/anolilab/lunora/issues/1201)) ([6b81bb1](https://github.com/anolilab/lunora/commit/6b81bb1c6a6aa692624b7d3b3cdef2b8256a8ebe))
+
+### Performance Improvements
+
+* **scheduler:** parse cron expressions with @visulima/cron-parser ([#1213](https://github.com/anolilab/lunora/issues/1213)) ([32fffb3](https://github.com/anolilab/lunora/commit/32fffb368a1ed443b61577a69cc7d2981eb0eaca))
+
+
+### Dependencies
+
+* **@lunora/advisor:** upgraded to 1.0.0-alpha.220
+* **@lunora/agent:** upgraded to 1.0.0-alpha.211
+* **@lunora/scheduler:** upgraded to 1.0.0-alpha.128
+* **@lunora/do:** upgraded to 1.0.0-alpha.217
+* **@lunora/server:** upgraded to 1.0.0-alpha.204
+* **@lunora/shard-engine:** upgraded to 1.0.0-alpha.131
+
 ## @lunora/codegen [1.0.0-alpha.308](https://github.com/anolilab/lunora/compare/@lunora/codegen@1.0.0-alpha.307...@lunora/codegen@1.0.0-alpha.308) (2026-10-15)
 
 ### Performance Improvements
