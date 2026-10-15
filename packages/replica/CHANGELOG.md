@@ -1,3 +1,10 @@
+## @lunora/replica [1.0.0-alpha.180](https://github.com/anolilab/lunora/compare/@lunora/replica@1.0.0-alpha.179...@lunora/replica@1.0.0-alpha.180) (2026-10-15)
+
+
+### Dependencies
+
+* **@lunora/server:** upgraded to 1.0.0-alpha.205
+
 ## @lunora/replica [1.0.0-alpha.179](https://github.com/anolilab/lunora/compare/@lunora/replica@1.0.0-alpha.178...@lunora/replica@1.0.0-alpha.179) (2026-10-15)
 
 
