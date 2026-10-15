@@ -2557,7 +2557,7 @@ importers:
         specifier: workspace:*
         version: link:../shard-engine
       '@lunora/wire':
-        specifier: workspace:*
+        specifier: 1.0.0-alpha.1
         version: link:../wire
       '@types/node':
         specifier: catalog:types
@@ -2596,7 +2596,7 @@ importers:
         specifier: workspace:*
         version: link:../errors
       '@lunora/wire':
-        specifier: workspace:*
+        specifier: 1.0.0-alpha.1
         version: link:../wire
       ai:
         specifier: catalog:ai
@@ -2642,7 +2642,7 @@ importers:
         specifier: workspace:*
         version: link:../ratelimit
       '@lunora/wire':
-        specifier: workspace:*
+        specifier: 1.0.0-alpha.1
         version: link:../wire
       '@visulima/storage-client':
         specifier: catalog:storage
@@ -3153,7 +3153,7 @@ importers:
         specifier: workspace:*
         version: link:../errors
       '@lunora/wire':
-        specifier: workspace:*
+        specifier: 1.0.0-alpha.1
         version: link:../wire
       '@visulima/storage-client':
         specifier: catalog:storage
@@ -3406,7 +3406,7 @@ importers:
         specifier: workspace:*
         version: link:../errors
       '@lunora/wire':
-        specifier: workspace:*
+        specifier: 1.0.0-alpha.1
         version: link:../wire
     devDependencies:
       '@cloudflare/containers':
@@ -3458,7 +3458,7 @@ importers:
         specifier: workspace:*
         version: link:../sql-store
       '@lunora/wire':
-        specifier: workspace:*
+        specifier: 1.0.0-alpha.1
         version: link:../wire
       drizzle-orm:
         specifier: catalog:drizzle
@@ -3596,7 +3596,7 @@ importers:
         specifier: workspace:*
         version: link:../values
       '@lunora/wire':
-        specifier: workspace:*
+        specifier: 1.0.0-alpha.1
         version: link:../wire
       drizzle-orm:
         specifier: catalog:drizzle
@@ -3699,7 +3699,7 @@ importers:
         specifier: workspace:*
         version: link:../errors
       '@lunora/wire':
-        specifier: workspace:*
+        specifier: 1.0.0-alpha.1
         version: link:../wire
       '@openfeature/server-sdk':
         specifier: catalog:flags
@@ -4051,7 +4051,7 @@ importers:
         specifier: workspace:*
         version: link:../shard-engine
       '@lunora/wire':
-        specifier: workspace:*
+        specifier: 1.0.0-alpha.1
         version: link:../wire
       '@visulima/redact':
         specifier: catalog:redact
@@ -4396,7 +4396,7 @@ importers:
         specifier: workspace:*
         version: link:../platform
       '@lunora/wire':
-        specifier: workspace:*
+        specifier: 1.0.0-alpha.1
         version: link:../wire
     devDependencies:
       '@cloudflare/vitest-plugin':
@@ -4500,7 +4500,7 @@ importers:
         specifier: workspace:*
         version: link:../ratelimit
       '@lunora/wire':
-        specifier: workspace:*
+        specifier: 1.0.0-alpha.1
         version: link:../wire
       '@visulima/storage-client':
         specifier: catalog:storage
@@ -4616,7 +4616,7 @@ importers:
   packages/replica:
     dependencies:
       '@lunora/wire':
-        specifier: workspace:*
+        specifier: 1.0.0-alpha.1
         version: link:../wire
       '@sqlite.org/sqlite-wasm':
         specifier: '*'
@@ -4729,7 +4729,7 @@ importers:
         specifier: workspace:*
         version: link:../platform
       '@lunora/wire':
-        specifier: workspace:*
+        specifier: 1.0.0-alpha.1
         version: link:../wire
     devDependencies:
       '@cloudflare/vitest-plugin':
@@ -4787,7 +4787,7 @@ importers:
         specifier: workspace:*
         version: link:../platform
       '@lunora/wire':
-        specifier: workspace:*
+        specifier: 1.0.0-alpha.1
         version: link:../wire
       cron-parser:
         specifier: catalog:tooling
@@ -4916,7 +4916,7 @@ importers:
         specifier: workspace:*
         version: link:../values
       '@lunora/wire':
-        specifier: workspace:*
+        specifier: 1.0.0-alpha.1
         version: link:../wire
       drizzle-orm:
         specifier: catalog:drizzle
@@ -4980,7 +4980,7 @@ importers:
         specifier: workspace:*
         version: link:../platform
       '@lunora/wire':
-        specifier: workspace:*
+        specifier: 1.0.0-alpha.1
         version: link:../wire
       drizzle-orm:
         specifier: catalog:drizzle
@@ -5029,7 +5029,7 @@ importers:
         specifier: workspace:*
         version: link:../ratelimit
       '@lunora/wire':
-        specifier: workspace:*
+        specifier: 1.0.0-alpha.1
         version: link:../wire
       '@visulima/storage-client':
         specifier: catalog:storage
@@ -5087,7 +5087,7 @@ importers:
         specifier: workspace:*
         version: link:../shard-engine
       '@lunora/wire':
-        specifier: workspace:*
+        specifier: 1.0.0-alpha.1
         version: link:../wire
       drizzle-orm:
         specifier: catalog:drizzle
@@ -5218,7 +5218,7 @@ importers:
         specifier: workspace:*
         version: link:../react
       '@lunora/wire':
-        specifier: workspace:*
+        specifier: 1.0.0-alpha.1
         version: link:../wire
       '@tanstack/react-query':
         specifier: catalog:frontend
@@ -5348,7 +5348,7 @@ importers:
         specifier: workspace:*
         version: link:../ratelimit
       '@lunora/wire':
-        specifier: workspace:*
+        specifier: 1.0.0-alpha.1
         version: link:../wire
       '@visulima/storage-client':
         specifier: catalog:storage
@@ -5409,7 +5409,7 @@ importers:
         specifier: workspace:*
         version: link:../server
       '@lunora/wire':
-        specifier: workspace:*
+        specifier: 1.0.0-alpha.1
         version: link:../wire
       '@playwright/test':
         specifier: ^1.61.1
@@ -5547,7 +5547,7 @@ importers:
         specifier: workspace:*
         version: link:../ratelimit
       '@lunora/wire':
-        specifier: workspace:*
+        specifier: 1.0.0-alpha.1
         version: link:../wire
       '@visulima/storage-client':
         specifier: catalog:storage
@@ -5608,7 +5608,7 @@ importers:
         specifier: workspace:*
         version: link:../values
       '@lunora/wire':
-        specifier: workspace:*
+        specifier: 1.0.0-alpha.1
         version: link:../wire
     devDependencies:
       '@cloudflare/vitest-plugin':
