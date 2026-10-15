@@ -1,3 +1,9 @@
+## @lunora/scheduler [1.0.0-alpha.128](https://github.com/anolilab/lunora/compare/@lunora/scheduler@1.0.0-alpha.127...@lunora/scheduler@1.0.0-alpha.128) (2026-10-15)
+
+### Performance Improvements
+
+* **scheduler:** parse cron expressions with @visulima/cron-parser ([#1213](https://github.com/anolilab/lunora/issues/1213)) ([32fffb3](https://github.com/anolilab/lunora/commit/32fffb368a1ed443b61577a69cc7d2981eb0eaca))
+
 ## @lunora/scheduler [1.0.0-alpha.127](https://github.com/anolilab/lunora/compare/@lunora/scheduler@1.0.0-alpha.126...@lunora/scheduler@1.0.0-alpha.127) (2026-10-15)
 
 ### Performance Improvements
