@@ -1,3 +1,15 @@
+## @lunora/agent [1.0.0-alpha.212](https://github.com/anolilab/lunora/compare/@lunora/agent@1.0.0-alpha.211...@lunora/agent@1.0.0-alpha.212) (2026-10-15)
+
+### Performance Improvements
+
+* **agent:** batch otlp spans per run ([#1189](https://github.com/anolilab/lunora/issues/1189)) ([e6d74bf](https://github.com/anolilab/lunora/commit/e6d74bf9e3484c8875bcd2beecde323fd63d05fb))
+
+
+### Dependencies
+
+* **@lunora/ai:** upgraded to 1.0.0-alpha.129
+* **@lunora/server:** upgraded to 1.0.0-alpha.205
+
 ## @lunora/agent [1.0.0-alpha.211](https://github.com/anolilab/lunora/compare/@lunora/agent@1.0.0-alpha.210...@lunora/agent@1.0.0-alpha.211) (2026-10-15)
 
 
