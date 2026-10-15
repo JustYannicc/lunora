@@ -1,3 +1,15 @@
+## @lunora/agent [1.0.0-alpha.207](https://github.com/anolilab/lunora/compare/@lunora/agent@1.0.0-alpha.206...@lunora/agent@1.0.0-alpha.207) (2026-10-15)
+
+### Performance Improvements
+
+* **agent:** persist the thread summary and compact only the new delta ([#1183](https://github.com/anolilab/lunora/issues/1183)) ([b61496b](https://github.com/anolilab/lunora/commit/b61496b7977d733a9b619729fb53398600ec9730))
+
+
+### Dependencies
+
+* **@lunora/server:** upgraded to 1.0.0-alpha.201
+* **@lunora/shard-engine:** upgraded to 1.0.0-alpha.129
+
 ## @lunora/agent [1.0.0-alpha.206](https://github.com/anolilab/lunora/compare/@lunora/agent@1.0.0-alpha.205...@lunora/agent@1.0.0-alpha.206) (2026-10-15)
 
 ### Performance Improvements
