@@ -61,6 +61,8 @@ interface FakeDatabase {
             documents: ReadonlyArray<Record<string, unknown>>,
             options?: { allowExplicitId?: boolean; limit?: number },
         ) => Promise<string[]>;
+        /** The fake writer stands in for a mutation's writer by default (inside a transaction); override per-test for an action. */
+        inTransaction?: () => boolean;
         lookupById?: (id: string) => Promise<null | { row: Record<string, unknown>; tableName: string }>;
         patch: (id: string, patch: Record<string, unknown>, expectedTable?: string, options?: { verify?: CapturedCall["verify"] }) => Promise<void>;
         patchIf: (
@@ -93,6 +95,8 @@ interface FakeDatabase {
         }>;
         replace: (id: string, document: Record<string, unknown>) => Promise<void>;
         restore: (id: string, expectedTable?: string) => Promise<void>;
+        /** Enable per-test to model a `.softDelete()` table: table → marker column. */
+        softDeleteFields?: ReadonlyMap<string, string>;
     };
 }
 
@@ -173,6 +177,8 @@ const createFakeDatabase = (rows: (Record<string, unknown> & { _id: string; tabl
 
                 return [{ key: {}, value: rowsOfTable(tableName).length }];
             },
+            // The fake models a mutation's writer by default; an action test overrides this to `() => false`.
+            inTransaction: () => true,
             async insert(tableName, document, options) {
                 calls.push({ args: options === undefined ? document : { document, options }, method: "insert", tableOrId: tableName });
 
@@ -1703,6 +1709,320 @@ describe("rls — batch write path", () => {
 
         expect(deletes).toHaveLength(1);
         expect(deletes[0]?.args).toBeUndefined();
+    });
+
+    it("deleteAll from an action re-locates every row: outside the mutation's transaction the page image can change", async () => {
+        expect.assertions(2);
+
+        const rows = [
+            { _id: "A", ownerId: "u1", parentId: "x", table: "documents" },
+            { _id: "B", ownerId: "u1", parentId: "x", table: "documents" },
+        ];
+        const database = createFakeDatabase(rows);
+        const { findMany } = database.writer;
+
+        // An action: no open transaction, so the page is only a snapshot.
+        Object.assign(database.writer, { inTransaction: () => false });
+        // A concurrent write reassigns B after the page read; only the fresh image may be trusted.
+        database.writer.findMany = async (tableName, args) => {
+            const result = await findMany(tableName, args);
+            const page = result.page.map((row) => {
+                return { ...row };
+            });
+
+            rows[1]!.parentId = null as unknown as string;
+
+            return { ...result, page };
+        };
+
+        const handler = lunora.action.use(rlsForTest<TestContext>([parentIdPolicy])).action(async ({ ctx }) => ctx.db.deleteAll("documents"));
+
+        // The fresh image denies B, so the erase stops rather than deleting a row it may no longer own.
+        await expect(handler.handler(makeContext(database, "u1"), {})).rejects.toMatchObject({ code: "FORBIDDEN", name: "LunoraError" });
+        expect(database.calls.filter((call) => call.method === "delete").map((call) => call.tableOrId)).toStrictEqual(["A"]);
+    });
+
+    it("deleteAll counts a row an earlier self-cascade soft-deleted only once", async () => {
+        expect.assertions(2);
+
+        const rows: (Record<string, unknown> & { _id: string; table: string })[] = [
+            { _id: "P", deletedAt: null, parentId: "root", table: "documents" },
+            { _id: "C", deletedAt: null, parentId: "P", table: "documents" },
+        ];
+        const database = createFakeDatabase(rows);
+        const { findMany } = database.writer;
+
+        Object.assign(database.writer, {
+            // Self-cascading AND soft-deleting: re-read each row, and treat a stamped row as gone.
+            deleteRereadTables: new Set(["documents"]),
+            softDeleteFields: new Map([["documents", "deletedAt"]]),
+        });
+        database.writer.delete = async (id) => {
+            database.calls.push({ args: undefined, method: "delete", tableOrId: id });
+
+            for (const row of rows) {
+                if (row._id === id || row.parentId === id) {
+                    row.deletedAt = 1;
+                }
+            }
+        };
+        // Page images are snapshots: the preserved rows are filtered like the writer's own live read.
+        database.writer.findMany = async (tableName, args) => {
+            const all = await findMany(tableName, args);
+
+            return {
+                ...all,
+                page: all.page
+                    .filter((row) => row.deletedAt === null)
+                    .map((row) => {
+                        return { ...row };
+                    }),
+            };
+        };
+
+        const handler = lunora.mutation.use(rlsForTest<TestContext>([parentIdPolicy])).mutation(async ({ ctx }) => ctx.db.deleteAll("documents"));
+
+        // P is deleted; C was cascade-soft-deleted, so its tombstone is skipped rather than re-counted.
+        await expect(handler.handler(makeContext(database, "u1"), {})).resolves.toStrictEqual({ deleted: 1 });
+        expect(database.calls.filter((call) => call.method === "delete").map((call) => call.tableOrId)).toStrictEqual(["P"]);
+    });
+
+    it("deleteAll counts a row a cascade removed only once on a policy-less table too", async () => {
+        expect.assertions(2);
+
+        const rows = [
+            { _id: "P", parentId: "root", table: "plain" },
+            { _id: "C", parentId: "P", table: "plain" },
+        ];
+        const database = createFakeDatabase(rows);
+        const { findMany } = database.writer;
+        const alive = new Set(["C", "P"]);
+
+        Object.assign(database.writer, { deleteRereadTables: new Set(["plain"]) });
+        database.writer.delete = async (id) => {
+            database.calls.push({ args: undefined, method: "delete", tableOrId: id });
+            alive.delete(id);
+
+            for (const row of rows) {
+                if (row.parentId === id) {
+                    alive.delete(row._id);
+                }
+            }
+        };
+        database.writer.findFirst = async (_tableName, args) => {
+            const id = (args as { where?: { _id?: string } } | undefined)?.where?._id;
+
+            return id !== undefined && alive.has(id) ? (rows.find((row) => row._id === id) ?? null) : null;
+        };
+        database.writer.findMany = async (tableName, args) => {
+            const all = await findMany(tableName, args);
+
+            return {
+                ...all,
+                page: all.page.map((row) => {
+                    return { ...row };
+                }),
+            };
+        };
+
+        // A policy-less table (`plain`) still rides the reread set, so its vanished child is not counted.
+        const handler = lunora.mutation.use(rlsForTest<TestContext>([deletePolicy])).mutation(async ({ ctx }) => ctx.db.deleteAll("plain"));
+
+        await expect(handler.handler(makeContext(database, "u1"), {})).resolves.toStrictEqual({ deleted: 1 });
+        expect(database.calls.filter((call) => call.method === "delete").map((call) => call.tableOrId)).toStrictEqual(["P"]);
+    });
+
+    it("deleteAll from an action skips a row a concurrent write moved out of the read scope", async () => {
+        expect.assertions(2);
+
+        const rows = [
+            { _id: "A", ownerId: "u1", table: "documents" },
+            { _id: "B", ownerId: "u1", table: "documents" },
+        ];
+        const database = createFakeDatabase(rows);
+        const { findMany } = database.writer;
+
+        // An action: no transaction. The fresh read re-applies the read scope (`baseWhere`).
+        Object.assign(database.writer, { inTransaction: () => false });
+        database.writer.findFirst = async (tableName, args) => {
+            database.calls.push({ args, method: "findFirst", tableOrId: tableName });
+            const options = args as { baseWhere?: { ownerId?: { eq?: string } }; includeDeleted?: boolean; where?: { _id?: string } } | undefined;
+            const id = options?.where?._id;
+            const owner = options?.baseWhere?.ownerId?.eq;
+
+            return rows.find((row) => row.table === tableName && row._id === id && (owner === undefined || row.ownerId === owner)) ?? null;
+        };
+        // A concurrent mutation transfers B to another owner after the page read.
+        database.writer.findMany = async (tableName, args) => {
+            const result = await findMany(tableName, args);
+            const page = result.page.map((row) => {
+                return { ...row };
+            });
+
+            rows[1]!.ownerId = "someone-else";
+
+            return { ...result, page };
+        };
+
+        const readOwn = definePolicy<TestContext>({
+            on: "read",
+            table: "documents",
+            when: ({ auth }) => {
+                return { ownerId: { eq: auth.userId } };
+            },
+        });
+        const deleteAny = definePolicy<TestContext>({ on: "delete", table: "documents", when: () => true });
+        const handler = lunora.action.use(rlsForTest<TestContext>([readOwn, deleteAny])).action(async ({ ctx }) => ctx.db.deleteAll("documents"));
+
+        // B left the caller's read scope, so it is not erased even though the delete policy allows it.
+        await expect(handler.handler(makeContext(database, "u1"), {})).resolves.toStrictEqual({ deleted: 1 });
+        expect(database.calls.filter((call) => call.method === "delete").map((call) => call.tableOrId)).toStrictEqual(["A"]);
+    });
+
+    it("deleteWhere from an action skips a row a concurrent write moved out of its filter", async () => {
+        expect.assertions(2);
+
+        const rows = [
+            { _id: "A", status: "archived", table: "documents" },
+            { _id: "B", status: "archived", table: "documents" },
+        ];
+        const database = createFakeDatabase(rows);
+        const { findMany } = database.writer;
+
+        // An action: no transaction, so `deleteWhere` re-locates each row.
+        Object.assign(database.writer, { inTransaction: () => false });
+        // The re-location applies the caller's filter through the SQL path (merged as `{ AND: [{ _id }, { status }] }`).
+        database.writer.findFirst = async (tableName, args) => {
+            database.calls.push({ args, method: "findFirst", tableOrId: tableName });
+            const where = (args as { where?: { _id?: string; AND?: [{ _id?: string }, { status?: string }] } } | undefined)?.where;
+            const id = where?._id ?? where?.AND?.[0]?._id;
+            const status = where?.AND?.[1]?.status;
+            const row = rows.find((entry) => entry.table === tableName && entry._id === id);
+
+            return row && (status === undefined || row.status === status) ? row : null;
+        };
+        // A concurrent write un-archives B after the page read.
+        database.writer.findMany = async (tableName, args) => {
+            const result = await findMany(tableName, args);
+            const page = result.page.map((row) => {
+                return { ...row };
+            });
+
+            rows[1]!.status = "active";
+
+            return { ...result, page };
+        };
+
+        // The row is also delete-denied once un-archived; it must still be skipped, not abort the erase.
+        const deleteArchived = definePolicy<TestContext>({ on: "delete", table: "documents", when: ({ row }) => row?.["status"] === "archived" });
+        const handler = lunora.action
+            .use(rlsForTest<TestContext>([deleteArchived]))
+            .action(async ({ ctx }) => ctx.db.deleteWhere("documents", { status: "archived" }));
+
+        // B left the filter (and is now delete-denied), so it is skipped, not erased and not an abort.
+        await expect(handler.handler(makeContext(database, "u1"), {})).resolves.toStrictEqual({ deleted: 1 });
+        expect(database.calls.filter((call) => call.method === "delete").map((call) => call.tableOrId)).toStrictEqual(["A"]);
+    });
+
+    it("deleteAll with { hard: true } reaches a row that became soft-deleted after the page read", async () => {
+        expect.assertions(2);
+
+        const rows: (Record<string, unknown> & { _id: string; table: string })[] = [
+            { _id: "A", deletedAt: null, ownerId: "u1", table: "documents" },
+            { _id: "B", deletedAt: null, ownerId: "u1", table: "documents" },
+        ];
+        const database = createFakeDatabase(rows);
+        const { findMany } = database.writer;
+
+        Object.assign(database.writer, { inTransaction: () => false, softDeleteFields: new Map([["documents", "deletedAt"]]) });
+        database.writer.findFirst = async (tableName, args) => {
+            database.calls.push({ args, method: "findFirst", tableOrId: tableName });
+            const options = args as { includeDeleted?: boolean; where?: { _id?: string } } | undefined;
+            const row = rows.find((entry) => entry.table === tableName && entry._id === options?.where?._id);
+
+            if (!row) {
+                return null;
+            }
+
+            // A live-only read hides the tombstone; `includeDeleted` resurfaces it for a hard erase.
+            return row.deletedAt === null || options?.includeDeleted === true ? row : null;
+        };
+        // A concurrent mutation soft-deletes B after the page read.
+        database.writer.findMany = async (tableName, args) => {
+            const result = await findMany(tableName, args);
+            const page = result.page.map((row) => {
+                return { ...row };
+            });
+
+            rows[1]!.deletedAt = 1;
+
+            return { ...result, page };
+        };
+
+        const deleteAny = definePolicy<TestContext>({ on: "delete", table: "documents", when: () => true });
+        const handler = lunora.mutation.use(rlsForTest<TestContext>([deleteAny])).mutation(async ({ ctx }) => ctx.db.deleteAll("documents", { hard: true }));
+
+        // The hard erase must physically remove the row, tombstone or not: it is found and deleted.
+        await expect(handler.handler(makeContext(database, "u1"), {})).resolves.toStrictEqual({ deleted: 2 });
+        expect(database.calls.filter((call) => call.method === "delete").map((call) => call.tableOrId)).toStrictEqual(["A", "B"]);
+    });
+
+    it("deleteAll re-locates with the same relation read filter its page read used", async () => {
+        expect.assertions(2);
+
+        const database = createFakeDatabase([{ _id: "A", ownerId: "u1", table: "documents" }]);
+
+        // Force the re-location path (a listed table) and capture the read filter each read threads.
+        Object.assign(database.writer, { deleteRereadTables: new Set(["documents"]) });
+
+        const filters: unknown[] = [];
+        const { findMany } = database.writer;
+
+        database.writer.findMany = async (tableName, args) => {
+            filters.push((args as { relationBaseWhere?: unknown } | undefined)?.relationBaseWhere);
+
+            return findMany(tableName, args);
+        };
+        database.writer.findFirst = async (_tableName, args) => {
+            filters.push((args as { relationBaseWhere?: unknown } | undefined)?.relationBaseWhere);
+
+            return { _id: "A", ownerId: "u1", table: "documents" };
+        };
+
+        const handler = lunora.mutation.use(rlsForTest<TestContext>([deletePolicy])).mutation(async ({ ctx }) => ctx.db.deleteAll("documents"));
+
+        await handler.handler(makeContext(database, "u1"), {});
+
+        // Page read and re-location carry the SAME child read filter, so a relation-based read policy
+        // cannot re-admit a parent through a child the caller can no longer read.
+        expect(filters[0]).toBeTypeOf("function");
+        expect(filters[0]).toBe(filters[1]);
+    });
+
+    it("deleteWhere re-locates a policy-less row with the relation read filter applied", async () => {
+        expect.assertions(2);
+
+        const database = createFakeDatabase([{ _id: "P", table: "plain" }]);
+
+        Object.assign(database.writer, { deleteRereadTables: new Set(["plain"]) });
+
+        let rereadArgs: unknown;
+        database.writer.findFirst = async (_tableName, args) => {
+            rereadArgs = args;
+
+            return { _id: "P", table: "plain" };
+        };
+
+        // `plain` carries no policy; the erase is scoped only by the caller's relational `where`, whose child
+        // hop must still be filtered by `relationReadFilter` on the re-location read.
+        const handler = lunora.action
+            .use(rlsForTest<TestContext>([]))
+            .action(async ({ ctx }) => ctx.db.deleteWhere("plain", { parent: { is: { id: "child" } } }));
+
+        await handler.handler(makeContext(database, "u1"), {});
+
+        expect((rereadArgs as { relationBaseWhere?: unknown }).relationBaseWhere).toBeTypeOf("function");
+        expect(database.calls.filter((call) => call.method === "delete")).toHaveLength(1);
     });
 
     it("wipeShard fails closed under rls() instead of erasing only policy-visible rows", async () => {
