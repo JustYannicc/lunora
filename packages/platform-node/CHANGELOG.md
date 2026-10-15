@@ -1,3 +1,10 @@
+## @lunora/platform-node [1.0.0-alpha.147](https://github.com/anolilab/lunora/compare/@lunora/platform-node@1.0.0-alpha.146...@lunora/platform-node@1.0.0-alpha.147) (2026-10-15)
+
+
+### Dependencies
+
+* **@visulima/cron-parser:** 1.1.0 → 2.0.0
+
 ## @lunora/platform-node [1.0.0-alpha.146](https://github.com/anolilab/lunora/compare/@lunora/platform-node@1.0.0-alpha.145...@lunora/platform-node@1.0.0-alpha.146) (2026-10-15)
 
 ### Performance Improvements
