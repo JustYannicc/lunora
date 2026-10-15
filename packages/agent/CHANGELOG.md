@@ -1,3 +1,9 @@
+## @lunora/agent [1.0.0-alpha.209](https://github.com/anolilab/lunora/compare/@lunora/agent@1.0.0-alpha.208...@lunora/agent@1.0.0-alpha.209) (2026-10-15)
+
+### Bug Fixes
+
+* **agent:** honour compaction settings in the stored summary ([#1202](https://github.com/anolilab/lunora/issues/1202)) ([4214395](https://github.com/anolilab/lunora/commit/4214395a9225f1b8c51130e0adb38fa637a19a36)), closes [#1183](https://github.com/anolilab/lunora/issues/1183)
+
 ## @lunora/agent [1.0.0-alpha.208](https://github.com/anolilab/lunora/compare/@lunora/agent@1.0.0-alpha.207...@lunora/agent@1.0.0-alpha.208) (2026-10-15)
 
 ### Performance Improvements
