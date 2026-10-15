@@ -1,3 +1,9 @@
+## @lunora/platform-node [1.0.0-alpha.140](https://github.com/anolilab/lunora/compare/@lunora/platform-node@1.0.0-alpha.139...@lunora/platform-node@1.0.0-alpha.140) (2026-10-15)
+
+### Performance Improvements
+
+* **platform-node:** bound the r2 list walk to the prefix and page ([#1194](https://github.com/anolilab/lunora/issues/1194)) ([70b7aa7](https://github.com/anolilab/lunora/commit/70b7aa74554ea34d1d824face7e4cb0ca1147cba))
+
 ## @lunora/platform-node [1.0.0-alpha.139](https://github.com/anolilab/lunora/compare/@lunora/platform-node@1.0.0-alpha.138...@lunora/platform-node@1.0.0-alpha.139) (2026-10-15)
 
 ### Performance Improvements
