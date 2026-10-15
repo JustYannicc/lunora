@@ -1,3 +1,16 @@
+## @lunora/server [1.0.0-alpha.204](https://github.com/anolilab/lunora/compare/@lunora/server@1.0.0-alpha.203...@lunora/server@1.0.0-alpha.204) (2026-10-15)
+
+### Bug Fixes
+
+* **rls:** re-locate chunked-erase rows outside a mutation transaction ([#1201](https://github.com/anolilab/lunora/issues/1201)) ([6b81bb1](https://github.com/anolilab/lunora/commit/6b81bb1c6a6aa692624b7d3b3cdef2b8256a8ebe))
+
+
+### Dependencies
+
+* **@lunora/scheduler:** upgraded to 1.0.0-alpha.128
+* **@lunora/shard-engine:** upgraded to 1.0.0-alpha.131
+* **@lunora/observability:** upgraded to 1.0.0-alpha.142
+
 ## @lunora/server [1.0.0-alpha.203](https://github.com/anolilab/lunora/compare/@lunora/server@1.0.0-alpha.202...@lunora/server@1.0.0-alpha.203) (2026-10-15)
 
 ### Performance Improvements
