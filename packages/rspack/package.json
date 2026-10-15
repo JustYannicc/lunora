@@ -62,8 +62,8 @@
         "test:coverage": "vitest run --coverage"
     },
     "dependencies": {
-        "@lunora/codegen": "1.0.0-alpha.309",
-        "@lunora/config": "1.0.0-alpha.356"
+        "@lunora/codegen": "1.0.0-alpha.310",
+        "@lunora/config": "1.0.0-alpha.357"
     },
     "devDependencies": {
         "@rsbuild/core": "catalog:build",
