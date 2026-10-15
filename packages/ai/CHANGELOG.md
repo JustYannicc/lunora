@@ -1,3 +1,9 @@
+## @lunora/ai [1.0.0-alpha.129](https://github.com/anolilab/lunora/compare/@lunora/ai@1.0.0-alpha.128...@lunora/ai@1.0.0-alpha.129) (2026-10-15)
+
+### Performance Improvements
+
+* **ai:** serve filtered rag retrieval from the ann index with over-fetch ([#1181](https://github.com/anolilab/lunora/issues/1181)) ([c50d0d1](https://github.com/anolilab/lunora/commit/c50d0d1c313be12de0f3c62fe2fedfefd993e7ea))
+
 ## @lunora/ai [1.0.0-alpha.128](https://github.com/anolilab/lunora/compare/@lunora/ai@1.0.0-alpha.127...@lunora/ai@1.0.0-alpha.128) (2026-10-15)
 
 ### Performance Improvements
