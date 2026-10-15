@@ -69,7 +69,7 @@
                 # (`@lunora/cloud`), and a path selects it for pnpm and vis alike.
                 "workspace":
                     [
-                        "apps/cloud",
+                        "packages/agent",
                         "packages/auth",
                         "packages/browser",
                         "packages/client",
@@ -78,6 +78,7 @@
                         "packages/do",
                         "packages/payment",
                         "packages/queue",
+                        "packages/ratelimit",
                         "packages/runtime",
                         "packages/scheduler",
                         "packages/server",
@@ -85,6 +86,8 @@
                         "packages/storage",
                         "packages/workflow",
                         "packages/x402",
+                        "examples/privacy",
+                        "apps/cloud",
                     ]
         "steps":
             - "name": "Harden Runner"
@@ -106,20 +109,20 @@
                   "run-npm-audit": "false"
                   "run-signatures-audit": "false"
 
-            # The matrix is a hand-typed list of 16 workspaces, duplicated verbatim in
+            # The matrix is a hand-typed list of 19 workspaces, duplicated verbatim in
             # test.yml and nightly.yml, with nothing tying either copy to the workspaces
             # that actually declare a `workerd` vitest project. Drop one from either and
             # its workerd suites stop running with every check green. Each leg asserts
             # its own workspace still declares the project, and that the leg count
             # equals the number of workspaces that do — together that makes the matrix
-            # and the filesystem the same set, not merely the same size. Packages and
-            # apps both: `apps/cloud` holds the `BoxSessionDO` suite.
+            # and the filesystem the same set, not merely the same size. Packages,
+            # examples and apps: `apps/cloud` holds the `BoxSessionDO` suite.
             - "name": "Assert the matrix matches the workspaces declaring a workerd project"
               "env":
                   "WORKSPACE": "${{ matrix.workspace }}"
                   "LEGS": "${{ strategy.job-total }}"
               "run": |
-                  declared="$(grep -l 'name: "workerd"' packages/*/vitest.config.ts apps/*/vitest.config.ts | sed 's|/vitest.config.ts||' | sort)"
+                  declared="$(grep -l 'name: "workerd"' packages/*/vitest.config.ts examples/*/vitest.config.ts apps/*/vitest.config.ts | sed 's|/vitest.config.ts||' | sort)"
                   count="$(printf '%s\n' "$declared" | wc -l | tr -d ' ')"
                   if ! printf '%s\n' "$declared" | grep -qx "$WORKSPACE"; then
                     echo "$WORKSPACE/vitest.config.ts declares no \`workerd\` project — this leg would run nothing." >&2

@@ -216,6 +216,7 @@
                 # (`@lunora/cloud`), and a path selects it for pnpm and vis alike.
                 "workspace":
                     [
+                        "packages/agent",
                         "packages/auth",
                         "packages/browser",
                         "packages/client",
@@ -255,7 +256,7 @@
                   "run-npm-audit": "false"
                   "run-signatures-audit": "false"
 
-            # The matrix is a hand-typed list of directories (16 packages, one example),
+            # The matrix is a hand-typed list of directories (17 packages, one example, one app),
             # duplicated verbatim in test.yml and nightly.yml, with nothing tying either
             # copy to the packages/* and examples/* that actually declare a `workerd`
             # vitest project. Drop one from either copy and its workerd suites stop
