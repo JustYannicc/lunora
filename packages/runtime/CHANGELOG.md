@@ -1,3 +1,20 @@
+## @lunora/runtime [1.0.0-alpha.204](https://github.com/anolilab/lunora/compare/@lunora/runtime@1.0.0-alpha.203...@lunora/runtime@1.0.0-alpha.204) (2026-10-15)
+
+### Performance Improvements
+
+* **wire:** publish the wire codec once instead of inlining it into every package ([#1198](https://github.com/anolilab/lunora/issues/1198)) ([7020e2c](https://github.com/anolilab/lunora/commit/7020e2cec53c3e5c0f28ab8e569b33ee0ae3a55b))
+
+
+### Dependencies
+
+* **@lunora/bindings:** upgraded to 1.0.0-alpha.114
+* **@lunora/errors:** upgraded to 1.0.0-alpha.56
+* **@lunora/observability:** upgraded to 1.0.0-alpha.141
+* **@lunora/wire:** upgraded to 1.0.0-alpha.1
+* **@lunora/do:** upgraded to 1.0.0-alpha.216
+* **@lunora/shard-engine:** upgraded to 1.0.0-alpha.130
+* **@lunora/workflow:** upgraded to 1.0.0-alpha.78
+
 ## @lunora/runtime [1.0.0-alpha.203](https://github.com/anolilab/lunora/compare/@lunora/runtime@1.0.0-alpha.202...@lunora/runtime@1.0.0-alpha.203) (2026-10-15)
 
 ### Performance Improvements
