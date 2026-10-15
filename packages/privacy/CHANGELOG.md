@@ -1,3 +1,14 @@
+## @lunora/privacy [1.0.0-alpha.11](https://github.com/anolilab/lunora/compare/@lunora/privacy@1.0.0-alpha.10...@lunora/privacy@1.0.0-alpha.11) (2026-10-15)
+
+### Performance Improvements
+
+* **wire:** publish the wire codec once instead of inlining it into every package ([#1198](https://github.com/anolilab/lunora/issues/1198)) ([7020e2c](https://github.com/anolilab/lunora/commit/7020e2cec53c3e5c0f28ab8e569b33ee0ae3a55b))
+
+
+### Dependencies
+
+* **@lunora/auth:** upgraded to 1.0.0-alpha.214
+
 ## @lunora/privacy [1.0.0-alpha.10](https://github.com/anolilab/lunora/compare/@lunora/privacy@1.0.0-alpha.9...@lunora/privacy@1.0.0-alpha.10) (2026-10-15)
 
 
