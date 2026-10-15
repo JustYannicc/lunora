@@ -1,3 +1,9 @@
+## @lunora/shard-engine [1.0.0-alpha.131](https://github.com/anolilab/lunora/compare/@lunora/shard-engine@1.0.0-alpha.130...@lunora/shard-engine@1.0.0-alpha.131) (2026-10-15)
+
+### Bug Fixes
+
+* **rls:** re-locate chunked-erase rows outside a mutation transaction ([#1201](https://github.com/anolilab/lunora/issues/1201)) ([6b81bb1](https://github.com/anolilab/lunora/commit/6b81bb1c6a6aa692624b7d3b3cdef2b8256a8ebe))
+
 ## @lunora/shard-engine [1.0.0-alpha.130](https://github.com/anolilab/lunora/compare/@lunora/shard-engine@1.0.0-alpha.129...@lunora/shard-engine@1.0.0-alpha.130) (2026-10-15)
 
 ### Performance Improvements
