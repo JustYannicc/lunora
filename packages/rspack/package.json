@@ -63,7 +63,7 @@
     },
     "dependencies": {
         "@lunora/codegen": "1.0.0-alpha.313",
-        "@lunora/config": "1.0.0-alpha.360"
+        "@lunora/config": "1.0.0-alpha.361"
     },
     "devDependencies": {
         "@rsbuild/core": "catalog:build",
