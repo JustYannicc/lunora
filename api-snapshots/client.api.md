@@ -328,7 +328,11 @@ interface HttpStreamOptions {
     baseUrl?: string;
     fetch?: typeof fetch;
     headers?: Record<string, string>;
+    lastEventId?: string;
     maxBuffer?: number;
+    onEventId?: (id: string) => void;
+    onRetry?: (ms: number) => void;
+    reconnect?: boolean;
     signal?: AbortSignal;
 }
 ```
@@ -1627,6 +1631,7 @@ const createSnapshotPrecondition: (client: LunoraClient, functionRef: FunctionRe
 const createStream: <T>(options: {
     maxBuffer?: number;
     onCancel: () => void;
+    onFail?: () => void;
 }) => {
     handle: StreamHandle<T>;
     iterable: StreamIterable<T>;
