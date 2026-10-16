@@ -1,3 +1,16 @@
+## @lunora/codegen [1.0.0-alpha.314](https://github.com/anolilab/lunora/compare/@lunora/codegen@1.0.0-alpha.313...@lunora/codegen@1.0.0-alpha.314) (2026-10-16)
+
+### Features
+
+* **server:** SSE event ids and Last-Event-ID resume ([#1216](https://github.com/anolilab/lunora/issues/1216)) ([4cd7000](https://github.com/anolilab/lunora/commit/4cd70004f4094d7c1ead9a9f7963b14eee5a7b11))
+
+
+### Dependencies
+
+* **@lunora/advisor:** upgraded to 1.0.0-alpha.225
+* **@lunora/agent:** upgraded to 1.0.0-alpha.216
+* **@lunora/server:** upgraded to 1.0.0-alpha.209
+
 ## @lunora/codegen [1.0.0-alpha.313](https://github.com/anolilab/lunora/compare/@lunora/codegen@1.0.0-alpha.312...@lunora/codegen@1.0.0-alpha.313) (2026-10-16)
 
 ### Performance Improvements
