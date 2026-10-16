@@ -1,3 +1,9 @@
+## @lunora/vite [1.0.0-alpha.348](https://github.com/anolilab/lunora/compare/@lunora/vite@1.0.0-alpha.347...@lunora/vite@1.0.0-alpha.348) (2026-10-16)
+
+### Performance Improvements
+
+* **cli:** load commands on demand and keep ts-morph off the light import path ([#1224](https://github.com/anolilab/lunora/issues/1224)) ([695a17d](https://github.com/anolilab/lunora/commit/695a17d5255c650ff20d8618ff92d06ee729de9a))
+
 ## @lunora/vite [1.0.0-alpha.347](https://github.com/anolilab/lunora/compare/@lunora/vite@1.0.0-alpha.346...@lunora/vite@1.0.0-alpha.347) (2026-10-14)
 
 
