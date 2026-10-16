@@ -1,3 +1,13 @@
+## @lunora/cli [1.0.0-alpha.399](https://github.com/anolilab/lunora/compare/@lunora/cli@1.0.0-alpha.398...@lunora/cli@1.0.0-alpha.399) (2026-10-16)
+
+### Bug Fixes
+
+* **ratelimit:** expire durable rate-limit rows past their retention ([#1225](https://github.com/anolilab/lunora/issues/1225)) ([eedbf40](https://github.com/anolilab/lunora/commit/eedbf4059d6a3842f7a246a0e7337c919fa2c209)), closes [#1227](https://github.com/anolilab/lunora/issues/1227)
+
+### Performance Improvements
+
+* **cli:** load commands on demand and keep ts-morph off the light import path ([#1224](https://github.com/anolilab/lunora/issues/1224)) ([695a17d](https://github.com/anolilab/lunora/commit/695a17d5255c650ff20d8618ff92d06ee729de9a))
+
 ## @lunora/cli [1.0.0-alpha.398](https://github.com/anolilab/lunora/compare/@lunora/cli@1.0.0-alpha.397...@lunora/cli@1.0.0-alpha.398) (2026-10-15)
 
 ### Performance Improvements
