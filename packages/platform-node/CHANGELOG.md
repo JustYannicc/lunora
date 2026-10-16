@@ -1,3 +1,9 @@
+## @lunora/platform-node [1.0.0-alpha.149](https://github.com/anolilab/lunora/compare/@lunora/platform-node@1.0.0-alpha.148...@lunora/platform-node@1.0.0-alpha.149) (2026-10-16)
+
+### Features
+
+* **ai:** toMarkdown and image generation ([#1215](https://github.com/anolilab/lunora/issues/1215)) ([d75e414](https://github.com/anolilab/lunora/commit/d75e4147c1b4bf5ce605f367bda8b4c31576fbd8))
+
 ## @lunora/platform-node [1.0.0-alpha.148](https://github.com/anolilab/lunora/compare/@lunora/platform-node@1.0.0-alpha.147...@lunora/platform-node@1.0.0-alpha.148) (2026-10-16)
 
 
