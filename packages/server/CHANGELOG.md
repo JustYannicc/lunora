@@ -1,3 +1,9 @@
+## @lunora/server [1.0.0-alpha.209](https://github.com/anolilab/lunora/compare/@lunora/server@1.0.0-alpha.208...@lunora/server@1.0.0-alpha.209) (2026-10-16)
+
+### Features
+
+* **server:** SSE event ids and Last-Event-ID resume ([#1216](https://github.com/anolilab/lunora/issues/1216)) ([4cd7000](https://github.com/anolilab/lunora/commit/4cd70004f4094d7c1ead9a9f7963b14eee5a7b11))
+
 ## @lunora/server [1.0.0-alpha.208](https://github.com/anolilab/lunora/compare/@lunora/server@1.0.0-alpha.207...@lunora/server@1.0.0-alpha.208) (2026-10-16)
 
 
