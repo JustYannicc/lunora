@@ -1,3 +1,9 @@
+## @lunora/ai [1.0.0-alpha.131](https://github.com/anolilab/lunora/compare/@lunora/ai@1.0.0-alpha.130...@lunora/ai@1.0.0-alpha.131) (2026-10-16)
+
+### Bug Fixes
+
+* **ai:** validate markdown input and image batches before billing ([#1229](https://github.com/anolilab/lunora/issues/1229)) ([420aaea](https://github.com/anolilab/lunora/commit/420aaeaae103ded6be08f52f2fa464caebb5f85a))
+
 ## @lunora/ai [1.0.0-alpha.130](https://github.com/anolilab/lunora/compare/@lunora/ai@1.0.0-alpha.129...@lunora/ai@1.0.0-alpha.130) (2026-10-16)
 
 ### Features
