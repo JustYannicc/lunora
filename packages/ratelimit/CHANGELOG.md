@@ -1,3 +1,9 @@
+## @lunora/ratelimit [1.0.0-alpha.141](https://github.com/anolilab/lunora/compare/@lunora/ratelimit@1.0.0-alpha.140...@lunora/ratelimit@1.0.0-alpha.141) (2026-10-16)
+
+### Bug Fixes
+
+* **ratelimit:** expire durable rate-limit rows past their retention ([#1225](https://github.com/anolilab/lunora/issues/1225)) ([eedbf40](https://github.com/anolilab/lunora/commit/eedbf4059d6a3842f7a246a0e7337c919fa2c209)), closes [#1227](https://github.com/anolilab/lunora/issues/1227)
+
 ## @lunora/ratelimit [1.0.0-alpha.140](https://github.com/anolilab/lunora/compare/@lunora/ratelimit@1.0.0-alpha.139...@lunora/ratelimit@1.0.0-alpha.140) (2026-10-16)
 
 ### Bug Fixes
