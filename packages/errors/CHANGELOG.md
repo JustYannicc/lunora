@@ -1,3 +1,9 @@
+## @lunora/errors [1.0.0-alpha.57](https://github.com/anolilab/lunora/compare/@lunora/errors@1.0.0-alpha.56...@lunora/errors@1.0.0-alpha.57) (2026-10-16)
+
+### Features
+
+* **ai:** toMarkdown and image generation ([#1215](https://github.com/anolilab/lunora/issues/1215)) ([d75e414](https://github.com/anolilab/lunora/commit/d75e4147c1b4bf5ce605f367bda8b4c31576fbd8))
+
 ## @lunora/errors [1.0.0-alpha.56](https://github.com/anolilab/lunora/compare/@lunora/errors@1.0.0-alpha.55...@lunora/errors@1.0.0-alpha.56) (2026-10-15)
 
 ### Performance Improvements
