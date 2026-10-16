@@ -221,14 +221,16 @@ class RateLimiter<Names extends string = string> {
             if (this.store.setIf === undefined) {
                 // eslint-disable-next-line no-await-in-loop -- returns on the first pass; only `setIf` loops
                 await this.store.set(storageKey, value);
-                this.store.sweep?.(now - this.retention, SWEEP_LIMIT, this.owns);
+                // eslint-disable-next-line no-await-in-loop -- returns on the first pass
+                await this.sweep(now);
 
                 return status;
             }
 
             // eslint-disable-next-line no-await-in-loop -- see above
             if (await this.store.setIf(storageKey, value, prior)) {
-                this.store.sweep?.(now - this.retention, SWEEP_LIMIT, this.owns);
+                // eslint-disable-next-line no-await-in-loop -- returns on the first pass
+                await this.sweep(now);
 
                 return status;
             }
@@ -237,6 +239,26 @@ class RateLimiter<Names extends string = string> {
         // Refused, not thrown: an error would reach the middleware's failure policy,
         // and `failOpen` would then admit exactly the call contention kept out.
         return { ok: false, reason: "rate", retryAfter: 0 };
+    }
+
+    /**
+     * Evict what this limiter's horizon has expired, after a write has landed. The
+     * write is already done, so awaiting here does not reopen the read-decide-write
+     * window. Only a promise-returning sweep (`createDbStore`) is awaited for I/O.
+     */
+    private async sweep(now: number): Promise<void> {
+        try {
+            const swept = this.store.sweep?.(now - this.retention, SWEEP_LIMIT, this.owns);
+
+            if (isThenable(swept)) {
+                await swept;
+            }
+        } catch (error) {
+            // The write has already landed, so a failed cleanup must not fail the consume:
+            // the caller would then roll back a charge that was made, or fail open.
+            // eslint-disable-next-line no-console -- intentional: no injected logger; a skipped sweep only delays eviction
+            console.warn("@lunora/ratelimit: the retention sweep failed; the consume still stands", error);
+        }
     }
 
     private normalizeKey(key: string | undefined): string | undefined {
