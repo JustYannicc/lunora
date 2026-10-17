@@ -739,7 +739,7 @@ describe("lunora dev", () => {
 
     describe("runDevCommand", () => {
         it("spawns the wrangler worker, starts studio + codegen, and tears them down on exit", async () => {
-            expect.assertions(6);
+            expect.assertions(7);
 
             let codegenClosed = false;
             let studioClosed = false;
@@ -753,11 +753,14 @@ describe("lunora dev", () => {
 
             const result = await runDevCommand({
                 cwd: workdir,
+                lazyFunctions: true,
                 // Deterministic port so the origin assertion below doesn't depend
                 // on whether 8787 is free on the test host.
                 findFreePort: async () => 8787,
                 logger: silentLogger(),
-                startCodegen: () => {
+                startCodegen: (options) => {
+                    expect(options.lazyFunctions).toBe(true);
+
                     return {
                         close: async () => {
                             codegenClosed = true;

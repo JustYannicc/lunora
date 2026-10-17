@@ -61,7 +61,7 @@ class ScopePreservingLazyShard extends ShardDO {
         return {};
     }
 
-    protected override prepareFunction(): void | Promise<void> {
+    protected override prepareFunction(_path: string): void | Promise<void> {
         this.preparationCalls += 1;
 
         if (this.preparationCalls <= 2) {
@@ -104,7 +104,7 @@ describe("lazy function request scope", () => {
     it("restores identity and system scope after shared cold preparation in handleRpc", async () => {
         expect.assertions(3);
 
-        const shard = new ScopePreservingLazyShard(createFakeState());
+        const shard = new ScopePreservingLazyShard(createFakeState(), {});
         const alice = { role: "alice" };
         const bob = { role: "bob" };
         const aliceRequest = shard.fetch(rpc("alice", "user-alice", alice, true));

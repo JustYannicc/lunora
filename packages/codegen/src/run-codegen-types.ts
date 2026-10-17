@@ -26,9 +26,8 @@ export interface CodegenOptions {
     apiSpec?: "both" | "none" | "openapi" | "openrpc";
 
     /**
-     * Emit a per-module lazy function registry. When omitted, this turns on at
-     * 512 registered procedures; set `false` to keep the eager registry for a
-     * controlled comparison or a bundle whose functions have only cheap imports.
+     * Emit a per-module lazy function registry when explicitly set to `true`.
+     * Omitted or `false` keeps the eager registry.
      */
     lazyFunctions?: boolean;
 

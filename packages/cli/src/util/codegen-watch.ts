@@ -79,11 +79,15 @@ const PATH_SEGMENT_SEPARATOR = /[/\\]/u;
  * as well, without leaving an argument order for the next parameter to get
  * wrong.
  */
-const runOnce = (options: Pick<CodegenWatcherOptions, "apiSpec" | "logger" | "projectRoot" | "target">, lunoraDirectory: string, reason: string): boolean => {
-    const { apiSpec, logger, projectRoot, target } = options;
+const runOnce = (
+    options: Pick<CodegenWatcherOptions, "apiSpec" | "lazyFunctions" | "logger" | "projectRoot" | "target">,
+    lunoraDirectory: string,
+    reason: string,
+): boolean => {
+    const { apiSpec, lazyFunctions, logger, projectRoot, target } = options;
 
     try {
-        const result = runCodegen({ apiSpec, lunoraDirectory, projectRoot, target, ...wranglerCodegenInputs(projectRoot) });
+        const result = runCodegen({ apiSpec, lazyFunctions, lunoraDirectory, projectRoot, target, ...wranglerCodegenInputs(projectRoot) });
 
         logger.success(`codegen: wrote ${lunoraDirectory}/_generated (${reason})`);
 
@@ -350,6 +354,8 @@ export interface CodegenWatcherOptions {
     apiSpec?: CodegenOptions["apiSpec"];
     /** Debounce window for coalescing rapid edits. Defaults to 100ms. */
     debounceMs?: number;
+    /** Opt into per-module lazy function loading; omitted keeps the eager registry. */
+    lazyFunctions?: CodegenOptions["lazyFunctions"];
 
     /**
      * The caller's logs are NDJSON on stdout, so the `postcodegen` hook's own

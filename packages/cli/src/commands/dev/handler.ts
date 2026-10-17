@@ -377,7 +377,14 @@ const ensureSidecarGenerated = (plan: DevCommandPlan, options: DevCommandOptions
     }
 
     try {
-        runCodegen({ apiSpec: options.apiSpec, lunoraDirectory: "lunora", projectRoot: cwd, target, ...wranglerCodegenInputs(cwd) });
+        runCodegen({
+            apiSpec: options.apiSpec,
+            lazyFunctions: options.lazyFunctions,
+            lunoraDirectory: "lunora",
+            projectRoot: cwd,
+            target,
+            ...wranglerCodegenInputs(cwd),
+        });
     } catch (error: unknown) {
         logger.warn(`codegen (pre-sidecar) failed: ${error instanceof Error ? error.message : String(error)} — the framework dev server will retry`);
     }
@@ -533,6 +540,7 @@ const runDevCommand = async (options: DevCommandOptions): Promise<{ code: number
         if (plan.runsCodegenWatch) {
             handles.codegen = (options.startCodegen ?? startCodegenWatch)({
                 apiSpec: options.apiSpec,
+                lazyFunctions: options.lazyFunctions,
                 jsonLogs: options.jsonLogs,
                 logger,
                 projectRoot: cwd,
@@ -791,6 +799,7 @@ const execute: CommandHandler<DevOptions> = defineHandler<DevOptions>(async ({ a
         cwd,
         emitBindings: options.emitBindings,
         inspectorPort: options.inspectorPort,
+        lazyFunctions: options.lazyFunctions,
         jsonLogs,
         local: options.local,
         logger,

@@ -113,6 +113,28 @@ describe("lunora codegen", () => {
     });
 
     describe("lunora codegen", () => {
+        it("keeps the eager registry by default and emits lazy modules only when requested", () => {
+            expect.assertions(7);
+
+            const generated = join(workdir, "lunora", "_generated");
+            const functionModule = join(generated, "fn", "lunora_messages_0.ts");
+
+            const eager = runCodegenCommand({ cwd: workdir, logger: silentLogger() });
+            const eagerFunctions = readFileSync(join(generated, "functions.ts"), "utf8");
+
+            expect(eager.error).toBeUndefined();
+            expect(eagerFunctions).toContain('import * as lunora_messages_0 from "../messages.js"');
+            expect(existsSync(functionModule)).toBe(false);
+
+            const lazy = runCodegenCommand({ cwd: workdir, lazyFunctions: true, logger: silentLogger() });
+            const lazyFunctions = readFileSync(join(generated, "functions.ts"), "utf8");
+
+            expect(lazy.error).toBeUndefined();
+            expect(lazyFunctions).not.toContain('import * as lunora_messages_0 from "../messages.js"');
+            expect(lazyFunctions).toContain("export const LUNORA_FUNCTION_MANIFEST");
+            expect(existsSync(functionModule)).toBe(true);
+        });
+
         it("writes the three generated files", () => {
             expect.assertions(3);
 

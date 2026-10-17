@@ -52,6 +52,8 @@ interface DevCommandOptions {
     apiSpec?: ApiSpec;
     /** Disable the codegen watch loop. */
     codegen?: boolean;
+    /** Opt into per-module lazy function loading for CLI codegen. */
+    lazyFunctions?: boolean;
     cwd?: string;
 
     /**
