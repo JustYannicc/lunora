@@ -1661,6 +1661,12 @@ interface LiveSubscriber {
 type LiveControlRead = { response: Response } | { action: unknown; connectionId: string; key: string; subscriptionId: string };
 
 /**
+ * Longest topic or subscription id a live control call may name. Both are held in the
+ * shard's memory for the life of the connection, so an unbounded name is a memory lever.
+ */
+const MAX_LIVE_CONTROL_KEY_LENGTH = 256;
+
+/**
  * Read and validate a live subscribe/unsubscribe body. The connection lookup is
  * left to the caller; an absent id comes back as `""`, which matches no connection.
  */
@@ -1689,6 +1695,15 @@ const readLiveControl = async (request: Request): Promise<LiveControlRead> => {
 
     if (subscriptionId === undefined) {
         return { response: jsonResponse({ error: { code: "BAD_REQUEST", message: "subscriptionId is required" } }, 400) };
+    }
+
+    if (topic.length > MAX_LIVE_CONTROL_KEY_LENGTH || subscriptionId.length > MAX_LIVE_CONTROL_KEY_LENGTH) {
+        return {
+            response: jsonResponse(
+                { error: { code: "BAD_REQUEST", message: `topic and subscriptionId may be at most ${String(MAX_LIVE_CONTROL_KEY_LENGTH)} characters` } },
+                400,
+            ),
+        };
     }
 
     return {

@@ -285,6 +285,20 @@ describe("shardDO live streams", () => {
         expect(response.status).toBe(413);
     });
 
+    it("refuses a control call naming a topic or subscription id over the length bound", async () => {
+        expect.assertions(3);
+
+        const shard = makeShard([]);
+        const { connectionId } = await connect(shard);
+        const longTopic = await control(shard, { action: "subscribe", connectionId, stream: "s", subscriptionId: "s1", topic: "t".repeat(257) });
+        const longId = await control(shard, { action: "subscribe", connectionId, stream: "s", subscriptionId: "i".repeat(257), topic: "feed" });
+        const atBound = await control(shard, { action: "subscribe", connectionId, stream: "s", subscriptionId: "s1", topic: "t".repeat(256) });
+
+        expect(longTopic.status).toBe(400);
+        expect(longId.status).toBe(400);
+        expect(atBound.status).toBe(200);
+    });
+
     it("refuses publish as a control action; publish has its own endpoint", async () => {
         expect.assertions(1);
 
