@@ -94,6 +94,13 @@ the request. Your callback decides whether either context receives a permit. Ret
 `undefined` to deny or `{ scope, epoch }` from current authority. Queries still own row
 and field filtering.
 
+For RPCs, coded `LunoraError`s keep their status and code. Explicit `INTERNAL` verdicts
+are terminal.
+Unclassified callback throws, including fetch failures reported as `TypeError`, return
+retryable `SHARD_UNAVAILABLE` (503). Invalid returned permits produce terminal `INTERNAL`
+(500). On subscription refresh, `FORBIDDEN` and `INTERNAL` authority failures end the
+registration; other failures retain it and retry on the next write flush.
+
 ```ts
 import { installDeliveryFence, type DeliveryPermit } from "@lunora/do";
 import { defineApp } from "../../lunora/_generated/app";

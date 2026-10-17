@@ -8165,6 +8165,10 @@ abstract class ShardDO {
     }
 
     private endSubscriptionOnAuthorityFailure(ws: ShardSocketLike, subId: string, functionPath: string, error: unknown): boolean {
+        if (isDeliveryAccessDenied(error)) {
+            this.revokeSubscription(ws, subId);
+            return true;
+        }
         // Called only around authority resolution; a query throwing the same code keeps its existing recovery behavior.
         if (!isLunoraError(error) || !["FORBIDDEN", "INTERNAL"].includes(error.code)) {
             return false;
@@ -8186,15 +8190,7 @@ abstract class ShardDO {
         if (!this.deliveryAuthorization) {
             return undefined;
         }
-        let permit: DeliveryPermit | undefined;
-        try {
-            permit = await this.deliveryAuthorization({ identity, functionPath, args, shardKey: this.runner.shardKey, transport, ...flags });
-        } catch (error) {
-            if (error instanceof TypeError) {
-                throw new LunoraError("INTERNAL", "delivery authority failed", { cause: error });
-            }
-            throw error;
-        }
+        const permit = await this.deliveryAuthorization({ identity, functionPath, args, shardKey: this.runner.shardKey, transport, ...flags });
         if (permit === undefined) {
             throw deliveryAccessDenied();
         }
@@ -12429,7 +12425,9 @@ abstract class ShardDO {
                     // operator could see anywhere. See `recordSubscriptionRefreshError`.
                     if (isDeliveryAccessDenied(error)) {
                         this.revokeSubscription(ws, subId);
-                    } else if (this.deliveryAuthorization && isLunoraError(error) && error.code === "SUBSCRIPTION_PERSIST_FAILED") {
+                        return;
+                    }
+                    if (this.deliveryAuthorization && isLunoraError(error) && error.code === "SUBSCRIPTION_PERSIST_FAILED") {
                         this.unsubscribe(ws, subId);
                         this.sendSubscriptionError(ws, subId, error.code, error.message);
                     }
