@@ -1,3 +1,11 @@
+## @lunora/react [1.0.0-alpha.231](https://github.com/anolilab/lunora/compare/@lunora/react@1.0.0-alpha.230...@lunora/react@1.0.0-alpha.231) (2026-10-17)
+
+
+### Dependencies
+
+* **@lunora/client:** upgraded to 1.0.0-alpha.216
+* **@lunora/ratelimit:** upgraded to 1.0.0-alpha.143
+
 ## @lunora/react [1.0.0-alpha.230](https://github.com/anolilab/lunora/compare/@lunora/react@1.0.0-alpha.229...@lunora/react@1.0.0-alpha.230) (2026-10-16)
 
 
