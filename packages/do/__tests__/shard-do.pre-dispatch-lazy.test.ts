@@ -1,17 +1,22 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { ShardDOState } from "../src/shard-do";
 import { ShardDO } from "../src/shard-do";
 
-const createFakeState = (): ShardDOState => ({
-    acceptWebSocket() {},
-    getWebSockets: () => [],
-    storage: { sql: { exec: () => undefined } },
-});
+const createFakeState = (): ShardDOState => {
+    return {
+        acceptWebSocket() {},
+        getWebSockets: () => [],
+        storage: { sql: { exec: () => undefined } },
+    };
+};
 
 class LazyPaidShard extends ShardDO {
     public preparations: string[] = [];
     public readonly slowPreparationStarted: Promise<void>;
+
+    public override handleRpc = vi.fn<(functionPath: string) => Promise<unknown>>((functionPath) => Promise.resolve({ functionPath }));
+    protected override isPaidFunction = vi.fn<(functionPath: string) => boolean>((functionPath) => functionPath === "posts:premium");
 
     private releaseSlowPreparation: (() => void) | undefined;
     private signalSlowPreparationStarted: (() => void) | undefined;
@@ -23,12 +28,8 @@ class LazyPaidShard extends ShardDO {
         });
     }
 
-    public override handleRpc(functionPath: string): Promise<unknown> {
-        return Promise.resolve({ functionPath });
-    }
-
-    protected override isPaidFunction(functionPath: string): boolean {
-        return functionPath === "posts:premium";
+    public releaseSlow(): void {
+        this.releaseSlowPreparation?.();
     }
 
     protected override async prepareFunction(functionPath: string): Promise<void> {
@@ -44,10 +45,6 @@ class LazyPaidShard extends ShardDO {
         if (functionPath === "posts:premium") {
             this.releaseSlowPreparation?.();
         }
-    }
-
-    public releaseSlow(): void {
-        this.releaseSlowPreparation?.();
     }
 }
 

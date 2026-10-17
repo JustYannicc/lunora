@@ -174,20 +174,28 @@ export const writeGeneratedFiles = (outputDirectory: string, steps: ReadonlyArra
     const written: string[] = [];
 
     for (const step of steps) {
-        if (step.kind === "services") {
-            writeServiceDeclarations(outputDirectory, step.files);
-            written.push(...Object.keys(step.files));
-        } else if (step.kind === "directory") {
-            writeGeneratedDirectory(outputDirectory, step.name, step.files);
-            written.push(...Object.keys(step.files).map((path) => join(step.name, path)));
-        } else if (step.kind === "always") {
-            writeIfChanged(join(outputDirectory, step.name), step.content);
-            written.push(step.name);
-        } else {
-            writeIfPresent(join(outputDirectory, step.name), step.content);
-
-            if (step.content !== "") {
+        switch (step.kind) {
+            case "always": {
+                writeIfChanged(join(outputDirectory, step.name), step.content);
                 written.push(step.name);
+                break;
+            }
+            case "directory": {
+                writeGeneratedDirectory(outputDirectory, step.name, step.files);
+                written.push(...Object.keys(step.files).map((path) => join(step.name, path)));
+                break;
+            }
+            case "services": {
+                writeServiceDeclarations(outputDirectory, step.files);
+                written.push(...Object.keys(step.files));
+                break;
+            }
+            default: {
+                writeIfPresent(join(outputDirectory, step.name), step.content);
+
+                if (step.content !== "") {
+                    written.push(step.name);
+                }
             }
         }
     }

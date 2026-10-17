@@ -50,8 +50,8 @@ import {
     emitDrizzleSchema,
     emitDurableObjects,
     emitFunctions,
-    emitLazyFunctionModules,
     emitInternalApi,
+    emitLazyFunctionModules,
     emitQueues,
     emitScheduler,
     emitSeed,
@@ -81,6 +81,7 @@ import { buildSpecArtifacts } from "./spec-artifacts";
  * dot keeps it tucked away next to the schema it describes.
  */
 const SCHEMA_SNAPSHOT_FILENAME = ".lunora-schema.json";
+const FUNCTION_SHIM_PREFIX_RE = /^fn\//u;
 
 /**
  * Whether opt-in codegen timing is enabled. Gated on a truthy
@@ -254,12 +255,12 @@ const inferToFixpoint = (options: {
 }): {
     apiContent: string;
     erased: ReadonlyArray<ErasedReturn>;
-    functions: ReadonlyArray<FunctionIR>;
     functionModulesContent: Record<string, string>;
+    functions: ReadonlyArray<FunctionIR>;
     functionsContent: string;
-    lazyFunctions: boolean;
     httpRoutes: ReadonlyArray<HttpRouteIR>;
     internalContent: string;
+    lazyFunctions: boolean;
     mutators: ReadonlyArray<MutatorIR>;
 } => {
     const {
@@ -875,7 +876,9 @@ export const runCodegen = (options: CodegenOptions): CodegenResult => {
             : undefined;
     const schemaSnapshotPath = join(lunoraDirectory, SCHEMA_SNAPSHOT_FILENAME);
     const schemaSnapshotExists = existsSync(schemaSnapshotPath);
-    const lazyFunctionShimFiles = Object.fromEntries(Object.entries(functionModulesContent).map(([path, content]) => [path.replace(/^fn\//u, ""), content]));
+    const lazyFunctionShimFiles = Object.fromEntries(
+        Object.entries(functionModulesContent).map(([path, content]) => [path.replace(FUNCTION_SHIM_PREFIX_RE, ""), content]),
+    );
 
     // The `_generated/` files this run emits, in write order. Which files those
     // are depends on the project (conditional features, `apiSpec`), so it is

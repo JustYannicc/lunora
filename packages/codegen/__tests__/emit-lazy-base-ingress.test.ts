@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -47,7 +47,6 @@ const writeGeneratedShard = (functions: ReadonlyArray<FunctionIR>): { entry: str
     const functionsOptions = { functions, lazyFunctions: true };
 
     mkdirSync(join(generatedDirectory, "fn"), { recursive: true });
-    symlinkSync(new URL("../../../node_modules", import.meta.url).pathname, join(projectRoot, "node_modules"), "dir");
     writeFileSync(join(projectRoot, "package.json"), JSON.stringify({ type: "module" }));
     writeFileSync(join(projectRoot, "lunora", "schema.ts"), "export default { tables: [], vectorIndexes: [] };\n");
     writeFileSync(join(generatedDirectory, "functions.ts"), emitFunctions(functionsOptions));
@@ -218,14 +217,18 @@ export const tick = { args: {}, kind: "query", handler: async () => {
 `,
         );
 
+        // Bundle dependencies because the temporary output has no workspace package resolution.
         await build({
             alias: { "@lunora/do": new URL("../../do/src/index.ts", import.meta.url).pathname },
             bundle: true,
             entryPoints: [entry],
             format: "esm",
-            nodePaths: [new URL("../../../node_modules", import.meta.url).pathname],
+            nodePaths: [
+                new URL("../node_modules", import.meta.url).pathname,
+                new URL("../../do/node_modules", import.meta.url).pathname,
+                new URL("../../../node_modules", import.meta.url).pathname,
+            ],
             outfile: shardFile,
-            packages: "external",
             platform: "node",
             target: "node22",
         });

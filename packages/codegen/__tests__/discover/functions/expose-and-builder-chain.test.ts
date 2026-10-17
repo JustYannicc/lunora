@@ -198,7 +198,7 @@ describe("expose.ts", () => {
         });
     });
 
-    describe("x402FromBuilderChain", () => {
+    describe("paid builder metadata", () => {
         it("reads a numeric or string literal price without evaluating the module", () => {
             expect.assertions(2);
 
