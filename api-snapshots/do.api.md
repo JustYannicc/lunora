@@ -397,7 +397,9 @@ abstract class ShardDO {
     protected isInTransaction(): boolean;
     protected deferPastResponse(work: Promise<unknown>): Promise<void>;
     protected deferAfterCommit(work: () => Promise<void> | void): Promise<void>;
-    protected runInTransaction<T>(handler: () => Promise<T> | T): Promise<T>;
+    protected runInTransaction<T>(handler: () => Promise<T> | T, options?: {
+        independent: true;
+    }): Promise<T>;
     protected getInboundBookmark(): string | undefined;
     protected getCurrentUserId(): string | undefined;
     protected getCurrentIp(): string | undefined;
