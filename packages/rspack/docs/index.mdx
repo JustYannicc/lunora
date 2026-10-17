@@ -125,6 +125,10 @@ thrown out of the hook, which would end a watch session.
 | `workerPort`       | `8787`          | **Rsbuild only.** Port the Worker serves on; defaults to the wrangler config's `dev.port`           |
 | `wranglerArgs`     | `[]`            | **Rsbuild only.** Extra arguments appended to `wrangler dev`                                        |
 
+`LUNORA_LAZY_FUNCTIONS=1` or `true` enables lazy imports even when
+`lazyFunctions` is `false`, for both dev and production builds.
+`lunora dev --lazy-functions` sets this variable for its bundler child process.
+
 `LUNORA_CODEGEN=0` skips generation and the wrangler checks **in watch mode
 only**. A production build keeps generating: the ERROR-advisory gate is the only
 thing that fails it, so honouring the variable there would let an app ship

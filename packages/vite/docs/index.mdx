@@ -37,6 +37,10 @@ export default defineConfig({
 | `shard`                           | `{}`            | Shard DO config baked into the composed class-A entry: `cdc`, `reactiveCache`, `maxRelationKeys`, `relationExistsPushDown` |
 | `projectRoot`                     | `process.cwd()` | Override for monorepo setups                                                                                               |
 
+`LUNORA_LAZY_FUNCTIONS=1` or `true` enables lazy imports even when
+`lazyFunctions` is `false`, for both dev and production builds.
+`lunora dev --lazy-functions` sets this variable for its bundler child process.
+
 Generated files always land in `<schemaDir>/_generated`.
 
 ### `shard` — class-A only

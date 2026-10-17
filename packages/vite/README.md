@@ -81,6 +81,10 @@ lunora({
 });
 ```
 
+`LUNORA_LAZY_FUNCTIONS=1` or `true` enables lazy imports even when
+`lazyFunctions` is `false`, for both dev and production builds.
+`lunora dev --lazy-functions` sets this variable for its bundler child process.
+
 `lunora()` returns a flat `Plugin[]`; Vite flattens nested plugin arrays, so `plugins: [lunora()]` works without spreading.
 
 ### Error overlay

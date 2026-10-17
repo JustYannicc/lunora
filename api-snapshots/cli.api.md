@@ -123,6 +123,7 @@ interface DeployCommandOptions {
     healthFetch?: HealthFetch;
     healthSleep?: (ms: number) => Promise<void>;
     interactive?: boolean;
+    lazyFunctions?: boolean;
     logger: Logger;
     migrate?: boolean;
     migrateToken?: string;
