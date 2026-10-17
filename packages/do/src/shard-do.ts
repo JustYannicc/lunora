@@ -1923,6 +1923,7 @@ abstract class ShardDO {
     private readonly deliveryResponsePermits = new WeakMap<Response, DeliveryPermit>();
     private readonly deliveryRequestPermits = new WeakMap<Request, DeliveryPermit>();
     private currentDeliveryPermit: DeliveryPermit | undefined;
+    private transactionRequestScope: RequestScope | undefined;
     private readonly deliveryRegistrations = new WeakMap<ShardSocketLike, Map<string, symbol>>();
 
     /** ctx-db relation knobs from {@link ShardDOOptions}, handed on by {@link ShardDO.ctxDbTuning}. */
@@ -3746,6 +3747,7 @@ abstract class ShardDO {
         // waiting on `runSerialized` cannot install its queue over the one the
         // running transaction is filling. `queued` escapes to the flush below;
         // when the transaction throws we never reach it and the work is dropped.
+        const requestScope = this.captureRequestScope();
         let queued: (() => Promise<void> | void)[] = [];
         // This transaction's link in the shard-wide hook chain. Assigned by
         // `onCommitted` below, which the runner calls before it releases the gate.
@@ -3754,6 +3756,7 @@ abstract class ShardDO {
         const result = await this.runner.runInTransaction(
             async () => {
                 this.transactionDepth = 1;
+                this.transactionRequestScope = requestScope;
                 queued = [];
                 this.afterCommitQueue = queued;
 
@@ -3761,6 +3764,7 @@ abstract class ShardDO {
                     return await handler();
                 } finally {
                     this.transactionDepth = 0;
+                    this.transactionRequestScope = undefined;
                     this.afterCommitQueue = undefined;
                 }
             },
@@ -4973,9 +4977,16 @@ abstract class ShardDO {
         const resultJson = JSON.stringify(encodedResult);
 
         try {
+            const previousResult = this.deliveryAuthorization ? readIdempotent(this.sql as SqlExec, namespace, this.currentRequestMutationId) : undefined;
             writeIdempotent(this.sql as SqlExec, namespace, this.currentRequestMutationId, resultJson, now);
-            // Expired ungated claims can overlap: certify only bytes this permit actually produced.
-            if (this.deliveryAuthorization && readIdempotent(this.sql as SqlExec, namespace, this.currentRequestMutationId)?.resultJson === resultJson) {
+            // An existing row may outlive its receipt if receipt GC committed before
+            // native-row GC failed. Never recertify those old bytes from an equal
+            // result produced by a stale in-flight claim.
+            if (
+                this.deliveryAuthorization &&
+                previousResult === undefined &&
+                readIdempotent(this.sql as SqlExec, namespace, this.currentRequestMutationId)?.resultJson === resultJson
+            ) {
                 this.deliveryFence.recordReceipt(namespace, this.currentRequestMutationId, this.currentDeliveryPermit, now);
             }
 
@@ -4992,10 +5003,12 @@ abstract class ShardDO {
                 // (`durable-stream-runner.trim`, `cdc-retention`) stamp first.
                 this.lastIdempotencyTrimAt = now;
                 try {
-                    trimIdempotent(this.sql as SqlExec, now - IDEMPOTENCY_RETENTION_MS);
                     if (this.deliveryAuthorization) {
                         this.deliveryFence.trimReceipts(now - IDEMPOTENCY_RETENTION_MS);
                     }
+                    // Keep the authority marker and native result in lockstep: a
+                    // failed receipt delete must leave the corresponding result row.
+                    trimIdempotent(this.sql as SqlExec, now - IDEMPOTENCY_RETENTION_MS);
                 } catch {
                     // Retention is best-effort; receipt writes above still fail the mutation atomically.
                 }
@@ -5240,6 +5253,11 @@ abstract class ShardDO {
      * serialized.
      */
     protected commitMutationBookkeeping(result: unknown): void {
+        // An already-running action can resume while this transaction awaits its handler.
+        if (this.transactionRequestScope !== undefined) {
+            this.restoreRequestScope(this.transactionRequestScope);
+        }
+
         this.persistIdempotentResult(encodeDispatchResult(result));
 
         // Strict: a watermark write that throws here rolls the whole mutation back
@@ -8237,27 +8255,42 @@ abstract class ShardDO {
     }
 
     private async fetchAuthorizedRpc(request: Request): Promise<Response> {
-        let payload: RpcRequest;
+        let payload: unknown;
         try {
             payload = await request.clone().json();
         } catch {
             return jsonResponse({ error: { code: "BAD_REQUEST", message: "invalid JSON body" } }, 400);
         }
+        const isRecord = (value: unknown): value is Record<string, unknown> => {
+            if (typeof value !== "object" || value === null || Array.isArray(value)) {
+                return false;
+            }
+            const prototype: unknown = Object.getPrototypeOf(value);
+            return prototype === Object.prototype || prototype === null;
+        };
+        if (!isRecord(payload) || typeof payload.functionPath !== "string") {
+            return jsonResponse({ error: { code: "BAD_REQUEST", message: "invalid RPC request" } }, 400);
+        }
+        const { functionPath } = payload;
         const identity: SubscriptionIdentity = {
             identity: parseIdentityHeader(request.headers.get("x-lunora-identity")),
             userId: decodeUserIdHeader(request.headers.get("x-lunora-userid")),
             ip: request.headers.get("x-lunora-client-ip") ?? undefined,
         };
-        let args: Record<string, unknown>;
+        let decodedArgs: unknown;
         try {
-            args = decodeWire(payload.args ?? {}) as Record<string, unknown>;
+            decodedArgs = decodeWire(payload.args === undefined ? {} : payload.args);
         } catch {
             return jsonResponse({ error: { code: "BAD_REQUEST", message: "invalid wire arguments" } }, 400);
         }
+        if (!isRecord(decodedArgs)) {
+            return jsonResponse({ error: { code: "BAD_REQUEST", message: "invalid wire arguments" } }, 400);
+        }
+        const args = decodedArgs;
         let permit: DeliveryPermit | undefined;
         try {
-            permit = await this.authorizeDelivery(identity, payload.functionPath, args, "rpc", {
-                admin: typeof payload.functionPath === "string" && payload.functionPath.startsWith(ADMIN_FUNCTION_PREFIX) && this.isAdminAuthorized(request),
+            permit = await this.authorizeDelivery(identity, functionPath, args, "rpc", {
+                admin: functionPath.startsWith(ADMIN_FUNCTION_PREFIX) && this.isAdminAuthorized(request),
                 system: request.headers.get("x-lunora-system") === "1",
             });
         } catch (error) {
@@ -12397,6 +12430,10 @@ abstract class ShardDO {
                         permit = await this.authorizeSubscription(ws, subId, socketIdentity(attachment), functionPath, args);
                     }
                     if (this.deliveryAuthorization && permit === undefined) {
+                        return;
+                    }
+                    const memo = this.subMemos.get(ws)?.get(subId);
+                    if (this.deliveryAuthorization && memo?.lastJson !== UNDELIVERED_BASELINE && memoProvesUnchanged(memo, changed, changedKeys)) {
                         return;
                     }
                     const outcome = await this.resolveReactiveOutcomeDeduped(functionPath, args, isAdmin, socketIdentity(attachment), reactiveRunCache);
