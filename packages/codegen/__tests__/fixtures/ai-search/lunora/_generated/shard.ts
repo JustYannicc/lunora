@@ -984,12 +984,11 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
                 ]);
             const storage = makeStorage(requestOrigin);
             // `ctx.storage.deleteAfterCommit(key)`, on every dispatch that can host
-            // a MUTATION handler — which is not only a mutation dispatch:
-            // `ctx.runMutation` hands the CALLER's ctx to the callee, so a mutation
-            // reached from an action runs on the action's ctx. Wrapping mutations
-            // alone made that composition throw a bare TypeError on a method the
-            // handler's own type promises. Queries stay unwrapped: they cannot host
-            // one, and their ctx is built on the hot subscription path.
+            // a MUTATION handler — which is not only a mutation dispatch. An
+            // action's composed mutation gets a child ctx with its own deferred
+            // delete queue, while mutations reuse the admitted ctx. Queries stay
+            // unwrapped: they cannot host one, and their ctx is built on the hot
+            // subscription path.
             //
             // Every dispatch wrapped here also flushes (see `handleRpc` and
             // `runReactor`) — a queue nothing drains leaks silently, which is worse
@@ -1025,7 +1024,10 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
             // breakdown) to the wide event rather than a span per call, so a
             // handler making hundreds of queries stays readable. See
             // `instrumentDatabase` for the `"spans"` / `"off"` levels.
-            const db: DatabaseWriterLike = this.instrumentDb(createShardCtxDb({
+            // Schema triggers close over this DB's scheduler, so a composed
+            // mutation must rebuild its DB and table/ORM views with its own queue.
+            const makeDatabaseContext = (scheduler: SchedulerLike) => {
+                const db: DatabaseWriterLike = this.instrumentDb(createShardCtxDb({
                 ...this.ctxDbTuning(),
                 auth: { identity: identity ?? null, userId: userId ?? null },
                 broadcast: (delta) => {
@@ -1074,6 +1076,10 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
 
             const facade = db as unknown as Record<string, ReturnType<typeof bindTableFacade>>;
             facade["questions"] = bindTableFacade(db, "questions");
+                return { db, orm: bindOrm(facade) };
+            };
+            const databaseContext = makeDatabaseContext(scheduler);
+            const db = databaseContext.db;
 
 
             // `ctx.trace` / `ctx.metrics`: spans and measurements to the same sink.
@@ -1134,7 +1140,7 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
                 // `createStorage`) can fall back to it too. `undefined` for a
                 // query and for a deferred dispatch, for the reasons given there.
                 origin: requestOrigin,
-                orm: bindOrm(facade),
+                orm: databaseContext.orm,
                 scheduler,
                 span,
                 storage: contextStorage,
@@ -1163,11 +1169,18 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
                     // inherit that mutation's transaction.
                     const mutationCtx: Record<string, unknown> = this.mutationContexts.has(target)
                         ? target
-                        : Object.defineProperties({}, {
-                            ...Object.getOwnPropertyDescriptors(target),
-                            scheduler: { configurable: true, enumerable: true, value: withDeferredSchedules(schedulerBase, this.scheduleOutbox()), writable: true },
-                            storage: { configurable: true, enumerable: true, value: withDeferredDeletes(storage), writable: true },
-                        });
+                        : (() => {
+                            const mutationScheduler = withDeferredSchedules(schedulerBase, this.scheduleOutbox());
+                            const mutationDatabase = makeDatabaseContext(mutationScheduler);
+
+                            return Object.defineProperties({}, {
+                                ...Object.getOwnPropertyDescriptors(target),
+                                db: { configurable: true, enumerable: true, value: mutationDatabase.db, writable: true },
+                                orm: { configurable: true, enumerable: true, value: mutationDatabase.orm, writable: true },
+                                scheduler: { configurable: true, enumerable: true, value: mutationScheduler, writable: true },
+                                storage: { configurable: true, enumerable: true, value: withDeferredDeletes(storage), writable: true },
+                            });
+                        })();
 
                     if (mutationCtx !== target) {
                         installRun(mutationCtx, kind);
