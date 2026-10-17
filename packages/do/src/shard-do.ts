@@ -4964,6 +4964,10 @@ abstract class ShardDO {
         return false;
     }
 
+    /** Prepare a codegen-lazy procedure before dispatch. */
+    // eslint-disable-next-line class-methods-use-this -- the generated subclass overrides this for lazy function registries
+    protected prepareFunction(_functionPath: string): void | Promise<void> {}
+
     /**
      * Whether `functionPath` names a registered `mutation` — the only function
      * kind whose dispatch may enter the single-writer gate.
@@ -4992,10 +4996,6 @@ abstract class ShardDO {
      * `LUNORA_FUNCTIONS` lookup, which is what production dispatch uses.
      */
     // eslint-disable-next-line class-methods-use-this -- base-class override hook: the codegen subclass overrides this to consult `LUNORA_FUNCTIONS`
-    /** Prepare a codegen-lazy procedure before sync metadata gates or dispatch. */
-    // eslint-disable-next-line class-methods-use-this -- the generated subclass overrides this for lazy function registries
-    protected prepareFunction(_functionPath: string): void | Promise<void> {}
-
     protected isMutationFunction(_functionPath: string): boolean {
         return true;
     }
@@ -7572,19 +7572,26 @@ abstract class ShardDO {
 
             dispatchScope = requestScope;
 
+            // Module evaluation is shared across dispatches, but the fields it
+            // temporarily yields through are not. Prepare before entering the
+            // shard-wide mutation gate; this remains after the synchronous
+            // preDispatchAnswer above.
+            const preparation = this.prepareFunction(payload.functionPath);
+
+            if (preparation !== undefined) {
+                try {
+                    await preparation;
+                } finally {
+                    this.restoreRequestScope(requestScope);
+                }
+            }
+
             // Decode the wire codec (`bytes`/`bigint`/typed-array/±Infinity
             // leaves) ONLY for the handler, so `validateArgs` sees real
             // `ArrayBuffer`/`bigint` values. `payload.args` stays in wire form for
             // the request log/metrics below (JSON-safe — a raw `bigint` there
             // would throw `JSON.stringify`).
             const runHandler = async (): Promise<unknown> => {
-                const preparation = this.prepareFunction(payload.functionPath);
-
-                if (preparation !== undefined) {
-                    await preparation;
-                    this.restoreRequestScope(requestScope);
-                }
-
                 const handlerArgs = decodeWire(payload.args ?? {}) as Record<string, unknown>;
 
                 // A registered `query` goes through the reactive cache when one
@@ -8005,7 +8012,7 @@ abstract class ShardDO {
      * Paired with {@link ShardDO.restoreRequestScope}; see that type's docstring
      * for why the dispatch path needs it.
      */
-    private captureRequestScope(): RequestScope {
+    protected captureRequestScope(): RequestScope {
         return {
             baselineSeq: this.currentRequestBaselineSeq,
             bookmark: this.currentRequestBookmark,
@@ -8032,7 +8039,7 @@ abstract class ShardDO {
      * during the wait, and echoing it would report a stranger's D1 write position
      * as this request's. The dispatch path re-pins its own afterwards.
      */
-    private restoreRequestScope(scope: RequestScope): void {
+    protected restoreRequestScope(scope: RequestScope): void {
         this.currentRequestBaselineSeq = scope.baselineSeq;
         this.currentRequestBookmark = scope.bookmark;
         this.currentResponseBookmark = undefined;
@@ -11386,35 +11393,7 @@ abstract class ShardDO {
         // captured BEFORE the first await and passed by value, because the
         // iterator is pulled long after this frame was dispatched.
         const attachment = this.readAttachment(ws);
-
-        const preparation = this.prepareFunction(functionPath);
-
-        if (preparation !== undefined) {
-            try {
-                await preparation;
-            } catch (error: unknown) {
-                const { body, redacted } = toErrorBody(error, { fallbackCode: "INTERNAL_SERVER_ERROR", redactedMessage: "internal error" });
-
-                if (redacted) {
-                    // eslint-disable-next-line no-console -- server-side diagnostic for a lazy stream module load failure
-                    console.error("[@lunora/do] stream preparation failed:", error);
-                }
-
-                trySendFrame(ws, JSON.stringify({ error: { code: body.code, message: body.message }, id, type: "error" }));
-
-                return;
-            }
-        }
-
-        const iterable = this.executeStream(functionPath, args, socketIdentity(attachment));
-
-        if (!iterable) {
-            trySendFrame(ws, JSON.stringify({ error: { code: "NOT_FOUND", message: `stream not registered: ${functionPath}` }, id, type: "error" }));
-
-            return;
-        }
-
-        const cancellers = socketMap(this.streamCancellers, ws);
+        const existingCancellers = this.streamCancellers.get(ws);
 
         // One live stream per `id`, refused rather than silently replacing the
         // incumbent. `id` is client-chosen (straight off the frame) and the cap
@@ -11423,7 +11402,7 @@ abstract class ShardDO {
         // orphaned the first `AbortController` (so neither `unsubscribe` nor
         // `webSocketClose` could reach it), and whichever pump finished first
         // deleted the entry its siblings were still cancelled through.
-        if (cancellers.has(id)) {
+        if (existingCancellers?.has(id)) {
             trySendFrame(
                 ws,
                 JSON.stringify({
@@ -11440,7 +11419,7 @@ abstract class ShardDO {
         // for the new stream. A rejected stream never lands in the
         // canceller map, so a flurry of rejections can't push the count
         // past the cap.
-        if (cancellers.size >= ShardDO.MAX_STREAMS_PER_SOCKET) {
+        if ((existingCancellers?.size ?? 0) >= ShardDO.MAX_STREAMS_PER_SOCKET) {
             trySendFrame(
                 ws,
                 JSON.stringify({
@@ -11453,18 +11432,65 @@ abstract class ShardDO {
             return;
         }
 
-        if (iterable.durable) {
-            await this.attachDurableStream(ws, id, functionPath, args, { durable: iterable.durable, iterator: iterable.iterator }, sinceSeq, generation);
-
-            return;
-        }
-
+        const cancellers = existingCancellers ?? socketMap(this.streamCancellers, ws);
         const controller = new AbortController();
-
         cancellers.set(id, controller);
-        trySendFrame(ws, JSON.stringify({ id, type: "ack" }));
+        let durableAttached = false;
 
         try {
+            const preparation = this.prepareFunction(functionPath);
+
+            if (preparation !== undefined) {
+                try {
+                    await preparation;
+                } catch (error: unknown) {
+                    if (!controller.signal.aborted) {
+                        const { body, redacted } = toErrorBody(error, { fallbackCode: "INTERNAL_SERVER_ERROR", redactedMessage: "internal error" });
+
+                        if (redacted) {
+                            // eslint-disable-next-line no-console -- server-side diagnostic for a lazy stream module load failure
+                            console.error("[@lunora/do] stream preparation failed:", error);
+                        }
+
+                        trySendFrame(ws, JSON.stringify({ error: { code: body.code, message: body.message }, id, type: "error" }));
+                    }
+
+                    return;
+                }
+            }
+
+            // An unsubscribe or close can land while a cold module is loading.
+            // The reservation makes either one visible before a pump exists.
+            if (controller.signal.aborted || this.closingSockets.has(ws)) {
+                return;
+            }
+
+            const iterable = this.executeStream(functionPath, args, socketIdentity(attachment));
+
+            if (!iterable) {
+                trySendFrame(ws, JSON.stringify({ error: { code: "NOT_FOUND", message: `stream not registered: ${functionPath}` }, id, type: "error" }));
+
+                return;
+            }
+
+            if (iterable.durable) {
+                await this.attachDurableStream(
+                    ws,
+                    id,
+                    functionPath,
+                    args,
+                    { durable: iterable.durable, iterator: iterable.iterator },
+                    controller,
+                    sinceSeq,
+                    generation,
+                );
+                durableAttached = true;
+
+                return;
+            }
+
+            trySendFrame(ws, JSON.stringify({ id, type: "ack" }));
+
             for await (const chunk of iterable.iterator(controller.signal)) {
                 if (controller.signal.aborted) {
                     break;
@@ -11515,13 +11541,15 @@ abstract class ShardDO {
                 }),
             );
         } finally {
-            cancellers.delete(id);
+            if (!durableAttached && cancellers.get(id) === controller) {
+                cancellers.delete(id);
 
-            // Drop the now-empty per-socket canceller map so a socket that
-            // churns through many short-lived streams doesn't accumulate empty
-            // `Map` instances for the lifetime of the WeakMap entry.
-            if (cancellers.size === 0) {
-                this.streamCancellers.delete(ws);
+                // Drop the now-empty per-socket canceller map so a socket that
+                // churns through many short-lived streams doesn't accumulate empty
+                // `Map` instances for the lifetime of the WeakMap entry.
+                if (cancellers.size === 0) {
+                    this.streamCancellers.delete(ws);
+                }
             }
         }
     }
@@ -11547,6 +11575,7 @@ abstract class ShardDO {
         functionPath: string,
         args: Record<string, unknown>,
         registration: { durable: { ttlMs?: number }; iterator: (signal: AbortSignal) => AsyncIterable<unknown> },
+        controller: AbortController,
         sinceChunk: number,
         generation?: number,
     ): Promise<void> {
@@ -11562,14 +11591,14 @@ abstract class ShardDO {
         const caller = attachment.userId ?? anonymousStreamCaller(attachment, id);
         const runKey = `${caller}\u0000${functionPath}:${stableWireKey(args)}`;
         const cancellers = socketMap(this.streamCancellers, ws);
-        const controller = new AbortController();
         const frames = streamFrames(ws, id);
 
-        cancellers.set(id, controller);
         frames.ack();
 
         const detach = (): void => {
-            cancellers.delete(id);
+            if (cancellers.get(id) === controller) {
+                cancellers.delete(id);
+            }
 
             // Drop the now-empty per-socket canceller map so a socket that churns
             // through many short-lived streams doesn't accumulate empty `Map`s.

@@ -314,7 +314,7 @@ interface FunctionRegistryEntry {
     args?: unknown;
 
     /** Codegen's lazy registry supplies these without loading validators from the handler module. */
-    argumentDescriptors?: FunctionDescriptor["args"];
+    argumentDescriptors?: Readonly<FunctionDescriptor["args"]>;
 
     /**
      * Opt-in public-surface tag set by the `.expose({ rest: true })` builder

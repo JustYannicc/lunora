@@ -32,7 +32,9 @@ describe("lazy function registry", () => {
 
         expect(emitted).not.toContain('import * as lunora_posts_0 from "../posts.js";');
         expect(emitted).toContain('"posts:premium": { args: {}, handler: unloadedFunctionHandler');
-        expect(emitted).toContain('"posts:premium": {"argumentDescriptors":[{"kind":"string","name":"id","optional":false}],"exportName":"premium","kind":"query","moduleId":"lunora_posts_0","expose":{"cache":{"maxAge":60,"scope":"private"},"rest":true},"x402":{"price":"$0.05"}}');
+        expect(emitted).toContain(
+            '"posts:premium": {"argumentDescriptors":[{"kind":"string","name":"id","optional":false}],"exportName":"premium","kind":"query","moduleId":"lunora_posts_0","expose":{"cache":{"maxAge":60,"scope":"private"},"rest":true},"x402":{"price":"$0.05"}}',
+        );
         expect(emitted).toContain('"lunora_posts_0": () => import("./fn/lunora_posts_0.js")');
         expect(emitted).toContain("const loaded = module[manifest.exportName];");
         expect(emitted).not.toContain("installCompiledValidatorMap");
@@ -72,7 +74,7 @@ describe("lazy function registry", () => {
     });
 
     it("loads real handlers once, installs compiled validators, and retries a failed module import", async () => {
-        expect.assertions(8);
+        expect.assertions(11);
 
         const projectRoot = mkdtempSync(join(tmpdir(), "lunora-lazy-registry-"));
         const generatedDirectory = join(projectRoot, "_generated");
@@ -80,7 +82,7 @@ describe("lazy function registry", () => {
         const packageDirectory = join(projectRoot, "node_modules", "@lunora");
         const stateName = `__lunoraLazyRegistry${Date.now()}${Math.random().toString(16).slice(2)}`;
         const definition = makeFunction("premium", { args: { name: { kind: "string" } } });
-        const options = { functions: [definition], lazyFunctions: true };
+        const options = { functions: [definition, makeFunction("sibling", { args: {} })], lazyFunctions: true };
         const registrySource = emitFunctions(options);
         const shimSource = emitLazyFunctionModules(options)["fn/lunora_posts_0.ts"];
 
@@ -113,7 +115,8 @@ export const premium = {
   args: { name: { kind: "string", parse(value) { state.parseCalls += 1; return value; } } },
   kind: "query",
   handler(_context, args) { state.handlerCalls += 1; return args.name; }
-};\n`,
+};
+export const sibling = { args: {}, kind: "query", handler() { return "sibling"; } };\n`,
             );
 
             const registryFile = join(generatedDirectory, "functions.mjs");
@@ -137,6 +140,7 @@ state.onStart = signalStart;
 globalThis[config.stateName] = state;
 
 const registry = await import(pathToFileURL(config.registryFile));
+const coldEntry = registry.getLoadedFunction("posts:premium");
 const failed = await Promise.allSettled([registry.loadFunction("posts:premium"), registry.loadFunction("posts:premium")]);
 copyFileSync(config.shimPayloadFile, config.shimFile);
 const first = registry.loadFunction("posts:premium");
@@ -150,9 +154,14 @@ const values = await import(pathToFileURL(config.valuesFile));
 const parsed = values.parseValidatorMap(loaded.args, { extra: true, name: "Ada" }, "args");
 const handlerResult = await loaded.handler({}, { name: "Ada" });
 const cachedEntry = await registry.loadFunction("posts:premium");
+const synchronousEntry = registry.getLoadedFunction("posts:premium");
+const sibling = registry.getLoadedFunction("posts:sibling");
 
 process.stdout.write(JSON.stringify({
   cacheReusedEntry: cachedEntry === loaded,
+  coldEntryMissing: coldEntry === undefined,
+  synchronousEntry: synchronousEntry === loaded,
+  siblingResult: sibling.handler(),
   coalescedEvaluations,
   finalEvaluations: state.evaluations,
   failedLoadsRejected: failed.every((result) => result.status === "rejected"),
@@ -180,6 +189,9 @@ delete globalThis[config.stateName];
             );
             const result = JSON.parse(output) as {
                 cacheReusedEntry: boolean;
+                coldEntryMissing: boolean;
+                synchronousEntry: boolean;
+                siblingResult: string;
                 coalescedEvaluations: number;
                 failedLoadsRejected: boolean;
                 finalEvaluations: number;
@@ -193,6 +205,9 @@ delete globalThis[config.stateName];
             expect(result.coalescedEvaluations).toBe(1);
             expect(result.finalEvaluations).toBe(1);
             expect(result.cacheReusedEntry).toBe(true);
+            expect(result.coldEntryMissing).toBe(true);
+            expect(result.synchronousEntry).toBe(true);
+            expect(result.siblingResult).toBe("sibling");
             expect(result.handlerCalls).toBe(1);
             expect(result.handlerResult).toBe("Ada");
             expect(result.parsed).toEqual({ name: "Ada" });

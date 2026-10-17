@@ -75,7 +75,7 @@ const moduleAliasesFor = (
  * emitter body reads as composition rather than a wall of escaped TS.
  */
 const CALL_REGISTERED_HELPER = `const callRegistered = async <R>(context: CallerCtx, functionPath: string, args: Record<string, unknown> | undefined): Promise<R> => {
-const registered = await loadFunction(functionPath);
+    const registered = await loadFunction(functionPath);
 
     if (!registered) {
         throw new LunoraError("FUNCTION_NOT_FOUND", \`function not registered: \${functionPath}\`);
@@ -158,13 +158,13 @@ const renderFunctionRegistry = (
     // Functions arrive pre-sorted by `${filePath}:${exportName}`, so same-file
     // entries stay contiguous and the alias lookup is always populated.
     const dispatchEntries = functions
-        .map(
-            (definition) => {
-                if (!lazyFunctions) {
-                    return `    "${sanitizeNamespace(definition.filePath)}:${definition.exportName}": ${aliasByPath.get(definition.filePath) ?? ""}.${definition.exportName} as unknown as RegisteredLunoraFunction,`;
-                }
+        .map((definition) => {
+            if (!lazyFunctions) {
+                return `    "${sanitizeNamespace(definition.filePath)}:${definition.exportName}": ${aliasByPath.get(definition.filePath) ?? ""}.${definition.exportName} as unknown as RegisteredLunoraFunction,`;
+            }
 
-                return `    "${sanitizeNamespace(definition.filePath)}:${definition.exportName}": { args: {}, handler: unloadedFunctionHandler, ...${JSON.stringify({
+            return `    "${sanitizeNamespace(definition.filePath)}:${definition.exportName}": { args: {}, handler: unloadedFunctionHandler, ...${JSON.stringify(
+                {
                     argumentDescriptors: JSON.parse(renderArgumentDescriptors(definition.args)) as unknown,
                     kind: definition.kind,
                     ...(definition.channel ? { channel: definition.channel } : {}),
@@ -172,9 +172,9 @@ const renderFunctionRegistry = (
                     ...(definition.lifecycle ? { lifecycle: definition.lifecycle } : {}),
                     ...(definition.visibility ? { visibility: definition.visibility } : {}),
                     ...(definition.x402?.price === undefined ? {} : { x402: { price: definition.x402.price } }),
-                })} } as unknown as RegisteredLunoraFunction,`;
-            },
-        )
+                },
+            )} } as unknown as RegisteredLunoraFunction,`;
+        })
         .join("\n");
 
     const migrationEntries = migrations
@@ -466,13 +466,8 @@ const emitFunctions = (options: EmitFunctionsOptions): string => {
     const { agents = [], functions, lazyFunctions = false, migrations = [], mutators = [], shapes = [], useUmbrella = false, usesSandbox = false } = options;
     const hasFunctions = functions.length > 0;
     const base = baseSpecifiers(useUmbrella);
-    const { dispatchBody, importBlock, installBlock, manifestBody, migrationBody, moduleLoaders, mutatorPaths, roomMessagesBody, shapeBody } = renderFunctionRegistry(
-        functions,
-        migrations,
-        mutators,
-        shapes,
-        lazyFunctions,
-    );
+    const { dispatchBody, importBlock, installBlock, manifestBody, migrationBody, moduleLoaders, mutatorPaths, roomMessagesBody, shapeBody } =
+        renderFunctionRegistry(functions, migrations, mutators, shapes, lazyFunctions);
     // Auto-registered agent runtime + sandbox dispatcher functions (see the
     // render*FunctionRegistry helpers). Both are empty-gated so an unused feature
     // keeps output byte-identical.
@@ -523,13 +518,16 @@ const emitFunctions = (options: EmitFunctionsOptions): string => {
                       (definition) =>
                           `        { owner: ${JSON.stringify(definition.filePath)}, path: ${JSON.stringify(`${sanitizeNamespace(definition.filePath)}:${definition.exportName}`)}, topic: ${JSON.stringify(`room:${definition.channel?.name ?? ""}`)} },`,
                   )
-                  .join("\n")}\n    ]) {\n        const prior = owners.get(topic);\n\n        if (prior !== undefined && prior !== owner) {\n            throw new Error(\`two defineRoom registrations are named "\${topic.slice("room:".length)}"; room names must be unique\`);\n        }\n\n        if (prior === undefined) {\n            owners.set(topic, owner);\n            registry[topic] = path;\n        }\n    }\n\n    return registry;\n})();\n`
+                  .join(
+                      "\n",
+                  )}\n    ]) {\n        const prior = owners.get(topic);\n\n        if (prior !== undefined && prior !== owner) {\n            throw new Error(\`two defineRoom registrations are named "\${topic.slice("room:".length)}"; room names must be unique\`);\n        }\n\n        if (prior === undefined) {\n            owners.set(topic, owner);\n            registry[topic] = path;\n        }\n    }\n\n    return registry;\n})();\n`
             : `\n/**\n * Room registry: the whisper topic of each \`defineRoom\` registration → its\n * function path. The generated ShardDO's \`roomHandlerPath\` override resolves a\n * room topic through this map so a room's typed \`onJoin\`/\`onMessage\`/\`onLeave\`\n * dispatch server-side, reusing the whisper channel for membership and fan-out.\n * Two registrations under one name throw at module load: the map would otherwise\n * silently keep whichever came last.\n */\nexport const LUNORA_ROOMS: Readonly<Record<string, string>> = (() => {\n    const registry: Record<string, string> = {};\n    const owners = new Map<string, unknown>();\n\n    for (const [path, fn] of Object.entries(LUNORA_FUNCTIONS)) {\n        if (fn.channel?.kind !== "room") {\n            continue;\n        }\n\n        const topic = \`room:\${fn.channel.name}\`;\n        const owner = owners.get(topic);\n\n        // The same registration exported under two names (an alias) is one room.\n        if (owner !== undefined && owner !== fn) {\n            throw new Error(\`two defineRoom registrations are named "\${fn.channel.name}"; room names must be unique\`);\n        }\n\n        if (owner === undefined) {\n            owners.set(topic, fn);\n            registry[topic] = path;\n        }\n    }\n\n    return registry;\n})();\n`
         : "";
 
     // Pull in the compiled-args seam only when at least one function compiled —
     // an unused import would trip `noUnusedLocals`.
-    const compiledArgsImport = installBlock.length > 0 && !lazyFunctions ? `import { DEFER_VALIDATION as DEFER, installCompiledValidatorMap } from "${base.values}";\n` : "";
+    const compiledArgsImport =
+        installBlock.length > 0 && !lazyFunctions ? `import { DEFER_VALIDATION as DEFER, installCompiledValidatorMap } from "${base.values}";\n` : "";
     const compiledArgsInstall =
         installBlock.length > 0 && !lazyFunctions
             ? `\n/**\n * AOT-compiled argument validators (Worker-safe, no \`eval\`). Each is installed\n * onto its function's live \`.args\` object and consulted by the interpreted\n * parser as a zero-allocation fast path; anything it can't model is deferred.\n */\n${installBlock}\n`
@@ -552,14 +550,13 @@ const emitFunctions = (options: EmitFunctionsOptions): string => {
     const callRegisteredHelper = hasFunctions
         ? `${lazyFunctions ? CALL_REGISTERED_HELPER : CALL_REGISTERED_HELPER.replace("await loadFunction(functionPath)", "LUNORA_FUNCTIONS[functionPath]")}\n\n`
         : "";
-    const lazyRegistryPrelude =
-        lazyFunctions
-            ? `
+    const lazyRegistryPrelude = lazyFunctions
+        ? `
 export interface FunctionManifestEntry {
     argumentDescriptors: ReadonlyArray<{ element?: string; kind: string; name: string; optional: boolean; table?: string }>;
     channel?: { kind: "room"; name: string };
     exportName: string;
-    expose?: { cache?: { maxAge?: number; scope?: "private" | "public"; staleWhileRevalidate?: number; tag?: string; vary?: string }; rest?: boolean };
+    expose?: { cache?: { credentialHeaders?: ReadonlyArray<string>; maxAge?: number; scope?: "private" | "public"; staleWhileRevalidate?: number; tag?: string; vary?: string }; rest?: boolean };
     kind: "action" | "mutation" | "query" | "stream";
     lifecycle?: "connect" | "disconnect" | "init" | "reactor" | "whisper";
     moduleId: string;
@@ -572,16 +569,43 @@ export const LUNORA_FUNCTION_MANIFEST: Readonly<Record<string, FunctionManifestE
 
 const MODULE_LOADERS: Record<string, () => Promise<Record<string, unknown>>> = {${moduleLoaders}};
 const loadedModules = new Map<string, Promise<Record<string, unknown>>>();
+const resolvedModules = new Map<string, Record<string, unknown>>();
 const unloadedFunctionHandler = (): never => {
     throw new Error("a lazy function was invoked before it was prepared");
 };
 
-/** Load one function's owning module once per isolate, then merge its live builder result into the registry entry. */
-export const loadFunction = async (functionPath: string): Promise<RegisteredLunoraFunction | undefined> => {
+/** Reuse an evaluated module synchronously, so dispatch does not yield after restoring request scope. */
+export const getLoadedFunction = (functionPath: string): RegisteredLunoraFunction | undefined => {
     const registered = LUNORA_FUNCTIONS[functionPath];
     const manifest = LUNORA_FUNCTION_MANIFEST[functionPath];
 
     if (!registered || !manifest) {
+        return registered;
+    }
+
+    const module = resolvedModules.get(manifest.moduleId);
+
+    if (module === undefined) {
+        return undefined;
+    }
+
+    const loaded = module[manifest.exportName];
+
+    if (typeof loaded !== "object" || loaded === null) {
+        throw new Error(\`lazy module export for "\${functionPath}" is not a registered function\`);
+    }
+
+    Object.assign(registered, loaded);
+
+    return registered;
+};
+
+/** Load one function's owning module once per isolate, then merge its live builder result into the registry entry. */
+export const loadFunction = async (functionPath: string): Promise<RegisteredLunoraFunction | undefined> => {
+    const registered = getLoadedFunction(functionPath);
+    const manifest = LUNORA_FUNCTION_MANIFEST[functionPath];
+
+    if (registered || !manifest) {
         return registered;
     }
 
@@ -610,18 +634,12 @@ export const loadFunction = async (functionPath: string): Promise<RegisteredLuno
         throw error;
     }
 
-    const loaded = module[manifest.exportName];
+    resolvedModules.set(manifest.moduleId, module);
 
-    if (typeof loaded !== "object" || loaded === null) {
-        throw new Error(\`lazy module export for "\${functionPath}" is not a registered function\`);
-    }
-
-    Object.assign(registered, loaded);
-
-    return registered;
+    return getLoadedFunction(functionPath);
 };
 `
-            : "";
+        : "";
 
     return relocateBaseQualifiers(
         `${GENERATED_HEADER}${importBlock}${agentRegistry.importLine}${sandboxRegistry.importLine}${compiledArgsImport}${shapeTypeImport}${rooms.typeImport}import { LunoraError } from "${base.server}";\nimport type { ActionCtx, MutationCtx, QueryCtx } from "./server.js";
@@ -647,7 +665,6 @@ export interface RegisteredLunoraFunction {
      * \`AbortSignal\` as a third argument — the runtime drives it frame-by-frame.
      */
     handler: ((context: unknown, args: Record<string, unknown>) => Promise<unknown> | unknown) | ((context: unknown, args: Record<string, unknown>, signal?: AbortSignal) => AsyncIterable<unknown>);
-    argumentDescriptors?: ReadonlyArray<{ element?: string; kind: string; name: string; optional: boolean; table?: string }>;
     /**
      * The lifecycle moment a hook fires on, when this registration came from
      * \`onConnect\`/\`onDisconnect\`/\`onShardInit\`/\`onQueryChange\`/\`onWhisper\`.
@@ -666,15 +683,13 @@ ${rooms.channelField}    /**
     perDispatch?: boolean;
     /** \`"internal"\` functions are rejected on the external RPC path; absence === public. */
     visibility?: "internal" | "public";
-    expose?: { cache?: { maxAge?: number; scope?: "private" | "public"; staleWhileRevalidate?: number; tag?: string; vary?: string }; rest?: boolean };
     /**
      * \`.x402({ price })\` tag on a paid public procedure. The origin worker
      * paywalls it; the shard refuses to subscribe it (\`isPaidFunction\`).
      */
     x402?: { readonly price: number | string };
 }
-${agentRegistry.prelude}${sandboxRegistry.prelude}
-${lazyRegistryPrelude}
+${agentRegistry.prelude}${sandboxRegistry.prelude}${lazyRegistryPrelude}
 /**
  * Static dispatch table. The key matches the \`__lunoraRef\` the client
  * emits (\`api[namespace][fn].__lunoraRef === "namespace:fn"\`).
@@ -790,8 +805,7 @@ const emitLazyFunctionModules = (options: EmitFunctionsOptions): Record<string, 
 
                 return compiled === undefined ? [] : [`installCompiledValidatorMap(${moduleId}.${definition.exportName}.args, ${compiled});`];
             });
-        const compiledImport =
-            compiledInstalls.length > 0 ? `import { DEFER_VALIDATION as DEFER, installCompiledValidatorMap } from "${base.values}";\n` : "";
+        const compiledImport = compiledInstalls.length > 0 ? `import { DEFER_VALIDATION as DEFER, installCompiledValidatorMap } from "${base.values}";\n` : "";
         const namespaceImport = compiledInstalls.length > 0 ? `import * as ${moduleId} from "${sourcePath}";\n` : "";
         const installBlock =
             compiledInstalls.length > 0

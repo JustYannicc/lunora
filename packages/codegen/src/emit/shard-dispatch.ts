@@ -56,12 +56,6 @@ const dispatchRun = async (
     runDepth += 1;
 
     try {
-        const loaded = __LOAD_FUNCTION__;
-
-        if (!loaded) {
-            throw new Error(\`unknown function: \${functionPath}\`);
-        }
-
         // A mutation composed from an action (or an http action) is the shape the
         // docs prescribe for atomicity — "do the transactional reads and writes in
         // a mutation and call it from the action". It only holds if the composed
@@ -71,14 +65,32 @@ const dispatchRun = async (
         // inside a mutation rides the enclosing span instead of opening a second
         // one (see \`runMutationTransaction\`).
         if (runTransactional) {
-            return await runTransactional(async () => loaded.handler(ctx, args));
+            return await runTransactional(async () => registered.handler(ctx, args));
         }
 
-        return await loaded.handler(ctx, args);
+        return await registered.handler(ctx, args);
     } finally {
         runDepth -= 1;
     }
 };`;
+
+const dispatchRunSource = (lazyFunctions: boolean): string => {
+    if (!lazyFunctions) {
+        return DISPATCH_RUN_SOURCE;
+    }
+
+    return DISPATCH_RUN_SOURCE.replace(
+        "    try {\n        // A mutation composed from an action",
+        `    try {
+        const loaded = getLoadedFunction(functionPath) ?? await loadFunction(functionPath);
+
+        if (!loaded) {
+            throw new Error(\`unknown function: \${functionPath}\`);
+        }
+
+        // A mutation composed from an action`,
+    ).replaceAll("registered.handler", "loaded.handler");
+};
 
 const DISPATCH_METHODS_TEMPLATE = `        public override async handleRpc(functionPath: string, args: Record<string, unknown>, headroom?: TransactionHeadroomTracker, scope?: QueryReadScope, bookmarks?: DispatchBookmark): Promise<unknown> {
 __PREPARE_FUNCTION__            const registered = LUNORA_FUNCTIONS[functionPath];
@@ -320,7 +332,9 @@ const COMMITTED_CATCH = `            } catch (error) {
 const dispatchMethods = (hasRooms: boolean, lazyFunctions = false): string =>
     DISPATCH_METHODS_TEMPLATE.replace("__COMMITTED_CATCH__", hasRooms ? COMMITTED_CATCH : "").replace(
         "__PREPARE_FUNCTION__",
-        lazyFunctions ? "            const preparation = this.prepareFunction(functionPath);\n            if (preparation !== undefined) await preparation;\n" : "",
+        lazyFunctions
+            ? "            const requestScope = this.captureRequestScope();\n            const preparation = this.prepareFunction(functionPath);\n\n            if (preparation !== undefined) {\n                try {\n                    await preparation;\n                } finally {\n                    this.restoreRequestScope(requestScope);\n                }\n            }\n\n"
+            : "",
     );
 
-export { DISPATCH_RUN_SOURCE, dispatchMethods, SUBSCRIPTION_METHODS };
+export { DISPATCH_RUN_SOURCE, dispatchMethods, dispatchRunSource, SUBSCRIPTION_METHODS };

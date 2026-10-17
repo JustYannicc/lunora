@@ -203,7 +203,6 @@ const assertNoMaskedShapeTable = (shapes: ReadonlyArray<ShapeIR>, maskMetadata: 
  * {@link inferToFixpoint} for what happens when it is reached.
  */
 const MAX_INFERENCE_PASSES = 8;
-const LAZY_FUNCTIONS_THRESHOLD = 512;
 
 /**
  * Infer every handler's return type against a project that already contains the
@@ -289,7 +288,7 @@ const inferToFixpoint = (options: {
     // render the same return.
     const discover = () =>
         collectErasures(() => {
-            const functions = discoverFunctions(project, lunoraDirectory);
+            const functions = discoverFunctions(project, lunoraDirectory, { lazyFunctions: lazyFunctions === true });
             const mutators = discoverMutators(project, lunoraDirectory);
 
             return { functions, httpRoutes: discoverHttpRoutes(project, lunoraDirectory), mutators };
@@ -318,7 +317,7 @@ const inferToFixpoint = (options: {
     for (let pass = 1; ; pass += 1) {
         // Recomputed each pass: the inference refines `functions`, and the emit must see that.
         const emittedFunctions = roomsSupported ? functions : functions.filter((definition) => definition.channel?.kind !== "room");
-        const lazyFunctionsForRegistry = lazyFunctions ?? functions.length + mutators.length >= LAZY_FUNCTIONS_THRESHOLD;
+        const lazyFunctionsForRegistry = lazyFunctions === true;
 
         const apiContent = emitApi({ agents, functions: emittedFunctions, httpRoutes, mutators, useUmbrella, workflows });
         const functionsOptions = { agents, functions: emittedFunctions, lazyFunctions: lazyFunctionsForRegistry, migrations, mutators, shapes, useUmbrella, usesSandbox };
@@ -369,6 +368,7 @@ export const runCodegen = (options: CodegenOptions): CodegenResult => {
     const startedAt = timingEnabled ? performance.now() : 0;
 
     const lunoraDirectory = join(options.projectRoot, options.lunoraDirectory ?? "lunora");
+    const lazyFunctionsRequested = options.lazyFunctions === true;
     const schemaPath = join(lunoraDirectory, "schema.ts");
 
     if (!existsSync(schemaPath)) {
@@ -481,7 +481,7 @@ export const runCodegen = (options: CodegenOptions): CodegenResult => {
         apiPath,
         generatedFunctionsPath,
         internalPath,
-        lazyFunctions: options.lazyFunctions,
+        lazyFunctions: lazyFunctionsRequested,
         roomsSupported,
         lunoraDirectory,
         migrations,

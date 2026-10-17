@@ -37,7 +37,7 @@ import {
     renderThrowingStub,
 } from "./shard-bindings";
 import renderBuildContext from "./shard-context";
-import { DISPATCH_RUN_SOURCE, dispatchMethods, SUBSCRIPTION_METHODS } from "./shard-dispatch";
+import { dispatchMethods, dispatchRunSource, SUBSCRIPTION_METHODS } from "./shard-dispatch";
 import { buildStorageColumns, buildTableColumns, buildTableIndexes, buildTableReferences, buildTtlSweeps } from "./shard-metadata";
 import {
     buildDoTypeImports,
@@ -383,7 +383,7 @@ const LUNORA_SCHEMA_SNAPSHOT: { hash: string; json: string } = { hash: ${JSON.st
         `import schema from "../schema.js";`,
         // Local-first sync registries are pulled in alongside the function table
         // only when the project declares them, so the import list stays minimal.
-        `import { ${["LUNORA_FUNCTIONS", "LUNORA_LIFECYCLE_HOOKS", "LUNORA_MIGRATIONS", ...(lazyFunctions ? ["loadFunction"] : []), ...(hasMutators ? ["LUNORA_MUTATOR_PATHS"] : []), ...(hasRooms ? ["LUNORA_ROOMS"] : []), ...(hasShapes ? ["LUNORA_SHAPES"] : [])].join(", ")} } from "./functions.js";`,
+        `import { ${["LUNORA_FUNCTIONS", "LUNORA_LIFECYCLE_HOOKS", "LUNORA_MIGRATIONS", ...(lazyFunctions ? ["getLoadedFunction", "loadFunction"] : []), ...(hasMutators ? ["LUNORA_MUTATOR_PATHS"] : []), ...(hasRooms ? ["LUNORA_ROOMS"] : []), ...(hasShapes ? ["LUNORA_SHAPES"] : [])].join(", ")} } from "./functions.js";`,
     );
 
     const vectorsConfigField = hasVectorIndexes ? `\n    vectors?: (env: Record<string, unknown>) => Record<string, VectorizeIndexLike>;` : "";
@@ -675,13 +675,20 @@ ${sourceBootstrap}${ttlBootstrap}        }
     /* eslint-enable no-secrets/no-secrets */
     const prepareFunctionOverride = lazyFunctions
         ? `
-        protected override async prepareFunction(functionPath: string): Promise<void> {
-            await loadFunction(functionPath);
+        protected override prepareFunction(functionPath: string): Promise<void> | undefined {
+            if (getLoadedFunction(functionPath) !== undefined) {
+                return;
+            }
+
+            return loadFunction(functionPath).then(() => undefined);
         }
 `
         : "";
-    const dispatchRunSource = DISPATCH_RUN_SOURCE.replace("__LOAD_FUNCTION__", lazyFunctions ? "await loadFunction(functionPath)" : "registered");
-    const prepareFunctionCall = lazyFunctions ? "const preparation = this.prepareFunction(functionPath);\n            if (preparation !== undefined) await preparation;" : "";
+    const renderedPrepareFunctionOverride = prepareFunctionOverride === "" ? "\n\n" : `${prepareFunctionOverride}\n`;
+    const dispatchRun = dispatchRunSource(lazyFunctions);
+    const prepareFunctionCall = lazyFunctions
+        ? "            const preparation = this.prepareFunction(functionPath);\n            if (preparation !== undefined) await preparation;\n"
+        : "";
     const subscriptionMethods = SUBSCRIPTION_METHODS.replace("__PREPARE_FUNCTION__", prepareFunctionCall);
     const shardDispatchMethods = dispatchMethods(hasRooms, lazyFunctions);
 
@@ -824,7 +831,7 @@ export interface ShardDOConfig {
     storage?: (env: Record<string, unknown>, origin?: string) => unknown;${vectorsConfigField}${capabilityWiring.configFields}${flagsFragments.configField}${paymentsConfigField}${d1ConfigField}${hyperdriveGlobalConfigField}${sourceClientConfigField}${shardRegistryFragments.configField}
 }
 ${renderThrowingStub("schedulerStub", schedulerMissing, ["cancel", "runAfter", "runAt"])}${renderThrowingStub("storageStub", storageMissing, ["createMultipartUpload", "delete", "download", "generateUploadUrl", "getMetadata", "getPresignedUrl", "getSignedUrl", "getUrl", "head", "list", "resumeMultipartUpload", "store", "upload"], { sync: ["getUrl", "resumeMultipartUpload"] })}${globalDatabaseStub}${sourceClientCacheConst}${vectorsStub}${capabilityWiring.stubs}${paymentStub}
-${dispatchRunSource}
+${dispatchRun}
 
 /**
  * Build the project's shard Durable Object. Export the result as \`ShardDO\`
@@ -832,10 +839,7 @@ ${dispatchRunSource}
  */
 export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOState, env: unknown) => ShardDOBase =>
     class extends ShardDOBase {${constructorOverride}
-        private migrated = false;
-${prepareFunctionOverride}
-
-${shardDispatchMethods}
+        private migrated = false;${renderedPrepareFunctionOverride}${shardDispatchMethods}
 ${relationFanout.override}
 ${subscriptionMethods}
 ${customMutatorOverride}${shapeResolveOverride}${globalShapeReaderOverride}${externalSourceOverride}
@@ -863,7 +867,7 @@ ${roomHandlerOverride}${shardRegistryFragments.override}${shardInitOverride}
         // would instead run an app's reactor as whichever user happened to write
         // last, which is worse than running it as nobody.
         protected override async runReactor(functionPath: string, previousDigest?: string): Promise<{ digest: string; ran: boolean; tables: readonly string[] } | undefined> {
-${lazyFunctions ? "            const preparation = this.prepareFunction(functionPath);\n            if (preparation !== undefined) await preparation;\n" : ""}            const registered = LUNORA_FUNCTIONS[functionPath];
+${lazyFunctions ? "            const requestScope = this.captureRequestScope();\n            const preparation = this.prepareFunction(functionPath);\n\n            if (preparation !== undefined) {\n                try {\n                    await preparation;\n                } finally {\n                    this.restoreRequestScope(requestScope);\n                }\n            }\n\n" : ""}            const registered = LUNORA_FUNCTIONS[functionPath];
 
             if (!registered || registered.kind !== "mutation") {
                 return undefined;
