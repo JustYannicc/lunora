@@ -255,7 +255,7 @@ import {
     writeShapePokeCursors,
     writeTouchesMemo,
 } from "@lunora/shard-engine";
-import { decodeWire, encodeWire } from "@lunora/wire";
+import { decodeWire, encodeWire, isPlainObject } from "@lunora/wire";
 import type { DrizzleSqliteDODatabase } from "drizzle-orm/durable-sqlite";
 import { drizzle as drizzleDO } from "drizzle-orm/durable-sqlite";
 
@@ -8261,14 +8261,7 @@ abstract class ShardDO {
         } catch {
             return jsonResponse({ error: { code: "BAD_REQUEST", message: "invalid JSON body" } }, 400);
         }
-        const isRecord = (value: unknown): value is Record<string, unknown> => {
-            if (typeof value !== "object" || value === null || Array.isArray(value)) {
-                return false;
-            }
-            const prototype: unknown = Object.getPrototypeOf(value);
-            return prototype === Object.prototype || prototype === null;
-        };
-        if (!isRecord(payload) || typeof payload.functionPath !== "string") {
+        if (!isPlainObject(payload) || typeof payload.functionPath !== "string") {
             return jsonResponse({ error: { code: "BAD_REQUEST", message: "invalid RPC request" } }, 400);
         }
         const { functionPath } = payload;
@@ -8283,7 +8276,7 @@ abstract class ShardDO {
         } catch {
             return jsonResponse({ error: { code: "BAD_REQUEST", message: "invalid wire arguments" } }, 400);
         }
-        if (!isRecord(decodedArgs)) {
+        if (!isPlainObject(decodedArgs)) {
             return jsonResponse({ error: { code: "BAD_REQUEST", message: "invalid wire arguments" } }, 400);
         }
         const args = decodedArgs;
