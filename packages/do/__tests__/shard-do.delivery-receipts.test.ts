@@ -89,6 +89,38 @@ describe("delivery-authorized native receipts", () => {
         }
     });
 
+    it("never certifies an older run's bytes after its receipt marker insert fails", async () => {
+        const test = setup();
+        const shard = new TwoRunShard(test.state, {}, { deliveryAuthorization: test.authority });
+        let now = 1_000_000;
+        const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+        try {
+            const first = shard.fetch(request());
+            await shard.first.entered.promise;
+            test.database.sql.exec(
+                "CREATE TRIGGER reject_old_marker BEFORE INSERT ON __lunora_delivery_receipt WHEN NEW.epoch = 0 BEGIN SELECT RAISE(FAIL, 'marker unavailable'); END",
+            );
+            now += DISPATCH_CLAIM_CEILING_MS + 1;
+            test.regrant();
+            const second = shard.fetch(request());
+            await shard.second.entered.promise;
+            shard.first.release.resolve();
+            expect((await first).status).toBe(500);
+            shard.second.release.resolve();
+            expect((await second).status).toBe(200);
+            const replay = await shard.fetch(request());
+            expect(replay.status).toBe(200);
+            expect(await replay.json()).toMatchObject({ result: "new-policy" });
+            expect(test.database.raw("SELECT result_json FROM __idempotency")).toEqual([{ result_json: '"new-policy"' }]);
+            expect(test.database.raw("SELECT scope, epoch FROM __lunora_delivery_receipt")).toEqual([permit(1)]);
+            expect(shard.rpcRuns).toBe(2);
+        } finally {
+            shard.first.release.resolve();
+            shard.second.release.resolve();
+            clock.mockRestore();
+        }
+    });
+
     it("fences a legacy receipt without a permit marker and never reruns it", async () => {
         const test = setup();
         const legacy = new TestShard(test.state, {});
