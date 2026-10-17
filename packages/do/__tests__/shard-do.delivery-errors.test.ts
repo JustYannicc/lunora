@@ -184,12 +184,13 @@ describe("delivery authority failures", () => {
         expect.hasAssertions();
 
         const test = setup();
-        const shard = new TestShard(test.state, { LUNORA_ADMIN_TOKEN: "test-admin" }, { deliveryAuthorization: test.authority });
+        const adminToken = "test-admin";
+        const shard = new TestShard(test.state, { LUNORA_ADMIN_TOKEN: adminToken }, { deliveryAuthorization: test.authority });
         const rpc = (functionPath: string) =>
             shard.fetch(
                 new Request("https://shard.internal/rpc", {
                     method: "POST",
-                    headers: { authorization: "Bearer test-admin" },
+                    headers: { authorization: `Bearer ${adminToken}` },
                     body: JSON.stringify({ functionPath, args: {} }),
                 }),
             );

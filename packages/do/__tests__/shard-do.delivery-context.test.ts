@@ -60,11 +60,12 @@ describe("delivery authority caller context", () => {
         expect.hasAssertions();
 
         const test = setup();
-        const shard = new ContextShard(test.state, { LUNORA_ADMIN_TOKEN: "test-admin" }, { deliveryAuthorization: test.authority });
+        const adminToken = "test-admin";
+        const shard = new ContextShard(test.state, { LUNORA_ADMIN_TOKEN: adminToken }, { deliveryAuthorization: test.authority });
 
         test.authority.mockImplementation(async ({ admin }) => (admin ? permit(0) : undefined));
 
-        const valid = await shard.fetch(rpc(ADMIN_FUNCTIONS.listTables, { authorization: "Bearer test-admin" }));
+        const valid = await shard.fetch(rpc(ADMIN_FUNCTIONS.listTables, { authorization: `Bearer ${adminToken}` }));
 
         expect(valid.status).toBe(200);
         expect(test.authority.mock.calls[0]?.[0]).toMatchObject({ admin: true, system: false });
@@ -74,7 +75,7 @@ describe("delivery authority caller context", () => {
         expect(invalid.status).toBe(403);
         expect(test.authority.mock.calls[1]?.[0]).toMatchObject({ admin: false, system: false });
 
-        const ordinary = await shard.fetch(rpc("messages:list", { authorization: "Bearer test-admin" }));
+        const ordinary = await shard.fetch(rpc("messages:list", { authorization: `Bearer ${adminToken}` }));
 
         expect(ordinary.status).toBe(403);
         expect(test.authority.mock.calls[2]?.[0]).toMatchObject({ admin: false, system: false });
@@ -89,7 +90,7 @@ describe("delivery authority caller context", () => {
 
         test.authority.mockResolvedValue(undefined);
 
-        const authorityDenied = await shard.fetch(rpc(ADMIN_FUNCTIONS.listTables, { authorization: "Bearer test-admin" }));
+        const authorityDenied = await shard.fetch(rpc(ADMIN_FUNCTIONS.listTables, { authorization: `Bearer ${adminToken}` }));
 
         expect(authorityDenied.status).toBe(403);
     });
