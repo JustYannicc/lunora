@@ -358,10 +358,15 @@ describe("lunora dev lifecycle", () => {
             expect(args?.[(args.indexOf("--target") ?? 0) + 1]).toBe("aws");
         });
 
-        it("forwards --lazy-functions only when enabled", async () => {
-            expect.assertions(2);
+        it.each(["vite", "wrangler"])("forwards lazy functions only when enabled for %s", async (flavor) => {
+            expect.assertions(4);
+
+            if (flavor === "vite") {
+                writeFileSync(join(workdir, "package.json"), JSON.stringify({ dependencies: { "@lunora/vite": "1.0.0" }, name: "app" }), "utf8");
+            }
 
             const seen: ReadonlyArray<string>[] = [];
+            const environments: (Record<string, string | undefined> | undefined)[] = [];
             const run = (options: { command: { args: ReadonlyArray<string> } }): Promise<{ code: number }> => {
                 seen.push(options.command.args);
 
@@ -374,14 +379,31 @@ describe("lunora dev lifecycle", () => {
                 logger: recordingLogger().logger,
                 options: { lazyFunctions: true } as DevOptions,
                 remote: false,
-                run,
+                run: (options) => {
+                    environments.push(options.env);
+
+                    return run(options);
+                },
             });
 
             clearDevServerState(workdir, process.pid);
 
-            await startBackground({ cwd: workdir, jsonLogs: false, logger: recordingLogger().logger, options: {} as DevOptions, remote: false, run });
+            await startBackground({
+                cwd: workdir,
+                jsonLogs: false,
+                logger: recordingLogger().logger,
+                options: {} as DevOptions,
+                remote: false,
+                run: (options) => {
+                    environments.push(options.env);
 
-            expect(seen[0]).toContain("--lazy-functions");
+                    return run(options);
+                },
+            });
+
+            expect(environments[0]?.LUNORA_LAZY_FUNCTIONS).toBe(flavor === "vite" ? "1" : undefined);
+            expect(environments[1]?.LUNORA_LAZY_FUNCTIONS).toBeUndefined();
+            expect(seen[0]?.includes("--lazy-functions")).toBe(flavor === "wrangler");
             expect(seen[1]).not.toContain("--lazy-functions");
         });
 

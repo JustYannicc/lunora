@@ -117,6 +117,7 @@ thrown out of the hook, which would end a watch session.
 | `projectRoot`      | `process.cwd()` | Directory containing `lunora/`                                                                      |
 | `schemaDir`        | `"lunora"`      | Directory containing `schema.ts` + function files                                                   |
 | `apiSpec`          | `"openapi"`     | API spec emitted into `_generated/`: `"openapi"`/`"openrpc"`/`"both"`/`"none"`                      |
+| `lazyFunctions`    | `false`         | Emit per-module lazy function imports; `lunora dev --lazy-functions` also opts in during dev        |
 | `target`           | `"cloudflare"`  | Deploy target the emitted `ctx.*` surface is tailored to; defaults to `target` in `lunora.config.*` |
 | `validateWrangler` | `true`          | Validate `wrangler.jsonc` against the bindings the schema implies                                   |
 | `studio`           | `true`          | **Rsbuild only.** Serve Lunora Studio at `/__lunora` (needs `@lunora/studio`)                       |

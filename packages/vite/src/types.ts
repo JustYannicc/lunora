@@ -78,6 +78,9 @@ export interface LunoraPluginOptions {
      * the value set is derived from `CodegenOptions` so it can't drift.
      */
     apiSpec?: CodegenOptions["apiSpec"];
+
+    /** Emit a per-module lazy function registry; omitted keeps the eager registry. */
+    lazyFunctions?: CodegenOptions["lazyFunctions"];
     /** Pass through to `@cloudflare/vite-plugin`. Pass `false` to opt out. Defaults to `true`. */
     cloudflare?: boolean | CloudflarePluginOptions;
 
@@ -121,6 +124,7 @@ export interface LunoraPluginOptions {
 export interface ResolvedLunoraPluginOptions {
     allowUnauthenticatedShardAccess: boolean;
     apiSpec: NonNullable<CodegenOptions["apiSpec"]>;
+    lazyFunctions: boolean;
     cloudflare: false | CloudflarePluginOptions;
 
     /**

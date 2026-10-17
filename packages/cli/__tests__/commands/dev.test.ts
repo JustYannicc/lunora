@@ -516,6 +516,20 @@ describe("lunora dev", () => {
             expect(enabled.wrangler.env).toBeUndefined();
         });
 
+        it("forwards lazy function mode to the vite child without overriding --no-codegen", () => {
+            expect.assertions(4);
+
+            const enabled = planDevCommand({ cwd: workdir, flavor: "vite", lazyFunctions: true, logger: silentLogger() });
+            const eager = planDevCommand({ cwd: workdir, flavor: "vite", logger: silentLogger() });
+
+            expect(enabled.wrangler.env).toStrictEqual({ LUNORA_LAZY_FUNCTIONS: "1" });
+            expect(eager.wrangler.env).toBeUndefined();
+
+            const disabled = planDevCommand({ codegen: false, cwd: workdir, flavor: "vite", lazyFunctions: true, logger: silentLogger() });
+            expect(disabled.wrangler.env).toStrictEqual({ LUNORA_CODEGEN: "0", LUNORA_LAZY_FUNCTIONS: "1" });
+            expect(disabled.runsCodegenWatch).toBe(false);
+        });
+
         it.each([
             ["sveltekit", { "@sveltejs/kit": "^2.0.0" }],
             ["nuxt", { nuxt: "^4.0.0" }],

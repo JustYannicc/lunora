@@ -39,6 +39,8 @@ const SCHEMA_EDIT_ENDPOINT = "/__lunora/schema-edit";
 interface SchemaEditRequest {
     /** API-spec mode the host runs codegen with; forwarded to the regeneration. */
     readonly apiSpec?: CodegenOptions["apiSpec"];
+    /** Lazy function mode the host runs codegen with; forwarded to the regeneration. */
+    readonly lazyFunctions?: CodegenOptions["lazyFunctions"];
     /** Parsed JSON body for a `POST`; ignored for `GET`. */
     readonly body?: unknown;
     /** HTTP method (`GET` / `POST`). */

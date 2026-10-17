@@ -27,6 +27,7 @@ export default defineConfig({
 | --------------------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------- |
 | `schemaDir`                       | `"lunora"`      | Directory containing `schema.ts` + function files                                                                          |
 | `apiSpec`                         | `"openapi"`     | API spec emitted into `_generated/`: `"openapi"`/`"openrpc"`/`"both"`/`"none"`                                             |
+| `lazyFunctions`                   | `false`         | Emit per-module lazy function imports; `lunora dev --lazy-functions` also opts in during dev                               |
 | `target`                          | `"cloudflare"`  | Deploy target the emitted `ctx.*` surface is tailored to; defaults to `target` in `lunora.config.*`                        |
 | `studio`                          | `true`          | Serve the Lunora studio at `/__lunora` during dev, or `false` to skip                                                      |
 | `cloudflare`                      | `true`          | Pass options to `@cloudflare/vite-plugin`, or `false` to skip                                                              |

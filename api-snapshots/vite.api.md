@@ -68,6 +68,7 @@ const LUNORA_WORKER_VIRTUAL_ID: string;
 interface LunoraPluginOptions {
     allowUnauthenticatedShardAccess?: boolean;
     apiSpec?: CodegenOptions["apiSpec"];
+    lazyFunctions?: CodegenOptions["lazyFunctions"];
     cloudflare?: boolean | CloudflarePluginOptions;
     overlay?: boolean | OverlayPluginOptions;
     projectRoot?: string;
@@ -126,6 +127,7 @@ Re-exported from `@lunora/config` — signature tracked at its source.
 interface ResolvedLunoraPluginOptions {
     allowUnauthenticatedShardAccess: boolean;
     apiSpec: NonNullable<CodegenOptions["apiSpec"]>;
+    lazyFunctions: boolean;
     cloudflare: false | CloudflarePluginOptions;
     generatedDir: string;
     overlay: false | OverlayPluginOptions;

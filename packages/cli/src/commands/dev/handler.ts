@@ -331,6 +331,7 @@ const startStudioBestEffort = async (
             // in-process, so they need the SAME apiSpec this run's own codegen uses
             // — codegen deletes the spec file its mode does not name.
             apiSpec: options.apiSpec,
+            lazyFunctions: options.lazyFunctions,
             cwd,
             logger: {
                 warnOnce: (message) => {

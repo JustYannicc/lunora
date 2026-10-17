@@ -50,6 +50,8 @@ type PolicyScaffoldBody = DestructivePolicyEdit | ScaffoldPolicyEdit | WirePolic
 interface PolicyScaffoldRequest {
     /** API-spec mode the host runs codegen with; forwarded to the regeneration. */
     readonly apiSpec?: CodegenOptions["apiSpec"];
+    /** Lazy function mode the host runs codegen with; forwarded to the regeneration. */
+    readonly lazyFunctions?: CodegenOptions["lazyFunctions"];
     /** Parsed JSON body of the `POST`. */
     readonly body?: unknown;
     /** HTTP method — only `POST` is handled. */

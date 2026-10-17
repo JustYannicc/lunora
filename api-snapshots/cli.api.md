@@ -188,6 +188,7 @@ interface DeployedIdentity {
 interface DevCommandOptions {
     apiSpec?: ApiSpec;
     codegen?: boolean;
+    lazyFunctions?: boolean;
     cwd?: string;
     emitBindings?: string;
     ensureEnv?: typeof ensureDevVariables;
@@ -942,6 +943,7 @@ interface CodegenCommandOptions {
     apiSpec?: ApiSpec;
     cwd?: string;
     format?: OutputFormat;
+    lazyFunctions?: boolean;
     logger: Logger;
     strictAdvisories?: boolean;
     target?: string;
@@ -973,6 +975,7 @@ interface CodegenWatcherHandle {
 interface CodegenWatcherOptions {
     apiSpec?: CodegenOptions["apiSpec"];
     debounceMs?: number;
+    lazyFunctions?: CodegenOptions["lazyFunctions"];
     jsonLogs?: boolean;
     logger: Logger;
     lunoraDirectory?: string;
@@ -1371,6 +1374,7 @@ interface StudioServerHandle {
 ```ts
 interface StudioServerOptions {
     apiSpec?: CodegenOptions["apiSpec"];
+    lazyFunctions?: CodegenOptions["lazyFunctions"];
     cwd: string;
     host?: string;
     logger?: {
