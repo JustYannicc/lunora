@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { transform } from "esbuild";
-import { Project, SyntaxKind } from "ts-morph";
+import { Project, ScriptTarget, SyntaxKind } from "ts-morph";
 import { describe, expect, it } from "vitest";
 
 import discoverSchema from "../src/discover/schema";
@@ -40,6 +40,14 @@ const generatedHandleRpcMethod = (): string => {
     return method.getText();
 };
 
+const generatedDispatchRun = (): string => {
+    const project = new Project({ skipAddingFilesFromTsConfig: true, useInMemoryFileSystem: true });
+    const shardPath = "/virtual/lunora/_generated/shard.ts";
+    const sourceFile = project.createSourceFile(shardPath, emit(true));
+
+    return sourceFile.getVariableDeclarationOrThrow("dispatchRun").getFirstAncestorByKindOrThrow(SyntaxKind.VariableStatement).getText();
+};
+
 describe("emitted lazy function dispatch", () => {
     it("keeps eager output free of lazy loading behavior", () => {
         expect.assertions(2);
@@ -48,6 +56,33 @@ describe("emitted lazy function dispatch", () => {
 
         expect(shard).not.toContain("getLoadedFunction");
         expect(shard).not.toContain("prepareFunctionInRequestScope");
+    });
+
+    it("typechecks the generated lazy dispatcher under strict settings", () => {
+        expect.assertions(1);
+
+        const project = new Project({
+            compilerOptions: { noEmit: true, strict: true, target: ScriptTarget.ES2022 },
+            skipAddingFilesFromTsConfig: true,
+        });
+        project.createSourceFile(
+            "/virtual/lunora/lazy-dispatch-typecheck.ts",
+            `type FunctionKind = "action" | "mutation" | "query";
+interface RegisteredLunoraFunction {
+    kind: FunctionKind;
+    handler(ctx: unknown, args: Record<string, unknown>): Promise<unknown>;
+}
+declare const LUNORA_FUNCTIONS: Record<string, RegisteredLunoraFunction | undefined>;
+declare const getLoadedFunction: (functionPath: string) => RegisteredLunoraFunction | undefined;
+declare const loadFunction: (functionPath: string) => Promise<RegisteredLunoraFunction | undefined>;
+declare const captureScope: (() => () => void) | undefined;
+declare class LunoraError extends Error { constructor(code: string, message: string); }
+const MAX_RUN_DEPTH = 32;
+let runDepth = 0;
+${generatedDispatchRun()}`,
+        );
+
+        expect(project.getPreEmitDiagnostics()).toHaveLength(0);
     });
 
     it("keeps preparation synchronous after module resolution and pins request-scoped entry points", () => {

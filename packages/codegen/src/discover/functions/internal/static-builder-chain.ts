@@ -99,7 +99,7 @@ const staticBuilderChain = (receiver: AstNode): { factory?: string; steps: Retur
     const visited = new Set<AstNode>();
     let current: AstNode | undefined = receiver;
 
-    for (let depth = 0; current !== undefined && depth < 64; depth += 1) {
+    while (current !== undefined) {
         if (visited.has(current)) {
             break;
         }

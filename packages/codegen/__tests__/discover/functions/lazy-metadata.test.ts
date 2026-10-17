@@ -86,6 +86,34 @@ describe("lazy metadata discovery", () => {
         ]);
     });
 
+    it("follows immutable builder aliases beyond the legacy depth limit", () => {
+        expect.assertions(4);
+
+        project.createSourceFile(
+            join(directory, "builders.d.ts"),
+            `declare module "@lunora/server" {
+                export interface QueryBuilder { __lunoraProcedure: "query"; query(handler: () => number): unknown; }
+                export const query: QueryBuilder;
+            }`,
+        );
+        const aliases = Array.from({ length: 70 }, (_, index) => {
+            const previous = index === 0 ? "query" : `builder${String(index - 1)}`;
+
+            return `const builder${String(index)} = ${previous};`;
+        }).join("\n");
+        write("posts.ts", `import { query } from "@lunora/server";\n${aliases}\nexport const deep = builder69.query(() => 1);`);
+
+        const eager = discoverFunctions(project, directory);
+        const lazy = discover();
+        const registry = project.createSourceFile(join(directory, "registry.ts"), emitFunctions({ functions: lazy, lazyFunctions: true }));
+        const manifest = registry.getVariableDeclarationOrThrow("LUNORA_FUNCTION_MANIFEST").getInitializerIfKindOrThrow(SyntaxKind.ObjectLiteralExpression);
+
+        expect(lazy).toEqual(eager);
+        expect(lazy).toMatchObject([{ exportName: "deep", kind: "query", visibility: "public" }]);
+        expect(manifest.getProperty('"posts:deep"')).toBeDefined();
+        expect(lazy).toHaveLength(1);
+    });
+
     it("preserves inherited prices and credential headers through local and imported aliases", () => {
         expect.assertions(5);
 

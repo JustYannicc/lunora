@@ -102,9 +102,11 @@ const dispatchRunSource = (lazyFunctions: boolean): string => {
             throw new Error(\`unknown function: \${functionPath}\`);
         }
 
+        const loadedFunction = loaded;
+
         // A mutation composed from an action`,
         )
-        .replaceAll("registered.handler", "loaded.handler");
+        .replaceAll("registered.handler", "loadedFunction.handler");
 };
 
 const DISPATCH_METHODS_TEMPLATE = `        public override async handleRpc(functionPath: string, args: Record<string, unknown>, headroom?: TransactionHeadroomTracker, scope?: QueryReadScope, bookmarks?: DispatchBookmark): Promise<unknown> {
