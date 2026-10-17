@@ -4116,9 +4116,9 @@ const createWorker = (options: WorkerOptions): LunoraWorker => {
             },
             live: {
                 // Wire-encode the payload once so bytes/bigint survive the hop; the
-                // shard embeds it verbatim into the whisper + SSE frames. A publish
-                // is best-effort — a topic with no subscribers is a no-op, and a
-                // forward failure is swallowed rather than 500ing the calling route.
+                // shard embeds it verbatim into the whisper + SSE frames. A topic with
+                // no subscribers is a no-op. A refused or failed forward throws, so the
+                // calling route sees the error rather than a silent drop.
                 publish: async (topic, payload, publishOptions) => {
                     const shardKey = publishOptions.shardKey ?? defaultShard;
 
