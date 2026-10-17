@@ -61,6 +61,9 @@ export class DeliveryFence {
 
         if (!this.initialized) {
             sql.exec("CREATE TABLE IF NOT EXISTS __lunora_delivery_fence (scope TEXT PRIMARY KEY, epoch INTEGER NOT NULL)");
+            sql.exec(
+                "CREATE TABLE IF NOT EXISTS __lunora_delivery_receipt (identity TEXT NOT NULL, mutation_id TEXT NOT NULL, scope TEXT NOT NULL, epoch INTEGER NOT NULL, ts REAL NOT NULL, PRIMARY KEY (identity, mutation_id))",
+            );
             this.initialized = true;
         }
 
@@ -77,6 +80,37 @@ export class DeliveryFence {
             permit.scope,
             permit.epoch,
         );
+    }
+
+    public recordReceipt(identity: string, mutationId: string, permit: DeliveryPermit | undefined, timestamp: number): void {
+        if (!validDeliveryPermit(permit)) {
+            throw new LunoraError("DELIVERY_RECEIPT_FENCED", "Receipt has no delivery authority");
+        }
+        this.storage().exec(
+            "INSERT OR REPLACE INTO __lunora_delivery_receipt(identity, mutation_id, scope, epoch, ts) VALUES (?, ?, ?, ?, ?)",
+            identity,
+            mutationId,
+            permit.scope,
+            permit.epoch,
+            timestamp,
+        );
+    }
+
+    public assertReceipt(identity: string, mutationId: string, permit: DeliveryPermit | undefined): void {
+        const original = this.storage()
+            .exec<{ scope: string; epoch: number }>(
+                "SELECT scope, epoch FROM __lunora_delivery_receipt WHERE identity = ? AND mutation_id = ?",
+                identity,
+                mutationId,
+            )
+            .toArray()[0];
+        if (!validDeliveryPermit(permit) || original?.scope !== permit.scope || original.epoch !== permit.epoch) {
+            throw new LunoraError("DELIVERY_RECEIPT_FENCED", "Committed receipt belongs to a different delivery authority epoch");
+        }
+    }
+
+    public trimReceipts(before: number): void {
+        this.storage().exec("DELETE FROM __lunora_delivery_receipt WHERE ts < ?", before);
     }
 
     public allows(permit: DeliveryPermit | undefined): boolean {

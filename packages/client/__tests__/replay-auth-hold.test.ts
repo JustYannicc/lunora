@@ -279,6 +279,38 @@ describe("durable replay under an expired bearer", () => {
 });
 
 describe("durable replay after a delivery fence", () => {
+    it("settles an epoch-fenced committed receipt without retrying its native mutation", async () => {
+        vi.useFakeTimers();
+        sockets.length = 0;
+        const fetchImpl = vi.fn<typeof fetch>(async () =>
+            Response.json({ error: { code: "DELIVERY_RECEIPT_FENCED", message: "committed under old authority" } }, { status: 409 }),
+        );
+        const persistence = createInMemoryPersistence();
+        const client = new LunoraClient({
+            fetch: fetchImpl,
+            persistence,
+            url: "http://app.test",
+            heartbeatIntervalMs: 0,
+            offlineQueue: { queueBeforeFirstConnect: true },
+            WebSocket: createMockWebSocket(),
+        });
+        try {
+            client.setAuthToken("jwt", "user-1");
+            client.subscribe(fnRef("todos.list"), {}, () => {});
+            const outcome = client.mutation(fnRef("todos.add"), {}).catch((error: unknown) => error);
+            await vi.advanceTimersByTimeAsync(0);
+            sockets.at(-1)?.open();
+            await vi.advanceTimersByTimeAsync(0);
+            await expect(outcome).resolves.toMatchObject({ code: "DELIVERY_RECEIPT_FENCED" });
+            await expect(persistence.load()).resolves.toHaveLength(0);
+            await vi.advanceTimersByTimeAsync(60_000);
+            expect(fetchImpl).toHaveBeenCalledTimes(1);
+        } finally {
+            client.close();
+            vi.useRealTimers();
+        }
+    });
+
     it.each([
         { mode: "single-call", writeCount: 1 },
         { mode: "batched", writeCount: 2 },

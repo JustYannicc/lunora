@@ -85,12 +85,16 @@ describe("delivery authorization", () => {
         expect((await test.fence(test.shard, Number.MAX_SAFE_INTEGER + 1)).status).toBe(400);
     });
 
-    it("authorizes a successful old-cursor resume without replacing its cached value", async () => {
+    it("replaces an old-cursor cached value with a fresh authorized snapshot", async () => {
         const test = setup();
         await test.send();
         test.socket.frames.length = 0;
-        await test.send(test.makeShard(), 0);
-        expect(dataFrames(test.socket).map((frame) => frame.type)).toEqual(["resume"]);
+        test.regrant();
+        const woke = test.makeShard();
+        woke.rows = ["new-policy-visible"];
+        await test.send(woke, 0);
+        expect(dataFrames(test.socket).map((frame) => frame.type)).toEqual(["data"]);
+        expect(dataFrames(test.socket).at(-1)?.data).toEqual(["new-policy-visible"]);
         expect(test.authority).toHaveBeenCalledTimes(2);
     });
 
@@ -157,7 +161,9 @@ describe("delivery authorization", () => {
         expect((await test.write("same-operation")).status).toBe(403);
         expect(rpc).toHaveBeenCalledTimes(1);
         test.regrant();
-        expect(await (await test.write("same-operation")).json()).toEqual({ commitCursor: 0, result: { result: "receipt-payload" } });
+        const recovered = await test.write("same-operation");
+        expect(recovered.status).toBe(409);
+        expect(await recovered.json()).toMatchObject({ error: { code: "DELIVERY_RECEIPT_FENCED" } });
         expect(rpc).toHaveBeenCalledTimes(1);
     });
 });

@@ -900,6 +900,7 @@ interface RequestScope {
     bookmark: string | undefined;
     clientId: string | undefined;
     clientSeq: number | undefined;
+    deliveryPermit: DeliveryPermit | undefined;
 
     /**
      * The caller's CLAIMS — active org, role, tenant. Distinct from `userId` and
@@ -1643,6 +1644,8 @@ abstract class ShardDO {
     private readonly deliveryAuthorization: DeliveryAuthorization | undefined;
     private readonly deliveryFence = new DeliveryFence(() => this.shardHost.sql as unknown as SqlExec);
     private readonly deliveryResponsePermits = new WeakMap<Response, DeliveryPermit>();
+    private readonly deliveryRequestPermits = new WeakMap<Request, DeliveryPermit>();
+    private currentDeliveryPermit: DeliveryPermit | undefined;
     private readonly deliveryRegistrations = new WeakMap<ShardSocketLike, Map<string, symbol>>();
 
     /**
@@ -2981,6 +2984,7 @@ abstract class ShardDO {
             try {
                 // The host's structured-clone budget includes the permit and decoded query arguments.
                 (ws as HibernatableWebSocket).serializeAttachment?.(next);
+                this.subMemos.get(ws)?.delete(subId);
             } catch {
                 throw new LunoraError("SUBSCRIPTION_PERSIST_FAILED", `subscription attachment exceeds the ${String(ShardDO.MAX_ATTACHMENT_BYTES)}-byte limit`);
             }
@@ -3095,6 +3099,9 @@ abstract class ShardDO {
             return isDeliveryAccessDenied(error)
                 ? jsonResponse({ error: { code: "FORBIDDEN", message: "AccessDenied" } }, 403)
                 : jsonResponse({ error: { code: "SHARD_UNAVAILABLE", message: "delivery authority unavailable" } }, 503);
+        }
+        if (permit !== undefined) {
+            this.deliveryRequestPermits.set(request, permit);
         }
         const response = await this.runner.handleFetch(request);
         // Fully consume the body before checking: a deferred response stream must not outlive its permit.
@@ -5079,15 +5086,21 @@ abstract class ShardDO {
             return undefined;
         }
 
+        let cached: { value: unknown } | undefined;
         try {
             const record = readIdempotent(this.sql as SqlExec, namespace, mutationId);
-
-            return record === undefined ? undefined : { value: JSON.parse(record.resultJson) };
-        } catch {
-            // Missing table (pre-migration shard / test stub) or a malformed
-            // cached payload — treat as a miss and let the handler run.
+            cached = record === undefined ? undefined : { value: JSON.parse(record.resultJson) };
+        } catch (error) {
+            if (this.deliveryAuthorization) {
+                throw error;
+            }
+            // Preserve the legacy missing-table fallback outside guarded namespaces.
             return undefined;
         }
+        if (cached !== undefined && this.deliveryAuthorization) {
+            this.deliveryFence.assertReceipt(namespace, mutationId, this.currentDeliveryPermit);
+        }
+        return cached;
     }
 
     /**
@@ -5135,6 +5148,9 @@ abstract class ShardDO {
 
         try {
             writeIdempotent(this.sql as SqlExec, namespace, this.currentRequestMutationId, resultJson, now);
+            if (this.deliveryAuthorization) {
+                this.deliveryFence.recordReceipt(namespace, this.currentRequestMutationId, this.currentDeliveryPermit, now);
+            }
 
             // Throttled GC: drop dedup rows past the retention window at most once
             // per interval per warm instance.
@@ -5149,8 +5165,14 @@ abstract class ShardDO {
                 // (`durable-stream-runner.trim`, `cdc-retention`) stamp first.
                 this.lastIdempotencyTrimAt = now;
                 trimIdempotent(this.sql as SqlExec, now - IDEMPOTENCY_RETENTION_MS);
+                if (this.deliveryAuthorization) {
+                    this.deliveryFence.trimReceipts(now - IDEMPOTENCY_RETENTION_MS);
+                }
             }
-        } catch {
+        } catch (error) {
+            if (this.deliveryAuthorization) {
+                throw error;
+            }
             // Missing dedup table (pre-migration shard / test stub) or a stub
             // `sql` handle — best-effort bookkeeping must never fail a mutation
             // whose writes already committed. The replay just re-runs (the read
@@ -6338,6 +6360,10 @@ abstract class ShardDO {
         attribution?: QueryAttribution,
         outer?: QueryReadScope,
     ): Promise<R> {
+        // An external authority epoch is not part of the native query-cache key.
+        if (this.deliveryAuthorization) {
+            return run(outer);
+        }
         if (!this.reactiveCache) {
             return run();
         }
@@ -8246,6 +8272,7 @@ abstract class ShardDO {
             bookmark: this.currentRequestBookmark,
             clientId: this.currentRequestClientId,
             clientSeq: this.currentRequestClientSeq,
+            deliveryPermit: this.currentDeliveryPermit,
             identity: this.currentRequestIdentity,
             ip: this.currentRequestIp,
             mutationId: this.currentRequestMutationId,
@@ -8273,6 +8300,7 @@ abstract class ShardDO {
         this.currentResponseBookmark = undefined;
         this.currentRequestClientId = scope.clientId;
         this.currentRequestClientSeq = scope.clientSeq;
+        this.currentDeliveryPermit = scope.deliveryPermit;
         this.currentRequestIdentity = scope.identity;
         this.currentRequestIp = scope.ip;
         this.currentRequestOrigin = scope.origin;
@@ -11575,6 +11603,9 @@ abstract class ShardDO {
         identity: SubscriptionIdentity,
         cache: Map<string, Promise<SubscriptionOutcome | null>>,
     ): Promise<SubscriptionOutcome | null> {
+        if (this.deliveryAuthorization) {
+            return this.resolveReactiveOutcome(functionPath, args, isAdmin, identity);
+        }
         const key = this.isIdentityIndependent(functionPath)
             ? // eslint-disable-next-line unicorn/no-null -- reactiveCacheKey's identity arg is `null | string`; null = the identity-independent bucket
               reactiveCacheKey(functionPath, args, null)
@@ -12354,7 +12385,7 @@ abstract class ShardDO {
 
                 const memo = this.subMemos.get(ws)?.get(subId);
 
-                if (memoProvesUnchanged(memo, changed, changedKeys)) {
+                if (!this.deliveryAuthorization && memoProvesUnchanged(memo, changed, changedKeys)) {
                     continue;
                 }
 
@@ -12514,7 +12545,8 @@ abstract class ShardDO {
         }
 
         const { sinceEpoch, sinceSeq } = query;
-        const resume = isAdmin || sinceSeq === undefined ? undefined : this.evaluateResume(sinceSeq, outcome.tables, sinceEpoch);
+        // CDC cursors cannot prove that the client's value used the current authority epoch.
+        const resume = this.deliveryAuthorization || isAdmin || sinceSeq === undefined ? undefined : this.evaluateResume(sinceSeq, outcome.tables, sinceEpoch);
         // A resume that sealed a forked timeline hands back the NEW epoch, which
         // the client must receive; otherwise the pre-run epoch pairs with the
         // pre-run cursor.
@@ -13976,6 +14008,7 @@ abstract class ShardDO {
         dispatchStartedAt: number;
         dispatchTrace: TraceAnchor;
     } {
+        this.currentDeliveryPermit = this.deliveryRequestPermits.get(request);
         this.currentRequestBookmark = request.headers.get("x-d1-bookmark") ?? undefined;
         this.currentResponseBookmark = undefined;
         // `decodeUserIdHeader` inverts the runtime's `encodeUserIdHeader`: a
@@ -14080,6 +14113,7 @@ abstract class ShardDO {
 
     /** Clear every per-request field {@link ShardDO.beginDispatch} stamped. */
     private endDispatch(): void {
+        this.currentDeliveryPermit = undefined;
         this.currentRequestTrace = undefined;
         this.currentRequestBookmark = undefined;
         this.currentResponseBookmark = undefined;

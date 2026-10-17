@@ -28,7 +28,10 @@ import { retryAfterHeaderMs, slotError } from "./wire-errors";
  * REST limiter mints the first). `DELIVERY_FENCED` means the response lost its
  * authority after the operation may have committed. Retry under the original
  * idempotency key: the server can return its cached result or refuse the caller's
- * now-stale authorization. "Not now" is not "no": dropping a durable write
+ * now-stale authorization. A receipt from a different authority epoch returns
+ * terminal `DELIVERY_RECEIPT_FENCED`; only an application with its own durable
+ * operation key can safely recover that committed result through a fresh call.
+ * "Not now" is not "no": dropping a durable write
  * because the client reconnected into a rate-limit window is exactly what the
  * outbox exists to prevent, and the retry hint rides back through
  * `replayRetryDelayMs`.

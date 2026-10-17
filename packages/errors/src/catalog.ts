@@ -64,6 +64,12 @@ export const ERROR_CATALOG = {
         hint: "The operation may have committed. Recover with the same idempotency key after authorization is restored; do not retry with a new key.",
     },
 
+    DELIVERY_RECEIPT_FENCED: {
+        status: 409,
+        title: "Committed receipt authorization changed",
+        hint: "The operation committed, but its stored result belongs to an older authority epoch. Do not automatically retry with a new transport ID. Recover through the application's durable operation key under current authorization.",
+    },
+
     CONFLICT: {
         hint: [
             "Another write changed this row while your mutation was running (optimistic concurrency conflict).",
