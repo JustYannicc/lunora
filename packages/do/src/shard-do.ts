@@ -9498,17 +9498,14 @@ abstract class ShardDO {
         }
 
         const results: { body: unknown; errorDetail?: string; id: unknown; status: number }[] = [];
-        const permits: (DeliveryPermit | undefined)[] = [];
+        const deliveries: { bookmark: string | undefined; permit: DeliveryPermit | undefined }[] = [];
         let latestBookmark: string | undefined;
 
         for (const raw of payload.calls) {
             // eslint-disable-next-line no-await-in-loop -- sequential BY DESIGN: preserves per-client watermark ordering + idempotency across the batch
             const outcome = await this.dispatchBatchEntry(request, raw as BatchEntry);
 
-            permits.push(outcome.permit);
-            if (outcome.bookmark !== undefined) {
-                latestBookmark = outcome.bookmark;
-            }
+            deliveries.push({ bookmark: outcome.bookmark, permit: outcome.permit });
 
             // `errorDetail` is the per-slot form of the single call's
             // `ERROR_DETAIL_HEADER`; the worker reads it and drops it before replying.
@@ -9522,10 +9519,12 @@ abstract class ShardDO {
 
         // Earlier slots can be fenced while later slots await their handlers.
         const delivered = results.map((result, index) => {
-            const permit = permits[index];
-            if (this.deliveryAuthorization && permit !== undefined && !this.deliveryFence.allows(permit)) {
-                latestBookmark = undefined;
+            const delivery = deliveries[index];
+            if (this.deliveryAuthorization && delivery?.permit !== undefined && !this.deliveryFence.allows(delivery.permit)) {
                 return { id: result.id, status: 409, body: { error: { code: "DELIVERY_FENCED", message: "Delivery fenced; operation may have committed" } } };
+            }
+            if (delivery?.bookmark !== undefined) {
+                latestBookmark = delivery.bookmark;
             }
             return result;
         });
