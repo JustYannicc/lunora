@@ -1,3 +1,27 @@
+## @lunora/codegen [1.0.0-alpha.318](https://github.com/anolilab/lunora/compare/@lunora/codegen@1.0.0-alpha.317...@lunora/codegen@1.0.0-alpha.318) (2026-10-17)
+
+### Bug Fixes
+
+* **codegen:** honor exact optional properties ([#1233](https://github.com/anolilab/lunora/issues/1233)) ([049ff3c](https://github.com/anolilab/lunora/commit/049ff3c998158133f3058baaa9e8381cb13dbb8e))
+
+## @lunora/codegen [1.0.0-alpha.317](https://github.com/anolilab/lunora/compare/@lunora/codegen@1.0.0-alpha.316...@lunora/codegen@1.0.0-alpha.317) (2026-10-17)
+
+
+### Dependencies
+
+* **@lunora/advisor:** upgraded to 1.0.0-alpha.227
+* **@lunora/agent:** upgraded to 1.0.0-alpha.219
+* **@lunora/container:** upgraded to 1.0.0-alpha.78
+* **@lunora/errors:** upgraded to 1.0.0-alpha.58
+* **@lunora/queue:** upgraded to 1.0.0-alpha.110
+* **@lunora/scheduler:** upgraded to 1.0.0-alpha.132
+* **@lunora/values:** upgraded to 1.0.0-alpha.68
+* **@lunora/workflow:** upgraded to 1.0.0-alpha.80
+* **@lunora/bindings:** upgraded to 1.0.0-alpha.117
+* **@lunora/do:** upgraded to 1.0.0-alpha.220
+* **@lunora/server:** upgraded to 1.0.0-alpha.211
+* **@lunora/shard-engine:** upgraded to 1.0.0-alpha.134
+
 ## @lunora/codegen [1.0.0-alpha.316](https://github.com/anolilab/lunora/compare/@lunora/codegen@1.0.0-alpha.315...@lunora/codegen@1.0.0-alpha.316) (2026-10-17)
 
 ### Features

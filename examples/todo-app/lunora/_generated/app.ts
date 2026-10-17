@@ -204,8 +204,10 @@ class AppBuilder<Env extends object> {
             shardDO: this.shardSelector?.(env) ?? (undefined as unknown as ShardNamespaceLike),
         };
 
-        if (this.adminToken) {
-            options.adminToken = this.adminToken(env);
+        const adminToken = this.adminToken?.(env);
+
+        if (adminToken !== undefined) {
+            options.adminToken = adminToken;
         }
 
         const tableSharding = new Map<string, ShardingInfo>([
@@ -216,7 +218,11 @@ class AppBuilder<Env extends object> {
         options.listSchemaTables = () => [...tableSharding.keys()];
         options.resolveTableSharding = (table) => tableSharding.get(table);
 
-        options.logArchive = resolveLogArchiveFromEnv(env);
+        const logArchive = resolveLogArchiveFromEnv(env);
+
+        if (logArchive !== undefined) {
+            options.logArchive = logArchive;
+        }
 
         for (const fn of this.extendFns) {
             Object.assign(options, fn(env, { ...options }));

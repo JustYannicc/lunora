@@ -75,7 +75,7 @@ ${actionOnlyBuild.replaceAll(/^(?=.)/gmu, "    ")}${actionOnlyFields.map((field)
     // would be an unused local.
     const isActionLine = actionOnlyHasAny ? `            const isAction = contextKind === "action";\n` : "";
 
-    return `        private buildCtx(options: { bookmarks?: DispatchBookmark; functionPath?: string; headroom?: TransactionHeadroomTracker; identity?: SubscriptionIdentity; kind?: "query"; onRead?: (table: string, idOrScan?: string) => void; onReadRange?: (range: KeyRange) => void; scope?: QueryReadScope; trusted?: boolean } = {}): unknown {
+    return `        private buildCtx(options: { bookmarks?: DispatchBookmark | undefined; functionPath?: string | undefined; headroom?: TransactionHeadroomTracker | undefined; identity?: SubscriptionIdentity | undefined; kind?: "query" | undefined; onRead?: ((table: string, idOrScan?: string) => void) | undefined; onReadRange?: ((range: KeyRange) => void) | undefined; scope?: QueryReadScope | undefined; trusted?: boolean | undefined } = {}): unknown {
             const env = (this.env ?? {}) as Record<string, unknown>;
             // The caller context this ctx runs under, resolved ONCE on one
             // discriminant. When the caller threads an explicit identity
@@ -90,11 +90,17 @@ ${actionOnlyBuild.replaceAll(/^(?=.)/gmu, "    ")}${actionOnlyFields.map((field)
             // One expression, not one per field: three parallel ternaries on the
             // same discriminant is how \`ip\` came to be the only one still reading
             // the shared field.
-            const caller: SubscriptionIdentity = options.identity ?? {
-                identity: this.getCurrentIdentity(),
-                ip: this.getCurrentIp(),
-                userId: this.getCurrentUserId(),
-            };
+            const caller: SubscriptionIdentity = options.identity ?? (() => {
+                const identity = this.getCurrentIdentity();
+                const ip = this.getCurrentIp();
+                const userId = this.getCurrentUserId();
+
+                return {
+                    ...(identity === undefined ? {} : { identity }),
+                    ...(ip === undefined ? {} : { ip }),
+                    ...(userId === undefined ? {} : { userId }),
+                };
+            })();
             const { identity, ip, userId } = caller;
 ${vectorsBuild}${everyContextBuild}${containersBuild}${workflowsBuild}${queuesBuild}${topicsBuild}${agentsBuild}
             // Which dispatch this ctx belongs to. Drives the two deferral facades

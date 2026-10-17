@@ -306,8 +306,10 @@ class AppBuilder<Env extends object> {
             shardDO: this.shardSelector?.(env) ?? (undefined as unknown as ShardNamespaceLike),
         };
 
-        if (this.adminToken) {
-            options.adminToken = this.adminToken(env);
+        const adminToken = this.adminToken?.(env);
+
+        if (adminToken !== undefined) {
+            options.adminToken = adminToken;
         }
 
         const tableSharding = new Map<string, ShardingInfo>([
@@ -318,7 +320,11 @@ class AppBuilder<Env extends object> {
         options.listSchemaTables = () => [...tableSharding.keys()];
         options.resolveTableSharding = (table) => tableSharding.get(table);
 
-        options.logArchive = resolveLogArchiveFromEnv(env);
+        const logArchive = resolveLogArchiveFromEnv(env);
+
+        if (logArchive !== undefined) {
+            options.logArchive = logArchive;
+        }
 
         // Captured before the branch so the narrowing survives — reading
         // `this.authDeclaration.namespace` again below would be optional all over again.
@@ -332,16 +338,20 @@ class AppBuilder<Env extends object> {
             // to it. `createDoAuthWiring` is a tested function in `@lunora/auth` rather
             // than more emitted code: request-path logic in generated output can only be
             // typechecked, never unit-tested.
+            const discoveryPaths = authDiscoveryPathsFor(authDeclaration, env);
+            const internalSecret = authDeclaration.internalSecret?.(env);
+            const namespace = authNamespace(env);
+            const objectName = authDeclaration.objectName?.(env);
             const authWiring = createDoAuthWiring({
                 // The OAuth discovery documents (an `mcp()` resource's metadata, the
                 // issuer's) are derived here from the declared options, so the worker
                 // forwards only those exact paths and no other probe reaches the object.
                 // Memoised on the declaration: a framework-hosted worker rebuilds these
                 // options per request, and `options(env)` rebuilds every plugin.
-                discoveryPaths: authDiscoveryPathsFor(authDeclaration, env),
-                internalSecret: authDeclaration.internalSecret?.(env),
-                namespace: authNamespace(env),
-                objectName: authDeclaration.objectName?.(env),
+                discoveryPaths,
+                internalSecret,
+                namespace,
+                ...(objectName === undefined ? {} : { objectName }),
             });
 
             options.authHandler = authWiring.authHandler;
@@ -413,7 +423,9 @@ class AppBuilder<Env extends object> {
             };
             const authInstance = getAuth();
 
-            options.authAdmin = authInstance ? createAuthAdmin(authInstance) : undefined;
+            if (authInstance) {
+                options.authAdmin = createAuthAdmin(authInstance);
+            }
             options.authAuditReader = createAuthAuditReader(d1Executor(authD1(env) as never));
         }
 

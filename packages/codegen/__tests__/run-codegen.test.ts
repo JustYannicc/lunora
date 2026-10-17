@@ -2200,7 +2200,7 @@ export const buyReport = action.input({ url: v.string() }).action(async ({ args,
             expect(app).toContain("options.authJurisdictionMove = authWiring.jurisdictionMove;");
             // Discovery paths are derived in the worker, so only those exact paths
             // cost a round-trip to the object.
-            expect(app).toContain("discoveryPaths: authDiscoveryPathsFor(authDeclaration, env),");
+            expect(app).toContain("const discoveryPaths = authDiscoveryPathsFor(authDeclaration, env);");
             expect(app).toContain("options.authDiscoveryHandler = authWiring.discoveryHandler;");
 
             // Both modes must be rejected together — silently doing nothing is worse.
@@ -4036,7 +4036,9 @@ export const ping = query({ args: { id: v.string() }, handler: async (_context, 
             expect(output).toContain('const isGlobal = (schema as unknown as SchemaLike).tables[shape.table]?.shardMode?.kind === "global"');
             // The DO reads the global membership by draining the global backend's findMany.
             expect(output).toContain("protected override async readGlobalShapeRows");
-            expect(output).toContain("await globalDb.findMany(resolved.table, { cursor, where: resolved.effectiveWhere })");
+            expect(output).toContain(
+                "await globalDb.findMany(resolved.table, { cursor, ...(resolved.effectiveWhere === undefined ? {} : { where: resolved.effectiveWhere }) })",
+            );
         });
 
         it("does not emit readGlobalShapeRows when the project has shapes but no `.global()` table", () => {
@@ -4420,7 +4422,7 @@ export const ping = query({ args: { id: v.string() }, handler: async (_context, 
             expect(output).toContain("vectors?: (env: Record<string, unknown>) => Record<string, VectorizeIndexLike>;");
             expect(output).toContain("const vectorSync = this.vectorSync(env);");
             expect(output).toContain("onWrite: createVectorSyncHook(");
-            expect(output).toContain("onWrite: onWrite === undefined ? undefined : (event) => this.deferAfterCommit(() => onWrite(event)),");
+            expect(output).toContain("...(onWrite === undefined ? {} : { onWrite: (event) => this.deferAfterCommit(() => onWrite(event)) }),");
             expect(output).toContain("vectors,");
 
             // `backfillVectors`: the same hook over the rows that predate the index,
@@ -4510,7 +4512,7 @@ export const ping = query({ args: { id: v.string() }, handler: async (_context, 
                 'const vectors = createContextVectors(lunora, { deferAfterCommit: (work) => this.deferAfterCommit(work), namespace: vectorShardKey === ROOT_SHARD_NAME ? undefined : vectorShardKey, shardedIndexNames: ["by_body"] });',
             );
             expect(output).toContain("vectors,");
-            expect(output).toContain("onWrite: onWrite === undefined ? undefined : (event) => this.deferAfterCommit(() => onWrite(event)),");
+            expect(output).toContain("...(onWrite === undefined ? {} : { onWrite: (event) => this.deferAfterCommit(() => onWrite(event)) }),");
         });
 
         it("scopes the createVectorSyncHook auto-sync by the DO's shard key when the vectorized table is indexed via a standalone defineVectorIndex (Shape B), not inline .vectorize()", () => {
@@ -4551,7 +4553,7 @@ export const ping = query({ args: { id: v.string() }, handler: async (_context, 
                 'const vectors = createContextVectors(lunora, { deferAfterCommit: (work) => this.deferAfterCommit(work), namespace: vectorShardKey === ROOT_SHARD_NAME ? undefined : vectorShardKey, shardedIndexNames: ["by_body"] });',
             );
             expect(output).toContain("vectors,");
-            expect(output).toContain("onWrite: onWrite === undefined ? undefined : (event) => this.deferAfterCommit(() => onWrite(event)),");
+            expect(output).toContain("...(onWrite === undefined ? {} : { onWrite: (event) => this.deferAfterCommit(() => onWrite(event)) }),");
         });
 
         it("lists only the sharded table's index in shardedIndexNames for a MIXED schema (one sharded, one root-scoped vectorized table)", () => {
