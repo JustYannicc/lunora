@@ -32,6 +32,7 @@ import { readServiceBindings, runCodegen } from "@lunora/codegen";
 import { wranglerCodegenInputs } from "@lunora/config/cloudflare";
 
 import { renderCodegenFailure } from "./codegen-error";
+import resolveLazyFunctions from "./lazy-functions";
 import type { Logger } from "./logger";
 import reportPlatformDiagnostics from "./platform-diagnostics";
 import { runPostCodegenHook } from "./post-codegen-hook";
@@ -87,7 +88,14 @@ const runOnce = (
     const { apiSpec, lazyFunctions, logger, projectRoot, target } = options;
 
     try {
-        const result = runCodegen({ apiSpec, lazyFunctions, lunoraDirectory, projectRoot, target, ...wranglerCodegenInputs(projectRoot) });
+        const result = runCodegen({
+            apiSpec,
+            lazyFunctions: resolveLazyFunctions(lazyFunctions),
+            lunoraDirectory,
+            projectRoot,
+            target,
+            ...wranglerCodegenInputs(projectRoot),
+        });
 
         logger.success(`codegen: wrote ${lunoraDirectory}/_generated (${reason})`);
 

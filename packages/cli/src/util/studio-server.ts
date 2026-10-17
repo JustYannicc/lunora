@@ -50,6 +50,8 @@ import {
     transportRejectionReason,
 } from "@lunora/config/studio-host";
 
+import resolveLazyFunctions from "./lazy-functions";
+
 /** Request paths the studio server reverse-proxies to the worker (admin RPC, RPC, WS). */
 const PROXY_PREFIX = "/_lunora";
 
@@ -225,7 +227,7 @@ export const startStudioServer = async (options: StudioServerOptions): Promise<S
             // other, so an edit that regenerated with the default deleted the
             // `openrpc.json` the host's own run had just written. (`schemaDirectory`
             // is moot here — `lunora dev` hardcodes `"lunora"`.)
-            serveJsonHandler(request, response, handle, options.cwd, { apiSpec: options.apiSpec, lazyFunctions: options.lazyFunctions });
+            serveJsonHandler(request, response, handle, options.cwd, { apiSpec: options.apiSpec, lazyFunctions: resolveLazyFunctions(options.lazyFunctions) });
 
             return;
         }

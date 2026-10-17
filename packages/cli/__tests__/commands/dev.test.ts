@@ -802,6 +802,75 @@ describe("lunora dev", () => {
             expect(result.plan.workerOrigin).toBe("http://localhost:8787");
         });
 
+        it("passes the environment-selected lazy mode to the watcher and studio", async () => {
+            expect.assertions(3);
+
+            vi.stubEnv("LUNORA_LAZY_FUNCTIONS", "1");
+            const result = await runDevCommand({
+                cwd: workdir,
+                findFreePort: async () => 8787,
+                logger: silentLogger(),
+                startCodegen: (options) => {
+                    expect(options.lazyFunctions).toBe(true);
+
+                    return { close: async () => {}, ready: Promise.resolve(), watchAvailable: true };
+                },
+                startStudio: async (options) => {
+                    expect(options.lazyFunctions).toBe(true);
+
+                    return { close: async () => {}, url: "http://127.0.0.1:6173" };
+                },
+                startWorker: () => {
+                    return { exited: Promise.resolve(0), kill: () => {} };
+                },
+            });
+
+            expect(result.code).toBe(0);
+        });
+
+        it.each(["@sveltejs/kit", "nuxt"])("keeps %s sidecar generation and framework child lazy with only the environment opt-in", async (framework) => {
+            expect.assertions(3);
+
+            vi.stubEnv("LUNORA_LAZY_FUNCTIONS", "1");
+            writeFileSync(
+                join(workdir, "package.json"),
+                JSON.stringify({
+                    dependencies: { [framework]: "*" },
+                    devDependencies: { "@lunora/vite": "workspace:*" },
+                    name: "app",
+                    packageManager: "pnpm@11.0.0",
+                    scripts: { dev: "vite" },
+                }),
+            );
+            mkdirSync(join(workdir, "lunora"));
+            writeFileSync(join(workdir, "lunora", "schema.ts"), 'import { defineSchema } from "@lunora/server"; export default defineSchema({});');
+            writeFileSync(join(workdir, "lunora", "messages.ts"), 'import { query } from "@lunora/server"; export const list = query({ handler: () => [] });');
+            const spawned: { lazy: boolean; tag: string }[] = [];
+            let frameworkEnvironment: string | undefined;
+            const result = await runDevCommand({
+                cwd: workdir,
+                logger: silentLogger(),
+                studio: false,
+                startWorker: (descriptor) => {
+                    if (descriptor.tag === "vite") {
+                        frameworkEnvironment = descriptor.env?.LUNORA_LAZY_FUNCTIONS;
+                    }
+                    const registry = readFileSync(join(workdir, "lunora", "_generated", "functions.ts"), "utf8");
+                    spawned.push({ tag: descriptor.tag, lazy: registry.includes("export const LUNORA_FUNCTION_MANIFEST") });
+                    return { exited: Promise.resolve(0), kill: () => {} };
+                },
+            });
+
+            expect(result.code).toBe(0);
+            expect(frameworkEnvironment).toBe("1");
+            expect(spawned).toEqual(
+                expect.arrayContaining([
+                    { tag: "vite", lazy: true },
+                    { tag: "worker", lazy: true },
+                ]),
+            );
+        });
+
         it("warns about a cloudflare.config.ts once, claiming the guard before any child is spawned", async () => {
             expect.assertions(4);
 

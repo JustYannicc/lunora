@@ -3693,8 +3693,10 @@ abstract class ShardDO {
         }
     }
 
-    protected async runInTransaction<T>(handler: () => Promise<T> | T): Promise<T> {
-        if (this.transactionDepth > 0) {
+    protected async runInTransaction<T>(handler: () => Promise<T> | T, options?: { independent: true }): Promise<T> {
+        // Generated dispatch tracks nesting by caller context. An independent
+        // caller must wait on the writer gate even if another transaction is open.
+        if (this.transactionDepth > 0 && !options?.independent) {
             throw new LunoraError("NESTED_TRANSACTION", "nested transactions are not supported in SQLite-in-DO", { status: 500 });
         }
 

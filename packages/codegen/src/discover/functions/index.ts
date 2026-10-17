@@ -161,8 +161,8 @@ const functionIrFromCall = (call: CallExpression, exportName: string, relativePa
  * (`export default cronJobs()`, a workflow registry) classify to `undefined`
  * and are skipped like any other non-registration call.
  */
-const defaultExportFunctions = (source: SourceFile, relativePath: string, lazyFunctions: boolean): FunctionIR[] => {
-    const found: FunctionIR[] = [];
+const defaultExportFunctions = (source: SourceFile, relativePath: string, lazyFunctions: boolean): { call: CallExpression; entry: FunctionIR }[] => {
+    const found: { call: CallExpression; entry: FunctionIR }[] = [];
 
     for (const assignment of source.getExportAssignments()) {
         if (assignment.isExportEquals()) {
@@ -172,8 +172,8 @@ const defaultExportFunctions = (source: SourceFile, relativePath: string, lazyFu
         const call = resolveExpressionToCall(assignment.getExpression());
         const entry = call ? functionIrFromCall(call, "default", relativePath, lazyFunctions) : undefined;
 
-        if (entry) {
-            found.push(entry);
+        if (call && entry) {
+            found.push({ call, entry });
         }
     }
 
@@ -195,6 +195,22 @@ const discoverFileFunctions = (source: SourceFile, relativePath: string, lazyFun
     // The call each room name was first registered by. Two export names of one call are aliases of
     // one room; two different calls under one name are a clash, which the emitters cannot represent.
     const roomCalls = new Map<string, CallExpression>();
+    const rememberRoomCall = (entry: FunctionIR | undefined, call: CallExpression): void => {
+        if (entry?.channel?.kind !== "room") {
+            return;
+        }
+
+        const prior = roomCalls.get(entry.channel.name);
+
+        if (prior !== undefined && prior !== call) {
+            throw new LunoraError(
+                "DUPLICATE_ROOM_NAME",
+                `Duplicate room name "${entry.channel.name}" in ${relativePath}: two defineRoom calls share it. Room names must be unique.`,
+            );
+        }
+
+        roomCalls.set(entry.channel.name, call);
+    };
     const found = source
         .getVariableStatements()
         .flatMap((statement) => statement.getDeclarations())
@@ -204,27 +220,22 @@ const discoverFileFunctions = (source: SourceFile, relativePath: string, lazyFun
                 .filter((name) => isAddressableExportName(name))
                 .flatMap((name) => {
                     const entry = functionIrFromCall(call, name, relativePath, lazyFunctions);
-
-                    if (entry?.channel !== undefined) {
-                        const prior = roomCalls.get(entry.channel.name);
-
-                        if (prior !== undefined && prior !== call) {
-                            throw new LunoraError(
-                                "DUPLICATE_ROOM_NAME",
-                                `Duplicate room name "${entry.channel.name}" in ${relativePath}: two defineRoom calls share it. Room names must be unique.`,
-                            );
-                        }
-
-                        roomCalls.set(entry.channel.name, call);
-                    }
+                    rememberRoomCall(entry, call);
 
                     return entry ? [entry] : [];
                 }),
         );
     const named = new Set(found.map((entry) => entry.exportName));
 
-    // `export default <expression>` that is not a local binding.
-    found.push(...defaultExportFunctions(source, relativePath, lazyFunctions).filter((entry) => !named.has(entry.exportName)));
+    // `export default <expression>`, including a local registration alias.
+    for (const { call, entry } of defaultExportFunctions(source, relativePath, lazyFunctions)) {
+        if (named.has(entry.exportName)) {
+            continue;
+        }
+
+        rememberRoomCall(entry, call);
+        found.push(entry);
+    }
 
     return found;
 };

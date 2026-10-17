@@ -11,6 +11,7 @@ import { parseApiSpec } from "../../util/api-spec";
 import type { CommandHandler } from "../../util/command";
 import { defineHandler } from "../../util/command";
 import { EXIT_CODE } from "../../util/exit-code";
+import resolveLazyFunctions from "../../util/lazy-functions";
 import type { Logger } from "../../util/logger";
 import type { Spawner } from "../../util/spawn";
 import { runPreDeployPipeline } from "../deploy/handler";
@@ -78,7 +79,7 @@ const runPrepareCommand = async (options: PrepareCommandOptions): Promise<Prepar
         {
             allowSchemaDrift: options.allowSchemaDrift,
             apiSpec: options.apiSpec,
-            lazyFunctions: options.lazyFunctions,
+            lazyFunctions: resolveLazyFunctions(options.lazyFunctions),
             cwd,
             logger: options.logger,
             spawner: options.spawner,
@@ -117,7 +118,7 @@ const execute: CommandHandler<PrepareOptions> = defineHandler<PrepareOptions>(({
     runPrepareCommand({
         allowSchemaDrift: options.allowSchemaDrift === true,
         apiSpec: parseApiSpec(options.apiSpec),
-        lazyFunctions: options.lazyFunctions,
+        lazyFunctions: resolveLazyFunctions(options.lazyFunctions),
         cwd,
         logger,
         strictAdvisories: options.strictAdvisories,

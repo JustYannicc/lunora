@@ -147,13 +147,14 @@ __PREPARE_FUNCTION__            const registered = LUNORA_FUNCTIONS[functionPath
 
             const result = await registered.handler(ctx, args);
 
-            // An action is not itself transactional, but \`ctx.runMutation\` runs its
-            // submutations on THIS ctx, so anything they queued after their own
-            // transaction settled lands here. A dispatch with nothing queued no-ops.
+            // Composed mutations settle their own delete queues. An action can
+            // also queue deletes outside those mutations; drain its own queue here.
             await this.deferPastResponse(flushDeferredDeletes(ctx));
 
             return result;
         }
+
+        private readonly mutationContexts = new WeakSet<object>();
 
         /**
          * Run one mutation handler with the atomicity every caller of a mutation is
@@ -175,19 +176,17 @@ __PREPARE_FUNCTION__            const registered = LUNORA_FUNCTIONS[functionPath
          * scheduler flush.
          *
          * Both deferral windows are opened here and settled against the SAME
-         * outcome. The delete window is what keeps a composed mutation's queued
-         * object deletes off the caller's flush when it rolls back: \`ctx\` is
-         * shared, so without a window the keys are indistinguishable from the
-         * action's own and the action's flush destroys objects whose rows the
-         * rollback put back.
+         * outcome. True nested calls share their caller's context, so each window
+         * must discard its own failed delete and schedule intents even when the
+         * outer handler catches the error and commits.
          */
-        private async runMutationTransaction<T>(ctx: unknown, work: () => Promise<T>): Promise<T> {
+        private async runMutationTransaction<T>(ctx: object, work: () => Promise<T>): Promise<T> {
             const settleSchedules = beginDeferredSchedules(ctx as { scheduler?: unknown });
             // Synchronous and non-throwing (it only moves queue entries), so it can
             // settle first on every path and cannot mask the outcome.
             const settleDeletes = beginDeferredDeletes(ctx);
 
-            if (this.isInTransaction()) {
+            if (this.mutationContexts.has(ctx)) {
                 try {
                     const nested = await work();
 
@@ -206,7 +205,15 @@ __PREPARE_FUNCTION__            const registered = LUNORA_FUNCTIONS[functionPath
             let result: T;
 
             try {
-                result = await this.runInTransaction(work);
+                result = await this.runInTransaction(async () => {
+                    this.mutationContexts.add(ctx);
+
+                    try {
+                        return await work();
+                    } finally {
+                        this.mutationContexts.delete(ctx);
+                    }
+                }, { independent: true });
             } catch (error) {
                 // The span rolled back, so the rows are gone and the jobs that were
                 // to run "after I commit" must go with them. Dropping them is the

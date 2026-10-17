@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { runCodegen } from "@lunora/codegen";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { startCodegenWatch } from "../../src/util/codegen-watch";
 import type { Logger } from "../../src/util/logger";
@@ -57,6 +57,10 @@ describe("startCodegenWatch", () => {
         vi.mocked(runCodegen).mockImplementation(actual.runCodegen);
     });
 
+    afterEach(() => {
+        vi.unstubAllEnvs();
+    });
+
     /** Stub codegen to a clean run, so a test can reach the hook without a real project. */
     const codegenSucceeds = (): void => {
         vi.mocked(runCodegen).mockReturnValue({ platformDiagnostics: [] } as unknown as ReturnType<typeof runCodegen>);
@@ -72,6 +76,25 @@ describe("startCodegenWatch", () => {
         const { logger } = silentLogger();
         const handle = startCodegenWatch({ lazyFunctions: true, logger, lunoraDirectory: ".", projectRoot: workdir, spawner });
 
+        try {
+            await handle.ready;
+
+            expect(runCodegen).toHaveBeenCalledWith(expect.objectContaining({ lazyFunctions: true }));
+        } finally {
+            await handle.close();
+            rmSync(workdir, { force: true, recursive: true });
+        }
+    });
+
+    it("honors the lazy environment opt-in when its flag is absent", async () => {
+        expect.assertions(1);
+
+        vi.stubEnv("LUNORA_LAZY_FUNCTIONS", "1");
+        codegenSucceeds();
+        const workdir = projectWithPostCodegen();
+        const { spawner } = createRecordingSpawner();
+        const { logger } = silentLogger();
+        const handle = startCodegenWatch({ logger, lunoraDirectory: ".", projectRoot: workdir, spawner });
         try {
             await handle.ready;
 

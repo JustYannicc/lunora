@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import { runCodegen } from "@lunora/codegen";
 import { wranglerCodegenInputs } from "@lunora/config/cloudflare";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { runBuildCommand } from "../../src/commands/build/handler";
 import { runDeployCommand } from "../../src/commands/deploy/handler";
@@ -23,6 +23,7 @@ describe("lazy deployment", () => {
     let projectRoot: string;
 
     beforeEach(() => {
+        vi.stubEnv("LUNORA_LAZY_FUNCTIONS", "");
         projectRoot = mkdtempSync(join(tmpdir(), "lunora-lazy-deployment-"));
         cpSync(fixtureRoot, join(projectRoot, "lunora"), { recursive: true });
         writeFileSync(
@@ -40,6 +41,7 @@ describe("lazy deployment", () => {
     });
 
     afterEach(() => {
+        vi.unstubAllEnvs();
         rmSync(projectRoot, { force: true, recursive: true });
     });
 
@@ -48,8 +50,18 @@ describe("lazy deployment", () => {
         { name: "build", run: runBuildCommand },
         { name: "prepare", run: runPrepareCommand },
     ])("$name lazy regeneration", ({ run }) => {
-        it.each([undefined, false, true])("regenerates in the selected mode with lazyFunctions=%s", async (lazyFunctions) => {
+        it.each([
+            { lazyFunctions: undefined, environment: "", enabled: false },
+            { lazyFunctions: false, environment: "", enabled: false },
+            { lazyFunctions: true, environment: "", enabled: true },
+            { lazyFunctions: undefined, environment: "1", enabled: true },
+            { lazyFunctions: false, environment: " True ", enabled: true },
+            { lazyFunctions: undefined, environment: "false", enabled: false },
+            { lazyFunctions: true, environment: "0", enabled: true },
+        ])("regenerates with lazyFunctions=$lazyFunctions and environment=$environment", async ({ lazyFunctions, environment, enabled }) => {
             expect.assertions(5);
+
+            vi.stubEnv("LUNORA_LAZY_FUNCTIONS", environment);
 
             runCodegen({ lazyFunctions: true, projectRoot, ...wranglerCodegenInputs(projectRoot) });
             writeFileSync(
@@ -63,16 +75,25 @@ describe("lazy deployment", () => {
             const functions = readFileSync(join(generated, "functions.ts"), "utf8");
 
             expect(result.code).toBe(0);
-            expect(functions.includes("export const LUNORA_FUNCTION_MANIFEST")).toBe(lazyFunctions === true);
-            expect(existsSync(join(generated, "fn", "lunora_messages_0.ts"))).toBe(lazyFunctions === true);
+            expect(functions.includes("export const LUNORA_FUNCTION_MANIFEST")).toBe(enabled);
+            expect(existsSync(join(generated, "fn", "lunora_messages_0.ts"))).toBe(enabled);
             expect(functions).toContain("messages:latest");
             expect(functions).not.toContain("messages:list");
         });
     });
 
     describe("verify lazy metadata gate", () => {
-        it.each([undefined, false, true])("checks the selected registry mode with lazyFunctions=%s without writing", async (lazyFunctions) => {
+        it.each([
+            { lazyFunctions: undefined, environment: "", enabled: false },
+            { lazyFunctions: false, environment: "", enabled: false },
+            { lazyFunctions: true, environment: "", enabled: true },
+            { lazyFunctions: undefined, environment: "1", enabled: true },
+            { lazyFunctions: false, environment: "true", enabled: true },
+            { lazyFunctions: undefined, environment: "0", enabled: false },
+        ])("checks lazyFunctions=$lazyFunctions and environment=$environment without writing", async ({ lazyFunctions, environment, enabled }) => {
             expect.assertions(3);
+
+            vi.stubEnv("LUNORA_LAZY_FUNCTIONS", environment);
 
             writeFileSync(
                 join(projectRoot, "lunora", "messages.ts"),
@@ -84,8 +105,8 @@ describe("lazy deployment", () => {
                 options: { format: "json", lazyFunctions, strictAdvisories: false, typecheck: false },
             });
 
-            expect(result.code).toBe(lazyFunctions === true ? 1 : 0);
-            expect(result.document?.data?.errors.join("\n").includes("lazy function registry needs literal")).toBe(lazyFunctions === true);
+            expect(result.code).toBe(enabled ? 1 : 0);
+            expect(result.document?.data?.errors.join("\n").includes("lazy function registry needs literal")).toBe(enabled);
             expect(existsSync(join(projectRoot, "lunora", "_generated"))).toBe(false);
         });
     });

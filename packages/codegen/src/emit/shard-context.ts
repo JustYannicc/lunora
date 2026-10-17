@@ -112,11 +112,9 @@ ${vectorsBuild}${everyContextBuild}${containersBuild}${workflowsBuild}${queuesBu
             // equivalent of an \`afterCommit\` hook, and the SchedulerDO persists the
             // job the moment it is called — so inside a mutation the call is BUFFERED
             // and replayed after the transaction commits (a rollback drops it).
-            // Wrapped on the same dispatches as the deferred-delete queue and for the
-            // same reason: \`ctx.runMutation\` hands the CALLER's ctx to the callee, so
-            // a mutation reached from an action schedules through the action's ctx.
-            // An action's own schedules stay immediate — the window is only open
-            // while a transaction is (see \`runMutationTransaction\`).
+            // Composed mutations get their own facade when the caller is outside
+            // a transaction. True nested calls share the enclosing facade and open
+            // a nested window. The action's own schedules stay immediate.
             //
             // Every kind but \`query\` is wrapped, because \`runMutationTransaction\`
             // is installed on \`ctx.runMutation\` for every kind but \`query\`: a
@@ -282,8 +280,24 @@ ${isActionLine}${actionOnlyBlock}
                 // The composed mutation runs under the SAME wrapper the top-level RPC
                 // uses, so "do the transactional work in a mutation and call it from the
                 // action" — the recipe the docs give for atomicity — actually is atomic.
-                target.runMutation = (reference: FunctionReference, fnArgs: Record<string, unknown>) =>
-                    dispatchRun("mutation", reference.__lunoraRef, fnArgs, target, kind, async (work) => this.runMutationTransaction(target, work));
+                target.runMutation = (reference: FunctionReference, fnArgs: Record<string, unknown>) => {
+                    // An action can start sibling mutations concurrently. Each owns its
+                    // context and deferral queues; only calls from an admitted mutation
+                    // inherit that mutation's transaction.
+                    const mutationCtx: Record<string, unknown> = this.mutationContexts.has(target)
+                        ? target
+                        : Object.defineProperties({}, {
+                            ...Object.getOwnPropertyDescriptors(target),
+                            scheduler: { configurable: true, enumerable: true, value: withDeferredSchedules(schedulerBase, this.scheduleOutbox()), writable: true },
+                            storage: { configurable: true, enumerable: true, value: withDeferredDeletes(storage), writable: true },
+                        });
+
+                    if (mutationCtx !== target) {
+                        installRun(mutationCtx, kind);
+                    }
+
+                    return dispatchRun("mutation", reference.__lunoraRef, fnArgs, mutationCtx, kind, async (work) => this.runMutationTransaction(mutationCtx, work));
+                };
                 // \`ctx.runQuery(ref, args, { untracked: true })\` runs the sub-query on
                 // its OWN query context, built without the subscription's read-footprint
                 // hooks — so its reads never enter this subscription's footprint and a

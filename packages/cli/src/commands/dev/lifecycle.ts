@@ -45,6 +45,7 @@ import { detectPackageManager, execArgsFor } from "../../util/detect-package-man
 import type { ReadinessProbe } from "../../util/dev-probe";
 import { defaultProbe, POLL_INTERVAL_MS, resolveReadyTimeoutMs } from "../../util/dev-probe";
 import { EXIT_CODE } from "../../util/exit-code";
+import resolveLazyFunctions from "../../util/lazy-functions";
 import type { Logger } from "../../util/logger";
 import { printJson } from "../../util/output-format";
 import { spawnShellCompat } from "../../util/spawn";
@@ -519,7 +520,7 @@ const codegenRequested = (options: { codegen?: boolean }): boolean => options.co
  */
 const withViteChildEnv = (options: { codegen?: boolean; lazyFunctions?: boolean; remote?: boolean }): { env?: Record<string, string> } => {
     const environment: Record<string, string> = {
-        ...(options.lazyFunctions === true ? { [LAZY_FUNCTIONS_ENV]: "1" } : {}),
+        ...(resolveLazyFunctions(options.lazyFunctions) ? { [LAZY_FUNCTIONS_ENV]: "1" } : {}),
         ...(options.remote === true ? { LUNORA_REMOTE: "1" } : {}),
         ...(options.codegen === false ? { [CODEGEN_ENV]: "0" } : {}),
     };

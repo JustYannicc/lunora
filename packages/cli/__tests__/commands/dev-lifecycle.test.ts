@@ -34,6 +34,7 @@ describe("lunora dev lifecycle", () => {
     });
 
     afterEach(() => {
+        vi.unstubAllEnvs();
         vi.restoreAllMocks();
         rmSync(workdir, { force: true, recursive: true });
     });
@@ -399,6 +400,29 @@ describe("lunora dev lifecycle", () => {
             expect(environments[1]?.LUNORA_LAZY_FUNCTIONS).toBeUndefined();
             expect(seen[0]?.includes("--lazy-functions")).toBe(flavor === "wrangler");
             expect(seen[1]).not.toContain("--lazy-functions");
+        });
+
+        it.each([
+            ["vite", { "@lunora/vite": "1.0.0" }],
+            ["wrangler", {}],
+        ])("forwards the lazy environment opt-in to the %s background child", async (flavor, dependencies) => {
+            expect.assertions(2);
+
+            vi.stubEnv("LUNORA_LAZY_FUNCTIONS", " True ");
+            writeFileSync(join(workdir, "package.json"), JSON.stringify({ dependencies, name: "app" }));
+            await startBackground({
+                cwd: workdir,
+                jsonLogs: false,
+                logger: recordingLogger().logger,
+                options: {} as DevOptions,
+                remote: false,
+                run: (options) => {
+                    expect(options.env?.LUNORA_LAZY_FUNCTIONS).toBe(flavor === "vite" ? "1" : undefined);
+                    expect(options.command.args.includes("--lazy-functions")).toBe(flavor === "wrangler");
+
+                    return Promise.resolve({ code: 0 });
+                },
+            });
         });
 
         it("forwards --inspector-port to the daemon, and omits it when unset", async () => {

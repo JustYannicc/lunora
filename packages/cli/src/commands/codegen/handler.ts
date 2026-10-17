@@ -11,6 +11,7 @@ import type { CommandHandler } from "../../util/command";
 import { defineHandler } from "../../util/command";
 import { resolveTargetOrError } from "../../util/deploy-target-resolve";
 import { EXIT_CODE } from "../../util/exit-code";
+import resolveLazyFunctions from "../../util/lazy-functions";
 import { reportLintIgnoreOutcomes } from "../../util/lint-ignore-report";
 import type { Logger } from "../../util/logger";
 import type { OutputFormat } from "../../util/output-format";
@@ -26,7 +27,7 @@ interface CodegenCommandOptions {
     cwd?: string;
     /** Output format: `pretty` (default) or `json`. */
     format?: OutputFormat;
-    /** Opt into per-module lazy function loading; omitted keeps the eager registry. */
+    /** Opt into per-module lazy function loading; also enabled by LUNORA_LAZY_FUNCTIONS. */
     lazyFunctions?: boolean;
     logger: Logger;
 
@@ -94,7 +95,7 @@ const runCodegenCommand = (options: CodegenCommandOptions): CodegenCommandResult
 
     const result = runCodegen({
         apiSpec: options.apiSpec,
-        lazyFunctions: options.lazyFunctions,
+        lazyFunctions: resolveLazyFunctions(options.lazyFunctions),
         projectRoot,
         target,
         ...wranglerCodegenInputs(projectRoot),
@@ -245,7 +246,7 @@ const execute: CommandHandler<CodegenOptions> = defineHandler<CodegenOptions, Co
         apiSpec: parseApiSpec(options.apiSpec),
         cwd,
         format,
-        lazyFunctions: options.lazyFunctions,
+        lazyFunctions: resolveLazyFunctions(options.lazyFunctions),
         logger,
         strictAdvisories: options.strictAdvisories,
         target: options.target,

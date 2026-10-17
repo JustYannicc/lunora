@@ -546,6 +546,13 @@ const emitFunctions = (options: EmitFunctionsOptions): string => {
     }
     const lifecycleHooks = renderLifecycleManifest(functions);
     const dispatchLookup = lazyFunctions ? "await loadFunction(functionPath)" : renderFunctionTableLookup("LUNORA_FUNCTIONS");
+    const dispatchPreflight = lazyFunctions
+        ? `    if (${renderFunctionTableLookup("LUNORA_FUNCTION_MANIFEST")}?.visibility === "internal") {
+        throw new LunoraError("FUNCTION_NOT_FOUND", \`function not registered: \${functionPath}\`);
+    }
+
+`
+        : "";
 
     // Replication-shape + custom-mutator registries (local-first sync engine).
     // Both are gated on non-empty so a project without shapes/mutators emits a
@@ -752,7 +759,7 @@ export const LUNORA_LIFECYCLE_HOOKS: {
  * functions are treated as not-found so their existence never leaks to clients.
  */
 export const dispatchLunoraFunction = async (functionPath: string, context: unknown, args: Record<string, unknown>): Promise<unknown> => {
-    const registered = ${dispatchLookup};
+${dispatchPreflight}    const registered = ${dispatchLookup};
 
     if (!registered || registered.visibility === "internal") {
         throw new LunoraError("FUNCTION_NOT_FOUND", \`function not registered: \${functionPath}\`);
@@ -848,5 +855,4 @@ const emitLazyFunctionModules = (options: EmitFunctionsOptions): Record<string, 
     return output;
 };
 
-export { emitLazyFunctionModules };
-export default emitFunctions;
+export { emitFunctions, emitLazyFunctionModules };

@@ -16,6 +16,7 @@ import { detectPackageManager, execArgsFor } from "../../util/detect-package-man
 import { EXIT_CODE } from "../../util/exit-code";
 import type { HealthFetch } from "../../util/health-probe";
 import { probeHealth } from "../../util/health-probe";
+import resolveLazyFunctions from "../../util/lazy-functions";
 import type { Logger } from "../../util/logger";
 import type { OutputFormat } from "../../util/output-format";
 import reportPlatformDiagnostics from "../../util/platform-diagnostics";
@@ -238,7 +239,7 @@ const runVerifyCommand = async (options: VerifyCommandOptions): Promise<VerifyCo
 
         const codegen = runCodegen({
             apiSpec: options.apiSpec,
-            lazyFunctions: options.lazyFunctions,
+            lazyFunctions: resolveLazyFunctions(options.lazyFunctions),
             dryRun: true,
             projectRoot: cwd,
             target: resolvedTarget.target,
@@ -300,7 +301,7 @@ const execute: CommandHandler<VerifyOptions> = defineHandler<VerifyOptions, Veri
     const result = await runVerifyCommand({
         allowSchemaDrift: options.allowSchemaDrift === true,
         apiSpec: parseApiSpec(options.apiSpec),
-        lazyFunctions: options.lazyFunctions,
+        lazyFunctions: resolveLazyFunctions(options.lazyFunctions),
         cwd,
         env: options.env,
         format,

@@ -68,17 +68,26 @@ describe("lazy function registry", () => {
         expect(() => emitFunctions({ functions: [makeFunction("premium", { x402: {} })], lazyFunctions: true })).toThrow(/literal `.x402\(\{ price \}\)`/u);
     });
 
+    it("rejects code-bearing file paths before emitting lazy import specifiers", () => {
+        expect.assertions(1);
+
+        const injectedPath = 'posts"; throw new Error("unexpected import") //';
+
+        expect(() => emitFunctions({ functions: [makeFunction("list", { filePath: injectedPath })], lazyFunctions: true })).toThrow(/unsafe file path/u);
+    });
+
     it("keeps eager output unchanged unless lazy mode is selected", () => {
-        expect.assertions(2);
+        expect.assertions(3);
 
         const emitted = emitFunctions({ functions: [makeFunction("list")] });
 
         expect(emitted).toContain('import * as lunora_posts_0 from "../posts.js";');
+        expect(emitted).toMatch(/const registered = LUNORA_FUNCTIONS\[functionPath\];/u);
         expect(emitted).not.toContain("LUNORA_FUNCTION_MANIFEST");
     });
 
     it("loads real handlers once, installs compiled validators, and retries a failed module import", async () => {
-        expect.assertions(22);
+        expect.assertions(24);
 
         const projectRoot = mkdtempSync(join(tmpdir(), "lunora-lazy-registry-"));
         const generatedDirectory = join(projectRoot, "_generated");
@@ -87,14 +96,20 @@ describe("lazy function registry", () => {
         const stateName = `__lunoraLazyRegistry${randomUUID()}`;
         const definition = makeFunction("premium", { args: { name: { kind: "string" } } });
         const sameModule = makeFunction("sameModule", { args: {}, filePath: "mutators" });
+        const internalDefinition = makeFunction("hidden", { filePath: "private", visibility: "internal" });
         const mutator: MutatorIR = { args: {}, exportName: "default", filePath: "mutators", line: 1, returnType: "string" };
-        const options = { functions: [definition, makeFunction("sibling", { args: {} }), sameModule], lazyFunctions: true, mutators: [mutator] };
+        const options = {
+            functions: [definition, makeFunction("sibling", { args: {} }), sameModule, internalDefinition],
+            lazyFunctions: true,
+            mutators: [mutator],
+        };
         const registrySource = emitFunctions(options);
         const lazyModules = emitLazyFunctionModules(options);
         const shimSource = lazyModules["fn/lunora_posts_0.ts"];
+        const internalShimSource = lazyModules["fn/lunora_private_2.ts"];
 
         try {
-            if (shimSource === undefined) {
+            if (shimSource === undefined || internalShimSource === undefined) {
                 throw new Error("Missing generated lazy function shim: fn/lunora_posts_0.ts");
             }
 
@@ -104,7 +119,10 @@ describe("lazy function registry", () => {
             mkdirSync(join(packageDirectory, "values"), { recursive: true });
             writeFileSync(join(projectRoot, "package.json"), JSON.stringify({ type: "module" }));
             writeFileSync(join(packageDirectory, "server", "package.json"), JSON.stringify({ exports: "./index.js", type: "module" }));
-            writeFileSync(join(packageDirectory, "server", "index.js"), "export class LunoraError extends Error {}\n");
+            writeFileSync(
+                join(packageDirectory, "server", "index.js"),
+                "export class LunoraError extends Error { constructor(code, message) { super(message); this.code = code; } }\n",
+            );
             writeFileSync(join(packageDirectory, "errors", "package.json"), JSON.stringify({ exports: "./index.js", type: "module" }));
             writeFileSync(join(packageDirectory, "errors", "index.js"), "export class LunoraError extends Error {}\n");
             writeFileSync(join(packageDirectory, "values", "package.json"), JSON.stringify({ exports: "./index.js", type: "module" }));
@@ -140,15 +158,26 @@ export default {
 };
 export const sameModule = { args: {}, kind: "query", handler() { return "same module"; } };\n`,
             );
+            writeFileSync(
+                join(projectRoot, "private.js"),
+                `const state = globalThis[${JSON.stringify(stateName)}];
+state.privateModuleEvaluations += 1;
+throw new Error("internal module must not be loaded by external dispatch");
+export const hidden = { args: {}, kind: "query", handler() { return "hidden"; } };\n`,
+            );
 
             const registryFile = join(generatedDirectory, "functions.mjs");
             const shimFile = join(shimDirectory, "lunora_posts_0.js");
+            const internalShimFile = join(shimDirectory, "lunora_private_2.js");
             const shimPayloadFile = join(projectRoot, "lazy-shim.js");
+            const internalShimPayloadFile = join(projectRoot, "private-lazy-shim.js");
             const registryModule = await transform(registrySource, { format: "esm", loader: "ts", target: "node22" });
             const shimModule = await transform(shimSource, { format: "esm", loader: "ts", target: "node22" });
+            const internalShimModule = await transform(internalShimSource, { format: "esm", loader: "ts", target: "node22" });
 
             writeFileSync(registryFile, registryModule.code);
             writeFileSync(shimPayloadFile, shimModule.code);
+            writeFileSync(internalShimPayloadFile, internalShimModule.code);
 
             const runnerFile = join(projectRoot, "run-lazy-registry.mjs");
             writeFileSync(
@@ -158,13 +187,21 @@ import { pathToFileURL } from "node:url";
 
 const [configText] = process.argv.slice(2);
 const config = JSON.parse(configText);
-const state = { evaluations: 0, handlerCalls: 0, parseCalls: 0, mutatorCalls: 0, mutatorModuleEvaluations: 0, release: undefined, onStart: undefined };
+const state = { evaluations: 0, handlerCalls: 0, parseCalls: 0, mutatorCalls: 0, mutatorModuleEvaluations: 0, privateModuleEvaluations: 0, release: undefined, onStart: undefined };
 let signalStart;
 const moduleStarted = new Promise((resolve) => { signalStart = resolve; });
 state.onStart = signalStart;
 globalThis[config.stateName] = state;
 
 const registry = await import(pathToFileURL(config.registryFile));
+copyFileSync(config.internalShimPayloadFile, config.internalShimFile);
+let internalDispatchCode;
+try {
+  await registry.dispatchLunoraFunction("private:hidden", {}, {});
+} catch (error) {
+  internalDispatchCode = error.code;
+}
+const internalModuleEvaluations = state.privateModuleEvaluations;
 const coldEntry = registry.getLoadedFunction("posts:premium");
 const failed = await Promise.allSettled([registry.loadFunction("posts:premium"), registry.loadFunction("posts:premium")]);
 copyFileSync(config.shimPayloadFile, config.shimFile);
@@ -196,6 +233,8 @@ process.stdout.write(JSON.stringify({
   failedLoadsRejected: failed.every((result) => result.status === "rejected"),
   handlerCalls: state.handlerCalls,
   handlerResult,
+  internalDispatchCode,
+  internalModuleEvaluations,
   mutatorCalls: state.mutatorCalls,
   mutatorDirect: mutator === handlers["mutators:default"],
   mutatorInManifest: Object.hasOwn(registry[["LUNORA", "FUNCTION", "MANIFEST"].join("_")], ["mutators", "default"].join(":")),
@@ -217,6 +256,8 @@ Reflect.deleteProperty(globalThis, config.stateName);
                         registryFile,
                         shimFile,
                         shimPayloadFile,
+                        internalShimFile,
+                        internalShimPayloadFile,
                         stateName,
                         valuesFile: join(packageDirectory, "values", "index.js"),
                     }),
@@ -231,6 +272,8 @@ Reflect.deleteProperty(globalThis, config.stateName);
                 finalEvaluations: number;
                 handlerCalls: number;
                 handlerResult: string;
+                internalDispatchCode: string | undefined;
+                internalModuleEvaluations: number;
                 mutatorCalls: number;
                 mutatorDirect: boolean;
                 mutatorInManifest: boolean;
@@ -253,9 +296,11 @@ Reflect.deleteProperty(globalThis, config.stateName);
             expect(result.siblingResult).toBe("sibling");
             expect(result.handlerCalls).toBe(1);
             expect(result.handlerResult).toBe("Ada");
+            expect(result.internalModuleEvaluations).toBe(0);
+            expect(result.internalDispatchCode).toBe("FUNCTION_NOT_FOUND");
             expect(result.parsed).toEqual({ name: "Ada" });
             expect(result.parseCalls).toBe(0);
-            expect(Object.keys(lazyModules)).toEqual(["fn/lunora_posts_0.ts"]);
+            expect(Object.keys(lazyModules)).toEqual(["fn/lunora_posts_0.ts", "fn/lunora_private_2.ts"]);
             expect(registrySource).toContain('import * as lunora_mutators_1 from "../mutators.js";');
             expect(registrySource).toContain('"mutators:default": lunora_mutators_1.default as unknown as RegisteredLunoraFunction');
             expect(registrySource).toContain('"mutators:sameModule": lunora_mutators_1.sameModule as unknown as RegisteredLunoraFunction');

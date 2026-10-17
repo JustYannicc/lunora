@@ -4,6 +4,7 @@ import type { ApiSpec } from "../../util/api-spec";
 import { parseApiSpec } from "../../util/api-spec";
 import type { CommandHandler } from "../../util/command";
 import { defineHandler } from "../../util/command";
+import resolveLazyFunctions from "../../util/lazy-functions";
 import type { Logger } from "../../util/logger";
 import type { OutputFormat } from "../../util/output-format";
 import type { Spawner } from "../../util/spawn";
@@ -116,7 +117,7 @@ const runBuildCommand = async (options: BuildCommandOptions): Promise<BuildComma
     const result = await runDeployCommand({
         allowSchemaDrift: options.allowSchemaDrift,
         apiSpec: options.apiSpec,
-        lazyFunctions: options.lazyFunctions,
+        lazyFunctions: resolveLazyFunctions(options.lazyFunctions),
         // So the drift gate names `build` and offers only the flags `build`
         // registers — it does NOT accept `--update-schema-baseline`, because it
         // publishes nothing and re-blessing a baseline for an artifact that never
@@ -172,7 +173,7 @@ const execute: CommandHandler<BuildOptions> = defineHandler<BuildOptions, BuildC
     const result = await runBuildCommand({
         allowSchemaDrift: options.allowSchemaDrift === true,
         apiSpec: parseApiSpec(options.apiSpec),
-        lazyFunctions: options.lazyFunctions,
+        lazyFunctions: resolveLazyFunctions(options.lazyFunctions),
         cwd,
         emitBindings: options.emitBindings,
         format,

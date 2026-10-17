@@ -39,6 +39,7 @@ import { detectPackageManager, toolchainExecArgs } from "../../util/detect-packa
 import { checkDurableObjectBudget } from "../../util/durable-object-budget";
 import type { ExitCode } from "../../util/exit-code";
 import { EXIT_CODE } from "../../util/exit-code";
+import resolveLazyFunctions from "../../util/lazy-functions";
 import type { Logger } from "../../util/logger";
 import reportPlatformDiagnostics from "../../util/platform-diagnostics";
 import { runPostCodegenHook } from "../../util/post-codegen-hook";
@@ -568,7 +569,7 @@ const runPreDeployPipeline = async (options: DeployCommandOptions, command: PreD
             interactive,
             options.logger,
             options.apiSpec,
-            options.lazyFunctions,
+            resolveLazyFunctions(options.lazyFunctions),
             target,
             options.spawner,
             options.format === "json",
@@ -965,7 +966,7 @@ const execute: CommandHandler<DeployOptions> = defineHandler<DeployOptions, Depl
     const result = await runDeployCommand({
         allowSchemaDrift: options.allowSchemaDrift === true,
         apiSpec: parseApiSpec(options.apiSpec),
-        lazyFunctions: options.lazyFunctions,
+        lazyFunctions: resolveLazyFunctions(options.lazyFunctions),
         cwd,
         dryRun: options.dryRun === true,
         env: options.env,

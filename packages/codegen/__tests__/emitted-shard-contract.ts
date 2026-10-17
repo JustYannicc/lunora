@@ -140,7 +140,7 @@ class EmittedShardContract extends ShardDO {
             return nested;
         }
 
-        const result = await this.runInTransaction(work);
+        const result = await this.runInTransaction(work, { independent: true });
 
         settleDeletes(true);
         await settleSchedules(true);
