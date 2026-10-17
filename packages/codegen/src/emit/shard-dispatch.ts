@@ -56,6 +56,12 @@ const dispatchRun = async (
     runDepth += 1;
 
     try {
+        const loaded = __LOAD_FUNCTION__;
+
+        if (!loaded) {
+            throw new Error(\`unknown function: \${functionPath}\`);
+        }
+
         // A mutation composed from an action (or an http action) is the shape the
         // docs prescribe for atomicity — "do the transactional reads and writes in
         // a mutation and call it from the action". It only holds if the composed
@@ -65,17 +71,17 @@ const dispatchRun = async (
         // inside a mutation rides the enclosing span instead of opening a second
         // one (see \`runMutationTransaction\`).
         if (runTransactional) {
-            return await runTransactional(async () => registered.handler(ctx, args));
+            return await runTransactional(async () => loaded.handler(ctx, args));
         }
 
-        return await registered.handler(ctx, args);
+        return await loaded.handler(ctx, args);
     } finally {
         runDepth -= 1;
     }
 };`;
 
 const DISPATCH_METHODS_TEMPLATE = `        public override async handleRpc(functionPath: string, args: Record<string, unknown>, headroom?: TransactionHeadroomTracker, scope?: QueryReadScope, bookmarks?: DispatchBookmark): Promise<unknown> {
-            const registered = LUNORA_FUNCTIONS[functionPath];
+__PREPARE_FUNCTION__            const registered = LUNORA_FUNCTIONS[functionPath];
 
             // Internal functions are reachable server-side only: via \`ctx.run*\`
             // composition, or a trusted system dispatch (scheduler/cron, marked by
@@ -254,7 +260,7 @@ __COMMITTED_CATCH__            } finally {
         }`;
 
 const SUBSCRIPTION_METHODS = `        protected override async executeSubscription(functionPath: string, args: Record<string, unknown>, identity?: SubscriptionIdentity): Promise<{ ranges?: Map<string, KeyRange[]>; result: unknown; tables: Set<string> } | null> {
-            const registered = LUNORA_FUNCTIONS[functionPath];
+__PREPARE_FUNCTION__            const registered = LUNORA_FUNCTIONS[functionPath];
 
             if (!registered || registered.kind !== "query" || registered.visibility === "internal") {
                 return null;
@@ -311,6 +317,10 @@ const COMMITTED_CATCH = `            } catch (error) {
 `;
 
 /** The dispatch methods for a shard: the committed-marker in the post-commit step only for a rooms app. */
-const dispatchMethods = (hasRooms: boolean): string => DISPATCH_METHODS_TEMPLATE.replace("__COMMITTED_CATCH__", hasRooms ? COMMITTED_CATCH : "");
+const dispatchMethods = (hasRooms: boolean, lazyFunctions = false): string =>
+    DISPATCH_METHODS_TEMPLATE.replace("__COMMITTED_CATCH__", hasRooms ? COMMITTED_CATCH : "").replace(
+        "__PREPARE_FUNCTION__",
+        lazyFunctions ? "            const preparation = this.prepareFunction(functionPath);\n            if (preparation !== undefined) await preparation;\n" : "",
+    );
 
 export { DISPATCH_RUN_SOURCE, dispatchMethods, SUBSCRIPTION_METHODS };

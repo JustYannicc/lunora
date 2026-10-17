@@ -11,7 +11,7 @@ import { collectErasures, reportErasures } from "../erased-returns";
 import type { LifecycleMoment } from "./classify-procedure-call";
 import { classifyProcedureCall } from "./classify-procedure-call";
 import { argsFromBuilderChain, outputFromBuilderChain, returnTypeFromBuilderCall, returnTypeFromCall } from "./internal/builder-chain";
-import { argsFromCall, exposeFromBuilderChain } from "./internal/expose";
+import { argsFromCall, exposeFromBuilderChain, x402FromBuilderChain } from "./internal/expose";
 import { exportCallsOfDeclaration, resolveExpressionToCall } from "./internal/resolve-call";
 
 interface DiscoveredFunction {
@@ -22,6 +22,7 @@ interface DiscoveredFunction {
     channel?: { kind: "room"; name: string };
     /** Set when the builder chain includes `.expose({ rest: true })` (plan 167). */
     expose?: { cache?: ExposeCacheIR; rest?: boolean };
+    x402?: { price?: number | string };
     kind: string;
     lifecycle?: LifecycleMoment;
     /** The `.output(validator)` declaration, when the chain has one. */
@@ -79,6 +80,7 @@ const discoverFromCall = (call: CallExpression): DiscoveredFunction | undefined 
 
     if (receiver) {
         const expose = exposeFromBuilderChain(receiver);
+        const x402 = x402FromBuilderChain(receiver);
         // Both types are computed, but `api.ts` carries only one of them — see
         // `declaredOutputWins`. An erasure in the other reaches nothing, so it is
         // not reported: the handler behind a declared output, or the inert
@@ -92,6 +94,7 @@ const discoverFromCall = (call: CallExpression): DiscoveredFunction | undefined 
         return {
             args: argsFromBuilderChain(receiver),
             ...(expose ? { expose } : {}),
+            ...(x402 ? { x402 } : {}),
             ...(classified.adminOnly ? { adminOnly: true as const } : {}),
             kind: classified.kind,
             ...(output.value ? { output: output.value } : {}),
@@ -133,6 +136,7 @@ const functionIrFromCall = (call: CallExpression, exportName: string, relativePa
         visibility: discovered.visibility,
         ...(discovered.adminOnly ? { adminOnly: true as const } : {}),
         ...(discovered.expose ? { expose: discovered.expose } : {}),
+        ...(discovered.x402 ? { x402: discovered.x402 } : {}),
         ...(discovered.lifecycle ? { lifecycle: discovered.lifecycle } : {}),
         ...(discovered.channel ? { channel: discovered.channel } : {}),
     };

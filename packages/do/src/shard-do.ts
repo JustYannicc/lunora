@@ -4992,6 +4992,10 @@ abstract class ShardDO {
      * `LUNORA_FUNCTIONS` lookup, which is what production dispatch uses.
      */
     // eslint-disable-next-line class-methods-use-this -- base-class override hook: the codegen subclass overrides this to consult `LUNORA_FUNCTIONS`
+    /** Prepare a codegen-lazy procedure before sync metadata gates or dispatch. */
+    // eslint-disable-next-line class-methods-use-this -- the generated subclass overrides this for lazy function registries
+    protected prepareFunction(_functionPath: string): void | Promise<void> {}
+
     protected isMutationFunction(_functionPath: string): boolean {
         return true;
     }
@@ -7573,7 +7577,14 @@ abstract class ShardDO {
             // `ArrayBuffer`/`bigint` values. `payload.args` stays in wire form for
             // the request log/metrics below (JSON-safe — a raw `bigint` there
             // would throw `JSON.stringify`).
-            const runHandler = (): Promise<unknown> => {
+            const runHandler = async (): Promise<unknown> => {
+                const preparation = this.prepareFunction(payload.functionPath);
+
+                if (preparation !== undefined) {
+                    await preparation;
+                    this.restoreRequestScope(requestScope);
+                }
+
                 const handlerArgs = decodeWire(payload.args ?? {}) as Record<string, unknown>;
 
                 // A registered `query` goes through the reactive cache when one
@@ -11375,6 +11386,26 @@ abstract class ShardDO {
         // captured BEFORE the first await and passed by value, because the
         // iterator is pulled long after this frame was dispatched.
         const attachment = this.readAttachment(ws);
+
+        const preparation = this.prepareFunction(functionPath);
+
+        if (preparation !== undefined) {
+            try {
+                await preparation;
+            } catch (error: unknown) {
+                const { body, redacted } = toErrorBody(error, { fallbackCode: "INTERNAL_SERVER_ERROR", redactedMessage: "internal error" });
+
+                if (redacted) {
+                    // eslint-disable-next-line no-console -- server-side diagnostic for a lazy stream module load failure
+                    console.error("[@lunora/do] stream preparation failed:", error);
+                }
+
+                trySendFrame(ws, JSON.stringify({ error: { code: body.code, message: body.message }, id, type: "error" }));
+
+                return;
+            }
+        }
+
         const iterable = this.executeStream(functionPath, args, socketIdentity(attachment));
 
         if (!iterable) {
