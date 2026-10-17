@@ -1,7 +1,7 @@
 import type { ShardDOState, SubscriptionOutcome } from "@lunora/do";
 import { ShardDO } from "@lunora/do";
-import type { SqlExec } from "@lunora/shard-engine";
-import { runShardMigrations } from "@lunora/shard-engine";
+import type { SocketAttachment, SqlExec } from "@lunora/shard-engine";
+import { migrateShapePokeCursor, runShardMigrations, writeGlobalShapeSnapshot, writeShapePokeCursor } from "@lunora/shard-engine";
 import { DurableObject } from "cloudflare:workers";
 
 const DELIVERY_TEST_SECRET = "delivery-authorization-workerd-fixture";
@@ -24,6 +24,7 @@ interface DeliverySnapshot {
 // Import the package export so this regression runs the built ShardDO shipped to users.
 class AuthorizedShard extends ShardDO {
     public attempts = 0;
+    public shapeReads = 0;
     public parkActions = false;
     private readonly mutations = new Set(["fixture:write"]);
     private readonly subscriptionResult = { value: "private" };
@@ -70,11 +71,39 @@ class AuthorizedShard extends ShardDO {
             sql.exec("UPDATE delivery_fixture SET runs = runs + 1");
             const result = { runs: sql.exec<{ runs: number }>("SELECT runs FROM delivery_fixture").toArray()[0]?.runs };
             this.commitMutationBookkeeping(result);
+            this.recordChangedTable("delivery_fixture");
             if (args.fail) {
                 throw new Error("fixture rollback after receipt");
             }
             return result;
         });
+    }
+
+    public retainShapes(socket: WebSocket): void {
+        const { connectionId } = socket.deserializeAttachment() as SocketAttachment;
+        if (connectionId === undefined) {
+            throw new Error("Accepted socket has no connection id");
+        }
+        // Model attachments persisted by the deployment before delivery authorization was enabled.
+        for (const name of ["local", "global"]) {
+            if (this.shapeSubscribe(socket, name, { name }) !== "ok") {
+                throw new Error("Could not retain shape registration");
+            }
+        }
+        const sql = this.sql as SqlExec;
+        migrateShapePokeCursor(sql);
+        writeShapePokeCursor(sql, connectionId, "local", 7);
+        writeGlobalShapeSnapshot(sql, connectionId, "global", new Map([["old-row", '{"private":true}']]));
+    }
+
+    protected override resolveShape(name: string): { global?: boolean; table: string } {
+        this.shapeReads += 1;
+        return { global: name === "global", table: "delivery_fixture" };
+    }
+
+    protected override readGlobalShapeRows(): Promise<{ doc: Record<string, unknown>; id: string }[]> {
+        this.shapeReads += 1;
+        return Promise.resolve([]);
     }
 
     protected override isMutationFunction(functionPath: string): boolean {
@@ -126,6 +155,34 @@ class DeliveryAuthorizationTestDO extends DurableObject {
 
     public releaseAction(epoch: number): void {
         this.shard.action(epoch).released.resolve(undefined);
+    }
+
+    public async retainShapes(): Promise<void> {
+        for (const socket of this.ctx.getWebSockets()) {
+            this.shard.retainShapes(socket);
+        }
+        await this.ctx.storage.setAlarm(Date.now() + 60_000);
+    }
+
+    public async shapeSnapshot(): Promise<{
+        alarm: number | null;
+        cursors: { sub_id: string }[];
+        shapeIds: string[];
+        shapeReads: number;
+        snapshots: { sub_id: string }[];
+    }> {
+        const { sql } = this.ctx.storage;
+        return {
+            alarm: await this.ctx.storage.getAlarm(),
+            shapeReads: this.shard.shapeReads,
+            shapeIds: this.ctx.getWebSockets().flatMap((socket) => Object.keys((socket.deserializeAttachment() as SocketAttachment).shapes ?? {})),
+            cursors: sql.exec<{ sub_id: string }>("SELECT sub_id FROM __shape_poke_cursor").toArray(),
+            snapshots: sql.exec<{ sub_id: string }>("SELECT sub_id FROM __global_shape_snapshot").toArray(),
+        };
+    }
+
+    public override alarm(): Promise<void> {
+        return this.shard.alarm();
     }
 
     public snapshot(): DeliverySnapshot {

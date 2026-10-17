@@ -1,5 +1,5 @@
 import { installDeliveryFence } from "@lunora/do";
-import { env, evictDurableObject } from "cloudflare:test";
+import { env, evictDurableObject, runDurableObjectAlarm } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 
 import type { DeliveryAuthorizationTestDO } from "./delivery-authorization-worker";
@@ -52,7 +52,81 @@ const nextFrame = (socket: WebSocket, type: string): Promise<Frame> =>
         socket.addEventListener("message", listener);
     });
 
+const refreshRetainedShapes = async (stub: Stub): Promise<void> => {
+    await expect(rpc(stub, "shape-refresh")).resolves.toMatchObject({ status: 200 });
+};
+const pollRetainedShapes = async (stub: Stub): Promise<void> => {
+    await expect(runDurableObjectAlarm(stub)).resolves.toBe(true);
+};
+
 describe("delivery authorization on native workerd", () => {
+    it.each([
+        { path: "refresh", run: refreshRetainedShapes },
+        { path: "alarm", run: pollRetainedShapes },
+    ])("removes retained shapes through $path after native socket hibernation", async ({ path, run }) => {
+        expect.hasAssertions();
+
+        const stub = env.AUTHORIZED.get(env.AUTHORIZED.idFromName(`retained-shapes-${path}`));
+        const upgrade = await stub.fetch("https://shard.internal/ws", { headers: { Upgrade: "websocket", "x-lunora-userid": "alice" } });
+        const socket = requireSocket(upgrade.webSocket);
+        socket.accept();
+        try {
+            const seeded = nextFrame(socket, "data");
+            const subscribe = JSON.stringify({ type: "subscribe", id: "view", query: { functionPath: "fixture:read", args: {} } });
+            socket.send(subscribe);
+
+            await expect(seeded).resolves.toMatchObject({ id: "view", data: { value: "private" } });
+
+            await stub.retainShapes();
+
+            await expect(stub.shapeSnapshot()).resolves.toMatchObject({
+                shapeIds: ["local", "global"],
+                cursors: [{ sub_id: "local" }],
+                snapshots: [{ sub_id: "global" }],
+            });
+
+            const before = await stub.snapshot();
+            const received: Frame[] = [];
+            const rejected = Promise.withResolvers<undefined>();
+            socket.addEventListener("message", (event: MessageEvent) => {
+                received.push(JSON.parse(String(event.data)) as Frame);
+                if (received.filter((frame) => frame.type === "error").length === 2) {
+                    rejected.resolve(undefined);
+                }
+            });
+            await evictDurableObject(stub, { webSockets: "hibernate" });
+            await run(stub);
+
+            await expect(stub.shapeSnapshot()).resolves.toMatchObject({ shapeIds: [], cursors: [], snapshots: [], shapeReads: 0 });
+
+            await rejected.promise;
+
+            expect(received.filter((frame) => frame.type === "error")).toEqual([
+                expect.objectContaining({ id: "local", error: { code: "NOT_IMPLEMENTED", message: expect.any(String) } }),
+                expect.objectContaining({ id: "global", error: { code: "NOT_IMPLEMENTED", message: expect.any(String) } }),
+            ]);
+
+            const after = await stub.snapshot();
+
+            expect(after.boot).not.toBe(before.boot);
+            expect(after.attachments[0]?.subscriptionIds).toEqual(["view"]);
+
+            // Consume a pre-existing alarm on the refresh path; cleanup must not re-arm it.
+            await runDurableObjectAlarm(stub);
+            const cleaned = await stub.shapeSnapshot();
+
+            expect(cleaned.alarm).toBeNull();
+
+            const reseeded = nextFrame(socket, "data");
+            socket.send(subscribe);
+
+            await expect(reseeded).resolves.toMatchObject({ id: "view", data: { value: "private" } });
+            expect(received.some((frame) => frame.type.startsWith("poke"))).toBe(false);
+        } finally {
+            socket.close();
+        }
+    });
+
     it("fences unmarked ungated result bytes after authority persistence fails", async () => {
         expect.hasAssertions();
 
