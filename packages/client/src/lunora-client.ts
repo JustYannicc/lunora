@@ -187,6 +187,7 @@ import type {
     QueryCacheAdapter,
     ReconnectOptions,
     ReturnOf,
+    RoomRef,
     ScheduleRecord,
     SchedulerStatus,
     ServerDataMessage,
@@ -446,6 +447,9 @@ type ReplayIdentityVerdict = { credential: ReplayCredential; verdict: "match" } 
  */
 const CLIENT_CAPABILITIES = [PAGE_DELTA_CAPABILITY] as const;
 
+/** Room sends held before the socket opens; past this a `send` is refused rather than queued without bound. */
+const ROOM_PENDING_LIMIT = 100;
+
 /**
  * @internal
  */
@@ -488,6 +492,8 @@ class LunoraClient {
     private readonly clientQueryStore: ClientQueryStore;
 
     private wsToken: string | undefined | WsTokenProvider;
+    /** Bumped on every `setWsToken` change: a provider request started under an older value is superseded. */
+    private wsTokenGeneration = 0;
 
     /** Better-auth base path (trailing slash stripped) for the `get-session` lookup. */
     private readonly authBasePath: string;
@@ -820,6 +826,12 @@ class LunoraClient {
 
     /** Subscribers to aggregate connection-status changes (see `onConnectionStatus`). */
     private readonly statusListeners = new Listeners<ConnectionStatus>();
+
+    /** Room handles' held-send flushers, keyed by the shard connection they send on. */
+    private readonly roomFlushes = new Map<string, Set<() => void>>();
+
+    /** Room handles' pending-send resets, run when the identity changes so queued sends never cross identities. */
+    private readonly roomIdentityResets = new Set<() => void>();
 
     /** Subscribers notified when the server drops a socket for an expired token (see `onTokenExpired`). */
     private readonly tokenExpiredListeners = new Listeners();
@@ -1627,6 +1639,10 @@ class LunoraClient {
         }
 
         this.wsToken = token;
+        this.wsTokenGeneration += 1;
+
+        // A send held under the previous credential must not reach the identity that replaced it.
+        this.resetRoomSends();
 
         // Close every open/connecting socket so the reconnect uses the new
         // token. Don't tear down the connection record itself — pending
@@ -1836,6 +1852,10 @@ class LunoraClient {
      * whisper rate budget. The sender never receives its own whisper. Omitting
      * `data` delivers JSON `null` to receivers (not `undefined`).
      *
+     * Returns `true` when the frame was handed to an open socket, `false` when it
+     * was dropped, so a caller that must not lose a message (one sent right after
+     * connecting, before the socket opens) can detect the drop and retry.
+     *
      * That best-effort drop is for a socket that is momentarily down. A
      * `crossTabSync` FOLLOWER tab has no socket and never will (see
      * {@link LunoraClientOptions.crossTabSync}), so every whisper from it would
@@ -1845,26 +1865,133 @@ class LunoraClient {
      * way, for the same reason: there is no ack frame to report it on. See
      * {@link whisperSubscribe} for the security model.
      */
-    public whisper(topic: string, data?: unknown, options: { shardKey?: string } = {}): void {
+    public whisper(topic: string, data?: unknown, options: { shardKey?: string } = {}): boolean {
         this.assertLeaderOwnedSurface("whisper");
 
-        this.ensureSocket(options.shardKey);
+        // Wire-encode before send so `bigint`/bytes payloads survive (raw
+        // `JSON.stringify` would throw on a bigint). The shard relays the
+        // encoded value verbatim and the receiving client `decodeWire`s it —
+        // `encodeWire` is identity for JSON-safe data, so this stays
+        // backward-compatible with older shards/clients. Omitted `data`
+        // becomes an explicit `null` (the documented receiver contract).
+        // eslint-disable-next-line unicorn/no-null -- an omitted whisper body is delivered as an explicit JSON `null`, never `undefined`
+        return this.sendEncodedWhisper(topic, encodeCallArgs(data ?? null, `whisper data for topic '${topic}'`), options);
+    }
 
-        const conn = this.getConnection(options.shardKey);
+    /**
+     * Join a `defineRoom` room from the client: subscribe to the room's server
+     * dispatches and send typed messages to it. A thin, typed wrapper over
+     * {@link whisperSubscribe} / {@link whisper} on the room's topic
+     * (`room:<name>`, the topic the shard resolves to the room's handler).
+     *
+     * The room is passed as its generated reference, so `onMessage` and `send` are
+     * typed from the room's own message validator:
+     *
+     * ```ts
+     * import { rooms } from "./_generated/api";
+     *
+     * const chat = client.connectRoom(rooms.chat, {
+     *     onMessage: (message) => append(message.text),
+     * });
+     * chat.send({ text: "hello" });
+     * chat.close();
+     * ```
+     *
+     * `onMessage` receives what the room's server handler broadcasts (via its
+     * `socket.broadcast`), NOT the sender's own raw send — the handler is
+     * authoritative. Returns a handle with `send` and `close`.
+     */
+    public connectRoom<Message>(
+        room: RoomRef<Message>,
+        handlers: { onMessage: (message: Message) => void },
+        options: { shardKey?: string } = {},
+    ): { close: () => void; send: (message: Message) => boolean } {
+        const topic = `room:${room.name}`;
+        const unsubscribe = this.whisperSubscribe(
+            topic,
+            (data) => {
+                handlers.onMessage(data as Message);
+            },
+            options,
+        );
+        let closed = false;
+        // Sends made before the socket is open are held here and flushed, in order, when
+        // the connection reports connected. Bounded: past the cap a send is refused.
+        // Held as encoded snapshots, taken at send time: a later mutation of the caller's object
+        // cannot change what goes out, and an unencodable payload was refused to the caller already.
+        const pending: unknown[] = [];
+        const reset = (): void => {
+            pending.length = 0;
+        };
+        const flush = (): void => {
+            // Nothing is sent until the socket is admitted: confirmed, and rejoined.
+            while (pending.length > 0 && this.roomSendsAdmitted(options.shardKey)) {
+                if (!this.sendEncodedWhisper(topic, pending[0], options)) {
+                    return;
+                }
 
-        if (conn) {
-            // Wire-encode before send so `bigint`/bytes payloads survive (raw
-            // `JSON.stringify` would throw on a bigint). The shard relays the
-            // encoded value verbatim and the receiving client `decodeWire`s it —
-            // `encodeWire` is identity for JSON-safe data, so this stays
-            // backward-compatible with older shards/clients. Omitted `data`
-            // becomes an explicit `null` (the documented receiver contract).
-            // eslint-disable-next-line unicorn/no-null -- an omitted whisper body is delivered as an explicit JSON `null`, never `undefined`
-            sendOn(conn, { data: encodeCallArgs(data ?? null, `whisper data for topic '${topic}'`), topic, type: "whisper" });
-        }
+                pending.shift();
+            }
+        };
+        // Flushed from the shard's own open handler, which runs after the room is rejoined: a
+        // send can never reach the server ahead of its `whisper_subscribe`. The aggregate
+        // connection status is not used, since it can change before that rejoin is sent.
+        const flushKey = connectionKey(options.shardKey);
+        const flushers = this.roomFlushes.get(flushKey) ?? new Set<() => void>();
 
-        // A send-only whisper may be all that opened this shard: let it idle out.
-        this.releaseIdleShard(options.shardKey);
+        flushers.add(flush);
+        this.roomFlushes.set(flushKey, flushers);
+        // A change of identity drops what was queued under the previous one.
+        this.roomIdentityResets.add(reset);
+
+        return {
+            close: () => {
+                closed = true;
+                pending.length = 0;
+                flushers.delete(flush);
+
+                if (flushers.size === 0) {
+                    this.roomFlushes.delete(flushKey);
+                }
+
+                this.roomIdentityResets.delete(reset);
+                unsubscribe();
+            },
+            // `true` when the message was sent now or queued for the connection; `false`
+            // when the handle is closed or the queue is full.
+            send: (message: Message) => {
+                // A closed handle, or a closed client (whose sockets never reopen), accepts nothing.
+                // Without a WebSocket implementation no socket can ever open, so nothing is queued.
+                if (closed || this.closed || this.WebSocketImpl === undefined) {
+                    return false;
+                }
+
+                // Encode now, to the caller: an unencodable payload throws here instead of being
+                // accepted, and the held copy is a snapshot the caller can no longer change.
+                const wire: unknown = encodeCallArgs(message, `room message for '${topic}'`);
+                // `structuredClone` is absent on some runtimes (React Native/Hermes). The wire value is
+                // JSON-safe by construction, so a JSON round-trip is an exact copy there.
+                const encoded: unknown =
+                    typeof structuredClone === "function"
+                        ? structuredClone(wire)
+                        : // eslint-disable-next-line unicorn/prefer-structured-clone -- fallback for runtimes without structuredClone; the input is JSON-safe
+                          JSON.parse(JSON.stringify(wire));
+
+                flush();
+
+                if (pending.length === 0 && this.roomSendsAdmitted(options.shardKey) && this.sendEncodedWhisper(topic, encoded, options)) {
+                    return true;
+                }
+
+                if (pending.length >= ROOM_PENDING_LIMIT) {
+                    return false;
+                }
+
+                pending.push(encoded);
+
+                return true;
+            },
+        };
     }
 
     /**
@@ -3762,6 +3889,9 @@ class LunoraClient {
         this.mutationSettledListeners.clear();
         this.pendingChangeListeners.clear();
         this.whisperHandlers.clear();
+        // Room handles still open keep their held-send closures reachable through these; a closed client drops them.
+        this.roomFlushes.clear();
+        this.roomIdentityResets.clear();
 
         // Shape subscriptions retain user row/error callbacks and replicated
         // rows; poke buffers hold partially-assembled membership. Neither is
@@ -5807,6 +5937,7 @@ class LunoraClient {
      * a silent tokenless socket the admin gate would reject.
      */
     private async openSocketWithProvidedToken(conn: ShardConnection, shardKey: string | undefined, provider: WsTokenProvider): Promise<void> {
+        const generation = this.wsTokenGeneration;
         let token: string | undefined;
 
         try {
@@ -5818,6 +5949,18 @@ class LunoraClient {
         }
 
         if (this.closed || this.WebSocketImpl === undefined || conn.wsState !== "connecting" || conn.socket !== undefined) {
+            return;
+        }
+
+        // The credential was replaced while this one was being minted: it is superseded, so the
+        // socket must not open on it. Mint again under the current credential.
+        if (generation !== this.wsTokenGeneration) {
+            if (typeof this.wsToken === "function") {
+                await this.openSocketWithProvidedToken(conn, shardKey, this.wsToken);
+            } else {
+                this.openSocket(conn, shardKey, this.wsToken);
+            }
+
             return;
         }
 
@@ -5880,6 +6023,9 @@ class LunoraClient {
                 /* eslint-disable no-param-reassign -- mutate the shared ShardConnection state machine in place */
                 conn.wsState = "open";
                 conn.wasEverConnected = true;
+                // A new socket has confirmed no identity and rejoined no room yet.
+                conn.identityConfirmed = false;
+                conn.roomsRejoined = false;
 
                 // A socket opened, so whatever was refusing the upgrade is gone:
                 // stop polling and let the resubscribe handshake below take the
@@ -5960,6 +6106,11 @@ class LunoraClient {
                         sendOn(conn, { topic, type: "whisper_subscribe" });
                     }
                 }
+
+                // The rejoins are on the wire: room sends on this socket may now go out, behind them.
+                // eslint-disable-next-line no-param-reassign -- mutate the shared ShardConnection state machine in place
+                conn.roomsRejoined = true;
+                this.releaseRoomSends(shardKey);
 
                 this.flushOfflineQueue(shardKey).catch(() => undefined);
             },
@@ -6351,6 +6502,9 @@ class LunoraClient {
             }
             case "identity": {
                 this.handleIdentityFrame(message, shardKey);
+                // The identity is confirmed only after the handler above has acted on it: an
+                // identity change has already dropped any room sends queued under the old one.
+                this.confirmShardIdentity(shardKey);
 
                 break;
             }
@@ -7074,6 +7228,55 @@ class LunoraClient {
     }
 
     /**
+     * Frame an already-encoded whisper body onto the topic's shard socket. Returns `false`
+     * when the socket is not open, so the caller can hold the body and send it later.
+     */
+    private sendEncodedWhisper(topic: string, encoded: unknown, options: { shardKey?: string }): boolean {
+        this.ensureSocket(options.shardKey);
+
+        const conn = this.getConnection(options.shardKey);
+        const sent = conn !== undefined && sendOn(conn, { data: encoded, topic, type: "whisper" });
+
+        // A send-only whisper may be all that opened this shard: let it idle out.
+        this.releaseIdleShard(options.shardKey);
+
+        return sent;
+    }
+
+    /**
+     * Whether room sends on `shardKey` may go straight to its socket: the socket is open,
+     * the server has confirmed its identity, and its room rejoins are on the wire.
+     */
+    private roomSendsAdmitted(shardKey: string | undefined): boolean {
+        const conn = this.getConnection(shardKey);
+
+        // A retired socket belongs to a session that was replaced: nothing is admitted on it.
+        return conn?.wsState === "open" && conn.retired !== true && conn.identityConfirmed === true && conn.roomsRejoined === true;
+    }
+
+    /** Flush the held room sends on `shardKey`, once that socket is admitted. */
+    private releaseRoomSends(shardKey: string | undefined): void {
+        if (!this.roomSendsAdmitted(shardKey)) {
+            return;
+        }
+
+        for (const flush of this.roomFlushes.get(connectionKey(shardKey)) ?? []) {
+            flush();
+        }
+    }
+
+    /** The server answered this socket's identity: record it, and release the sends that waited on it. */
+    private confirmShardIdentity(shardKey: string | undefined): void {
+        const conn = this.getConnection(shardKey);
+
+        if (conn !== undefined) {
+            conn.identityConfirmed = true;
+        }
+
+        this.releaseRoomSends(shardKey);
+    }
+
+    /**
      * A cookie socket's `identity` frame: the user the shard authenticated this
      * socket as, sent in reply to every `connect`.
      *
@@ -7353,6 +7556,8 @@ class LunoraClient {
      * the socket lets the next frame put them straight back.
      */
     private evictPreviousIdentitySession(): void {
+        this.resetRoomSends();
+
         // Cache-seeded values go back to `hydratedQueryCache`, where the identity
         // gate decides whether they are ever shown again, rather than being
         // dropped outright — `revokeCacheSeededValues` also blanks their state.
@@ -7422,6 +7627,13 @@ class LunoraClient {
 
         if (wasLeader) {
             this.tabCoordinator.promoteImmediately();
+        }
+    }
+
+    /** Drop every room send held before the socket opened: they were made under the identity that is now going away. */
+    private resetRoomSends(): void {
+        for (const reset of this.roomIdentityResets) {
+            reset();
         }
     }
 

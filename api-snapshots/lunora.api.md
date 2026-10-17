@@ -161,6 +161,10 @@ Re-exported from `@lunora/server` — signature tracked at its source.
 
 Re-exported from `@lunora/server` — signature tracked at its source.
 
+### `DefineRoomOptions` (interface)
+
+Re-exported from `@lunora/server` — signature tracked at its source.
+
 ### `DefineStorageRuleInput` (interface)
 
 Re-exported from `@lunora/server` — signature tracked at its source.
@@ -681,6 +685,10 @@ Re-exported from `@lunora/server` — signature tracked at its source.
 
 Re-exported from `@lunora/server` — signature tracked at its source.
 
+### `RegisteredRoom` (type)
+
+Re-exported from `@lunora/server` — signature tracked at its source.
+
 ### `RegisteredShape` (interface)
 
 Re-exported from `@lunora/server` — signature tracked at its source.
@@ -746,6 +754,26 @@ Re-exported from `@lunora/server` — signature tracked at its source.
 Re-exported from `@lunora/server` — signature tracked at its source.
 
 ### `Role` (interface)
+
+Re-exported from `@lunora/server` — signature tracked at its source.
+
+### `RoomJoinHandler` (type)
+
+Re-exported from `@lunora/server` — signature tracked at its source.
+
+### `RoomLeaveHandler` (type)
+
+Re-exported from `@lunora/server` — signature tracked at its source.
+
+### `RoomMessageHandler` (type)
+
+Re-exported from `@lunora/server` — signature tracked at its source.
+
+### `RoomMessageOf` (type)
+
+Re-exported from `@lunora/server` — signature tracked at its source.
+
+### `RoomSocket` (interface)
 
 Re-exported from `@lunora/server` — signature tracked at its source.
 
@@ -1309,6 +1337,10 @@ Re-exported from `@lunora/server` — signature tracked at its source.
 
 Re-exported from `@lunora/server` — signature tracked at its source.
 
+### `defineRoom` (const)
+
+Re-exported from `@lunora/server` — signature tracked at its source.
+
 ### `defineSchema` (const)
 
 Re-exported from `@lunora/server` — signature tracked at its source.
@@ -1788,6 +1820,10 @@ Re-exported from `@lunora/client` — signature tracked at its source.
 Re-exported from `@lunora/client` — signature tracked at its source.
 
 ### `ReturnOf` (type)
+
+Re-exported from `@lunora/client` — signature tracked at its source.
+
+### `RoomRef` (interface)
 
 Re-exported from `@lunora/client` — signature tracked at its source.
 
@@ -5171,6 +5207,10 @@ Re-exported from `@lunora/server` — signature tracked at its source.
 
 Re-exported from `@lunora/server` — signature tracked at its source.
 
+### `DefineRoomOptions` (interface)
+
+Re-exported from `@lunora/server` — signature tracked at its source.
+
 ### `DefineStorageRuleInput` (interface)
 
 Re-exported from `@lunora/server` — signature tracked at its source.
@@ -5691,6 +5731,10 @@ Re-exported from `@lunora/server` — signature tracked at its source.
 
 Re-exported from `@lunora/server` — signature tracked at its source.
 
+### `RegisteredRoom` (type)
+
+Re-exported from `@lunora/server` — signature tracked at its source.
+
 ### `RegisteredShape` (interface)
 
 Re-exported from `@lunora/server` — signature tracked at its source.
@@ -5756,6 +5800,26 @@ Re-exported from `@lunora/server` — signature tracked at its source.
 Re-exported from `@lunora/server` — signature tracked at its source.
 
 ### `Role` (interface)
+
+Re-exported from `@lunora/server` — signature tracked at its source.
+
+### `RoomJoinHandler` (type)
+
+Re-exported from `@lunora/server` — signature tracked at its source.
+
+### `RoomLeaveHandler` (type)
+
+Re-exported from `@lunora/server` — signature tracked at its source.
+
+### `RoomMessageHandler` (type)
+
+Re-exported from `@lunora/server` — signature tracked at its source.
+
+### `RoomMessageOf` (type)
+
+Re-exported from `@lunora/server` — signature tracked at its source.
+
+### `RoomSocket` (interface)
 
 Re-exported from `@lunora/server` — signature tracked at its source.
 
@@ -6316,6 +6380,10 @@ Re-exported from `@lunora/server` — signature tracked at its source.
 Re-exported from `@lunora/server` — signature tracked at its source.
 
 ### `defineRole` (const)
+
+Re-exported from `@lunora/server` — signature tracked at its source.
+
+### `defineRoom` (const)
 
 Re-exported from `@lunora/server` — signature tracked at its source.
 

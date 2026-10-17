@@ -2973,6 +2973,34 @@ describe("createWorker — relay-tier routing (plan 075 Phase 2)", () => {
         expect(forwards[0]?.name).toBe("cold-b"); // owner-served
     });
 
+    it("ignores a client's rooms=1 hint: a forged hint on an ordinary promoted shard still takes a relay", async () => {
+        expect.assertions(2);
+
+        const forwards: Forward[] = [];
+        const namespace = routingNamespace(2, forwards);
+        const worker = createWorker({ allowUnauthenticatedShardAccess: true, shardDO: namespace });
+        const forged = new Request("https://app.example/_lunora/ws?shard=promoted-plain&rooms=1", { headers: { Upgrade: "websocket" } });
+
+        await worker.fetch(forged, { SHARD: namespace }, fakeContext);
+
+        // The shard declares no rooms, so the client's hint cannot pull the socket onto the owner.
+        expect(forwards).toHaveLength(1);
+        expect(forwards[0]?.name).toMatch(/^promoted-plain::relay::[01]$/u);
+    });
+
+    it("routes a shard that declares rooms through its relays too: the relay forwards the room to the owner", async () => {
+        expect.assertions(2);
+
+        const forwards: Forward[] = [];
+        const namespace = routingNamespace(2, forwards);
+        const worker = createWorker({ allowUnauthenticatedShardAccess: true, shardDO: namespace });
+
+        await worker.fetch(upgrade("promoted-room"), { SHARD: namespace }, fakeContext);
+
+        expect(forwards).toHaveLength(1);
+        expect(forwards[0]?.name).toMatch(/^promoted-room::relay::[01]$/u);
+    });
+
     it("stays owner-served when the namespace binding can't be found (relay tier inert)", async () => {
         expect.assertions(2);
 

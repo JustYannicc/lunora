@@ -1,6 +1,7 @@
 import type { CallExpression, Identifier, PropertyAccessExpression } from "ts-morph";
-import { Node } from "ts-morph";
+import { Node, SyntaxKind } from "ts-morph";
 
+import { isServerSurfaceModule } from "../../module-specifiers";
 import { unwrapExpression } from "../ast";
 import { walkBuilderChain, wrappedCallsWhere } from "../builder-chain";
 import { isServerImport, resolveCalleeKind } from "../callee";
@@ -25,7 +26,10 @@ const INTERNAL_FACTORIES: Record<string, "action" | "mutation" | "query"> = {
  * manifest: `connect`/`disconnect` are dispatched per socket, `init` once per
  * Durable Object instance before any handler runs, `reactor` after each write
  * flush whose tables the reactor's watched read touched, and `whisper` before a
- * socket joins or broadcasts to a whisper topic.
+ * socket joins or broadcasts to a whisper topic. `room` is a `defineRoom`
+ * registration, dispatched server-side when a socket joins, leaves, or sends to
+ * the room's whisper topic — emit derives the `LUNORA_ROOMS` topic→path map from
+ * it.
  */
 type LifecycleMoment = "connect" | "disconnect" | "init" | "reactor" | "whisper";
 
@@ -38,11 +42,24 @@ const LIFECYCLE_FACTORIES: Record<string, LifecycleMoment> = {
 };
 
 /**
+ * Channel factories: a socket reaches the registration by its name, not by a
+ * lifecycle moment. A `defineRoom` is dispatched server-side when a socket joins,
+ * leaves, or sends to the room's whisper topic; emit derives the `LUNORA_ROOMS`
+ * topic→path map from it.
+ */
+type ChannelKind = "room";
+
+const CHANNEL_FACTORIES: Record<string, ChannelKind> = {
+    defineRoom: "room",
+};
+
+/**
  * The registration kind a lifecycle moment dispatches as. All of them are
  * mutations except the whisper authorizer, which is a QUERY — it reports a
  * verdict the shard acts on and must not be able to write while deciding.
  * Getting this wrong is not cosmetic: `handleRpc` transaction-wraps a `mutation`,
  * so a misclassified authorizer would open a write span on every topic join.
+ * A `room` handler is a mutation: its `ctx.db` writes must commit all-or-nothing.
  */
 const lifecycleKind = (moment: LifecycleMoment): "mutation" | "query" => (moment === "whisper" ? "query" : "mutation");
 
@@ -147,6 +164,12 @@ interface ProcedureClassification {
      */
     adminOnly?: true;
 
+    /**
+     * Set when the call registers a channel (`defineRoom`): the channel's kind. The
+     * name is read from the call's options, not here. Absent otherwise.
+     */
+    channel?: ChannelKind;
+
     /** Registration kind: `query` | `mutation` | `action` | `stream`. */
     kind: string;
 
@@ -236,10 +259,33 @@ const classifyBuilderTerminal = (callee: PropertyAccessExpression): ProcedureCla
  * for "is this a Lunora procedure, and is it internal?" — shared by function
  * discovery here and the RLS-coverage feeder.
  */
+
+/**
+ * Whether an identifier is a namespace import of `@lunora/server` (`import * as lunora`).
+ * Import-based, so a local object that happens to have a `defineRoom` method is not one.
+ */
+const isLunoraNamespace = (identifier: Identifier): boolean =>
+    (identifier.getSymbol()?.getDeclarations() ?? []).some(
+        (declaration) =>
+            Node.isNamespaceImport(declaration) &&
+            isServerSurfaceModule(declaration.getFirstAncestorByKind(SyntaxKind.ImportDeclaration)?.getModuleSpecifierValue() ?? ""),
+    );
+
 const classifyProcedureCall = (call: CallExpression): ProcedureClassification | undefined => {
     const callee = call.getExpression();
 
     if (Node.isPropertyAccessExpression(callee)) {
+        // A channel factory reached through a namespace import (`rooms.defineRoom(...)`) is a registration too.
+        const receiver = callee.getExpression();
+        // The name is checked first: resolving the receiver's symbol is type-checker work, which
+        // only a channel factory name is worth paying for.
+        const channel =
+            CHANNEL_FACTORIES[callee.getName()] && Node.isIdentifier(receiver) && isLunoraNamespace(receiver) ? CHANNEL_FACTORIES[callee.getName()] : undefined;
+
+        if (channel) {
+            return { channel, kind: "mutation", visibility: "internal" };
+        }
+
         return classifyBuilderTerminal(callee);
     }
 
@@ -263,6 +309,12 @@ const classifyProcedureCall = (call: CallExpression): ProcedureClassification | 
         return { kind: internalKind, visibility: "internal" };
     }
 
+    const channel = CHANNEL_FACTORIES[exportedName];
+
+    if (channel) {
+        return { channel, kind: "mutation", visibility: "internal" };
+    }
+
     const lifecycle = LIFECYCLE_FACTORIES[exportedName];
 
     if (lifecycle) {
@@ -276,4 +328,4 @@ const classifyProcedureCall = (call: CallExpression): ProcedureClassification | 
 };
 
 export { classifyProcedureCall };
-export type { LifecycleMoment, ProcedureClassification };
+export type { ChannelKind, LifecycleMoment, ProcedureClassification };

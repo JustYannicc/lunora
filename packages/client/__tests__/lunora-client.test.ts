@@ -4570,6 +4570,195 @@ describe("lunoraClient", () => {
             expect(JSON.parse(socket.sent.at(-1)!)).toEqual({ topic: "cursors", type: "whisper_unsubscribe" });
         });
 
+        it("holds a room send made before the socket opens and delivers it on connect", () => {
+            expect.assertions(3);
+
+            const client = new LunoraClient({
+                fetch: vi.fn<typeof fetch>(),
+                url: "https://app.example",
+                WebSocket: createMockWebSocket(),
+            });
+            const room = client.connectRoom<{ text: string }>({ name: "chat" }, { onMessage: () => undefined });
+
+            // Before the socket opens the message is held, not dropped.
+            expect(room.send({ text: "hi" })).toBe(true);
+
+            const socket = latestSocket();
+
+            socket.open();
+
+            // The rejoin is on the wire, but the held send waits for the server's identity answer.
+            expect(wireFrames(socket)).not.toContainEqual({ data: { text: "hi" }, topic: "room:chat", type: "whisper" });
+
+            socket.receive({ subject: null, type: "identity" });
+
+            expect(wireFrames(socket)).toContainEqual({ data: { text: "hi" }, topic: "room:chat", type: "whisper" });
+
+            room.close();
+        });
+
+        it("drops a room send held under the previous credential instead of delivering it to the new identity", () => {
+            expect.assertions(3);
+
+            vi.useFakeTimers();
+
+            const client = new LunoraClient({
+                fetch: vi.fn<typeof fetch>(),
+                url: "https://app.example",
+                WebSocket: createMockWebSocket(),
+            });
+            const room = client.connectRoom<{ text: string }>({ name: "chat" }, { onMessage: () => undefined });
+
+            // Held: the socket for the old credential has not opened yet.
+            expect(room.send({ text: "for old user" })).toBe(true);
+
+            client.setWsToken("new-user-token");
+            // The reconnect that carries the new credential is scheduled after the old socket closes.
+            vi.runOnlyPendingTimers();
+
+            const socket = latestSocket();
+
+            socket.open();
+            socket.receive({ subject: null, type: "identity" });
+
+            // The new identity never receives what the old one was about to send.
+            expect(wireFrames(socket)).not.toContainEqual({ data: { text: "for old user" }, topic: "room:chat", type: "whisper" });
+            expect(wireFrames(socket).filter((frame) => frame.type === "whisper")).toStrictEqual([]);
+
+            room.close();
+            vi.useRealTimers();
+        });
+
+        it("does not open a socket on a credential that was replaced while its provider was still pending", async () => {
+            expect.assertions(2);
+
+            const resolvers: ((token: string) => void)[] = [];
+            const client = new LunoraClient({
+                fetch: vi.fn<typeof fetch>(),
+                url: "https://app.example",
+                WebSocket: createMockWebSocket(),
+                wsToken: () =>
+                    new Promise<string>((resolve) => {
+                        resolvers.push(resolve);
+                    }),
+            });
+
+            // Start a connect: its token request is still pending.
+            client.whisperSubscribe("cursors", () => undefined);
+
+            // The credential changes while that request is in flight, then the stale one resolves.
+            client.setWsToken("fresh-token");
+            resolvers[0]?.("stale-token");
+            await new Promise<void>((resolve) => {
+                setTimeout(resolve, 0);
+            });
+
+            const socket = latestSocket();
+
+            expect(socket.url).toContain("token=fresh-token");
+            expect(socket.url).not.toContain("stale-token");
+        });
+
+        it("does not send a room message from a status listener until the shard is admitted, and sends it once", () => {
+            expect.assertions(2);
+
+            const client = new LunoraClient({
+                fetch: vi.fn<typeof fetch>(),
+                url: "https://app.example",
+                WebSocket: createMockWebSocket(),
+            });
+            const room = client.connectRoom<{ text: string }>({ name: "chat" }, { onMessage: () => undefined });
+
+            // A status listener that sends the moment the connection reports connected.
+            client.onConnectionStatus((status) => {
+                if (status === "connected") {
+                    room.send({ text: "from-listener" });
+                }
+            });
+
+            const socket = latestSocket();
+
+            socket.open();
+
+            // Connected, but the rejoin is not yet confirmed by the server's identity: not on the wire.
+            expect(wireFrames(socket).filter((frame) => frame.type === "whisper")).toStrictEqual([]);
+
+            socket.receive({ subject: null, type: "identity" });
+
+            expect(wireFrames(socket).filter((frame) => frame.type === "whisper")).toStrictEqual([
+                { data: { text: "from-listener" }, topic: "room:chat", type: "whisper" },
+            ]);
+
+            room.close();
+        });
+
+        it("sends a room message as it was when accepted, even if the caller mutates it while queued", () => {
+            expect.assertions(1);
+
+            const client = new LunoraClient({
+                fetch: vi.fn<typeof fetch>(),
+                url: "https://app.example",
+                WebSocket: createMockWebSocket(),
+            });
+            const room = client.connectRoom<{ text: string }>({ name: "chat" }, { onMessage: () => undefined });
+            const message = { text: "original" };
+
+            room.send(message);
+            message.text = "mutated";
+
+            const socket = latestSocket();
+
+            socket.open();
+            socket.receive({ subject: null, type: "identity" });
+
+            expect(wireFrames(socket)).toContainEqual({ data: { text: "original" }, topic: "room:chat", type: "whisper" });
+
+            room.close();
+        });
+
+        it("sends a room message on a runtime without structuredClone (React Native)", () => {
+            expect.assertions(1);
+
+            vi.stubGlobal("structuredClone", undefined);
+
+            try {
+                const client = new LunoraClient({
+                    fetch: vi.fn<typeof fetch>(),
+                    url: "https://app.example",
+                    WebSocket: createMockWebSocket(),
+                });
+                const room = client.connectRoom<{ text: string }>({ name: "chat" }, { onMessage: () => undefined });
+
+                expect(room.send({ text: "no-clone" })).toBe(true);
+
+                room.close();
+            } finally {
+                vi.unstubAllGlobals();
+            }
+        });
+
+        it("refuses a room send after the client is closed, and rejects an unencodable payload at send time", () => {
+            expect.assertions(2);
+
+            const client = new LunoraClient({
+                fetch: vi.fn<typeof fetch>(),
+                url: "https://app.example",
+                WebSocket: createMockWebSocket(),
+            });
+            const room = client.connectRoom<unknown>({ name: "chat" }, { onMessage: () => undefined });
+
+            // A cyclic value cannot cross the wire, so it is refused to the caller instead of queued.
+            const cyclic: Record<string, unknown> = {};
+
+            cyclic["self"] = cyclic;
+
+            expect(() => room.send(cyclic)).toThrow(/circular|cyclic|encode/iu);
+
+            client.close();
+
+            expect(room.send({ text: "late" })).toBe(false);
+        });
+
         it("rejoins whisper topics after a reconnect", () => {
             expect.assertions(1);
 

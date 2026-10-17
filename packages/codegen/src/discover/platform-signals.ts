@@ -18,11 +18,22 @@ interface PlatformCodeSignals {
     containerEgressPolicy: boolean;
     /** A `.stream(handler, { durable: … })` registration — a persisted, socket-outliving stream run. */
     durableStreams: boolean;
+    /** A `defineLiveStream` call: a topic SSE stream the shard serves over its subscriber registry. */
+    liveStreams: boolean;
     /** A `ctx.secrets` read — the Secrets Store facade, which needs a host binding. */
     secrets: boolean;
+    /** A `defineWebSocket` route or `defineRoom` room — both ride hibernated shard sockets. */
+    typedWebSockets: boolean;
     /** A `defineStep` call declaring a `rollback` compensation. */
     workflowRollback: boolean;
 }
+
+/** The declarations that carry a platform feature: socket routes and rooms ride hibernated shard sockets, live streams the subscriber registry. */
+const DECLARATION_SIGNALS: Readonly<Record<string, "liveStreams" | "typedWebSockets">> = {
+    defineLiveStream: "liveStreams",
+    defineRoom: "typedWebSockets",
+    defineWebSocket: "typedWebSockets",
+};
 
 /** The `defineContainer` keys that turn on outbound interception. */
 const EGRESS_POLICY_KEYS = new Set(["allowedHosts", "deniedHosts", "interceptHttps"]);
@@ -139,7 +150,14 @@ const callSignal = (sourceFile: SourceFile, call: CallExpression): keyof Platfor
  * declaration is worse than an over-reported one.
  */
 const discoverPlatformSignals = (project: Project, lunoraDirectory: string): PlatformCodeSignals => {
-    const signals: PlatformCodeSignals = { containerEgressPolicy: false, durableStreams: false, secrets: false, workflowRollback: false };
+    const signals: PlatformCodeSignals = {
+        containerEgressPolicy: false,
+        durableStreams: false,
+        liveStreams: false,
+        secrets: false,
+        typedWebSockets: false,
+        workflowRollback: false,
+    };
 
     for (const filePath of listLunoraSourceFiles(lunoraDirectory)) {
         const sourceFile = project.getSourceFile(filePath) ?? project.addSourceFileAtPath(filePath);
@@ -159,6 +177,12 @@ const discoverPlatformSignals = (project: Project, lunoraDirectory: string): Pla
 
             if (signal !== undefined) {
                 signals[signal] = true;
+            }
+
+            const declared = DECLARATION_SIGNALS[calleeName(call)];
+
+            if (declared !== undefined) {
+                signals[declared] = true;
             }
         }
 

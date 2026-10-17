@@ -67,7 +67,15 @@ const renderFunctionRegistry = (
     migrations: ReadonlyArray<MigrationIR>,
     mutators: ReadonlyArray<MutatorIR> = [],
     shapes: ReadonlyArray<ShapeIR> = [],
-): { dispatchBody: string; importBlock: string; installBlock: string; migrationBody: string; mutatorPaths: ReadonlyArray<string>; shapeBody: string } => {
+): {
+    dispatchBody: string;
+    importBlock: string;
+    installBlock: string;
+    migrationBody: string;
+    mutatorPaths: ReadonlyArray<string>;
+    roomMessagesBody: string;
+    shapeBody: string;
+} => {
     const aliasByPath = new Map<string, string>();
 
     const registerPath = (filePath: string): void => {
@@ -175,12 +183,22 @@ const renderFunctionRegistry = (
         .filter((line): line is string => line !== undefined)
         .join("\n");
 
+    // One `LunoraRoomMessages` entry per room, typed off the room's own registration.
+    const roomMessagesBody = functions
+        .filter((definition) => definition.channel?.kind === "room")
+        .map(
+            (definition) =>
+                `    ${JSON.stringify(definition.channel?.name ?? "")}: RoomMessageOf<typeof ${aliasByPath.get(definition.filePath) ?? ""}[${JSON.stringify(definition.exportName)}]>;`,
+        )
+        .join("\n");
+
     return {
         dispatchBody: combinedDispatch.length > 0 ? `\n${combinedDispatch}\n` : "",
         importBlock: importLines.length > 0 ? `${importLines}\n\n` : "",
         installBlock: installLines,
         migrationBody: migrationEntries.length > 0 ? `\n${migrationEntries}\n` : "",
         mutatorPaths,
+        roomMessagesBody,
         shapeBody: shapeEntries.length > 0 ? `\n${shapeEntries}\n` : "",
     };
 };
@@ -274,6 +292,9 @@ const renderLifecycleManifest = (
     };
 
     for (const definition of functions) {
+        // A `room` registration is dispatched through the dedicated
+        // `LUNORA_ROOMS` map, not the socket-lifecycle manifest, so it is
+        // excluded here (the emitted manifest keeps its five socket moments).
         if (!definition.lifecycle) {
             continue;
         }
@@ -295,11 +316,37 @@ interface EmitFunctionsOptions {
     useUmbrella?: boolean;
 }
 
+/**
+ * The room-only fragments of `functions.ts`: the message-type import, the typed
+ * `LunoraRoomMessages` map, and the interface's `channel` field. All empty for a
+ * room-free project, so its output is unchanged.
+ */
+const renderRoomFragments = (
+    hasRooms: boolean,
+    serverSpecifier: string,
+    roomMessagesBody: string,
+): { channelField: string; messagesBlock: string; typeImport: string } => {
+    if (!hasRooms) {
+        return { channelField: "", messagesBlock: "", typeImport: "" };
+    }
+
+    return {
+        channelField: `    /**\n     * Set on a \`defineRoom\` registration: the room's name (without the \`room:\`\n     * topic prefix). The generated \`LUNORA_ROOMS\` map keys it on the room's\n     * \`room:<name>\` whisper topic so the ShardDO resolves a room topic to this\n     * path.\n     */\n    channel?: { readonly kind: "room"; readonly name: string };\n`,
+        messagesBlock: `\n/**\n * The message type each \`defineRoom\` carries, read off the room's own registration. The generated \`rooms\` references type a client's \`connectRoom\` from it.\n */\nexport type LunoraRoomMessages = {\n${roomMessagesBody}\n};\n`,
+        typeImport: `import type { RoomMessageOf } from "${serverSpecifier}";\n`,
+    };
+};
+
 const emitFunctions = (options: EmitFunctionsOptions): string => {
     const { agents = [], functions, migrations = [], mutators = [], shapes = [], useUmbrella = false, usesSandbox = false } = options;
     const hasFunctions = functions.length > 0;
     const base = baseSpecifiers(useUmbrella);
-    const { dispatchBody, importBlock, installBlock, migrationBody, mutatorPaths, shapeBody } = renderFunctionRegistry(functions, migrations, mutators, shapes);
+    const { dispatchBody, importBlock, installBlock, migrationBody, mutatorPaths, roomMessagesBody, shapeBody } = renderFunctionRegistry(
+        functions,
+        migrations,
+        mutators,
+        shapes,
+    );
     // Auto-registered agent runtime + sandbox dispatcher functions (see the
     // render*FunctionRegistry helpers). Both are empty-gated so an unused feature
     // keeps output byte-identical.
@@ -321,6 +368,8 @@ const emitFunctions = (options: EmitFunctionsOptions): string => {
     // byte-identical `functions.ts` (the `RegisteredShape` type import, the
     // `LUNORA_SHAPES` map, and the `LUNORA_MUTATOR_PATHS` set all vanish).
     const shapeTypeImport = shapes.length > 0 ? `import type { RegisteredShape } from "${base.server}";\n` : "";
+    const hasRooms = functions.some((definition) => definition.channel?.kind === "room");
+    const rooms = renderRoomFragments(hasRooms, base.server, roomMessagesBody);
     const shapeRegistry =
         shapes.length > 0
             ? `\n/**\n * Replication-shape registry — one entry per \`defineShape\` in \`lunora/shapes.ts\`.\n * The generated ShardDO's \`resolveShape\` override looks a shape up by name and\n * evaluates its trusted \`compileWhere(ctx, args)\` to authorize + scope a\n * \`shape_subscribe\` (reads-as-permissions).\n */\nexport const LUNORA_SHAPES: Record<string, RegisteredShape> = {${shapeBody}};\n`
@@ -329,6 +378,20 @@ const emitFunctions = (options: EmitFunctionsOptions): string => {
         mutatorPaths.length > 0
             ? `\n/**\n * Custom-mutator function paths — the \`LUNORA_FUNCTIONS\` keys the generated\n * ShardDO's \`isCustomMutator\` override routes through the client-watermark push\n * protocol (\`x-lunora-client-id\`/\`x-lunora-client-seq\` ordering).\n */\nexport const LUNORA_MUTATOR_PATHS: ReadonlySet<string> = new Set([${mutatorPaths.map((path) => JSON.stringify(path)).join(", ")}]);\n`
             : "";
+
+    // Room registry (`defineRoom`): topic → function path. Gated on a declared
+    // room so a room-free project emits a byte-identical `functions.ts`. The key
+    // is the room's whisper topic (`roomTopic(name)`), the SAME string the client
+    // subscribes/sends on, so the ShardDO's `roomHandlerPath` override resolves a
+    // room topic without a second name convention.
+    //
+    // The `room:` prefix is written literally (NOT imported from `@lunora/server`)
+    // so the generated file does not depend on a server symbol the umbrella
+    // package must also re-export; `room.ts`'s `ROOM_TOPIC_PREFIX` is the source
+    // of truth and the two are kept in step by the room codegen test.
+    const roomsRegistry = hasRooms
+        ? `\n/**\n * Room registry: the whisper topic of each \`defineRoom\` registration → its\n * function path. The generated ShardDO's \`roomHandlerPath\` override resolves a\n * room topic through this map so a room's typed \`onJoin\`/\`onMessage\`/\`onLeave\`\n * dispatch server-side, reusing the whisper channel for membership and fan-out.\n * Two registrations under one name throw at module load: the map would otherwise\n * silently keep whichever came last.\n */\nexport const LUNORA_ROOMS: Readonly<Record<string, string>> = (() => {\n    const registry: Record<string, string> = {};\n    const owners = new Map<string, unknown>();\n\n    for (const [path, fn] of Object.entries(LUNORA_FUNCTIONS)) {\n        if (fn.channel?.kind !== "room") {\n            continue;\n        }\n\n        const topic = \`room:\${fn.channel.name}\`;\n        const owner = owners.get(topic);\n\n        // The same registration exported under two names (an alias) is one room.\n        if (owner !== undefined && owner !== fn) {\n            throw new Error(\`two defineRoom registrations are named "\${fn.channel.name}"; room names must be unique\`);\n        }\n\n        if (owner === undefined) {\n            owners.set(topic, fn);\n            registry[topic] = path;\n        }\n    }\n\n    return registry;\n})();\n`
+        : "";
 
     // Pull in the compiled-args seam only when at least one function compiled —
     // an unused import would trip `noUnusedLocals`.
@@ -355,7 +418,7 @@ const emitFunctions = (options: EmitFunctionsOptions): string => {
     const callRegisteredHelper = hasFunctions ? `${CALL_REGISTERED_HELPER}\n\n` : "";
 
     return relocateBaseQualifiers(
-        `${GENERATED_HEADER}${importBlock}${agentRegistry.importLine}${sandboxRegistry.importLine}${compiledArgsImport}${shapeTypeImport}import { LunoraError } from "${base.server}";\nimport type { ActionCtx, MutationCtx, QueryCtx } from "./server.js";
+        `${GENERATED_HEADER}${importBlock}${agentRegistry.importLine}${sandboxRegistry.importLine}${compiledArgsImport}${shapeTypeImport}${rooms.typeImport}import { LunoraError } from "${base.server}";\nimport type { ActionCtx, MutationCtx, QueryCtx } from "./server.js";
 ${dataModelImport}
 /**
  * Single registered function, narrowed to the shape \`handleRpc\` needs.
@@ -386,7 +449,7 @@ export interface RegisteredLunoraFunction {
      * to. \`whisper\` does have one — it runs under the asking socket's identity.
      */
     lifecycle?: "connect" | "disconnect" | "init" | "reactor" | "whisper";
-    /**
+${rooms.channelField}    /**
      * Hoisted by the builder when the \`.use()\` chain carries a step with a
      * per-dispatch effect — \`rateLimit(...)\` consuming budget, a single-use
      * captcha token being burned. Read by \`isCacheableQuery\`: the chain runs
@@ -408,7 +471,7 @@ ${agentRegistry.prelude}${sandboxRegistry.prelude}
  * emits (\`api[namespace][fn].__lunoraRef === "namespace:fn"\`).
  */
 export const LUNORA_FUNCTIONS: Record<string, RegisteredLunoraFunction> = {${dispatchBodyWithAgents}};
-${compiledArgsInstall}${shapeRegistry}${mutatorPathsRegistry}
+${compiledArgsInstall}${shapeRegistry}${mutatorPathsRegistry}${roomsRegistry}${rooms.messagesBlock}
 /**
  * Lifecycle manifest: the function paths the generated ShardDO dispatches when a
  * client's WebSocket connects (\`connect\`) or disconnects (\`disconnect\`), once

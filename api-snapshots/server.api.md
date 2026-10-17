@@ -415,6 +415,18 @@ interface DefinePresenceOptions {
 }
 ```
 
+### `DefineRoomOptions` (interface)
+
+```ts
+interface DefineRoomOptions<Message extends Validator> {
+    message: Message;
+    name: string;
+    onJoin?: RoomJoinHandler<Infer<Message>>;
+    onLeave?: RoomLeaveHandler<Infer<Message>>;
+    onMessage: RoomMessageHandler<Infer<Message>>;
+}
+```
+
 ### `DefineStorageRuleInput` (interface)
 
 ```ts
@@ -1768,6 +1780,10 @@ type RegisteredAction<A extends ArgsValidator, R> = RegisteredFunction<A, R, "ac
 ```ts
 interface RegisteredFunction<A extends ArgsValidator, R, Kind extends FunctionKind> {
     readonly args: A;
+    readonly channel?: {
+        readonly kind: "room";
+        readonly name: string;
+    };
     readonly expose?: ExposeConfig;
     readonly handler: (context: unknown, args: InferArgs<A>) => Promise<R> | R;
     readonly kind: Kind;
@@ -1820,6 +1836,18 @@ type RegisteredQuery<A extends ArgsValidator, R> = RegisteredFunction<A, R, "que
 ```ts
 type RegisteredReactor = RegisteredFunction<Record<string, never>, ReactorOutcome, "mutation"> & {
     readonly lifecycle: "reactor";
+};
+```
+
+### `RegisteredRoom` (type)
+
+```ts
+type RegisteredRoom<Message = unknown> = RegisteredFunction<Record<string, never>, void, "mutation"> & {
+    readonly __roomMessage?: Message;
+    readonly channel: {
+        readonly kind: "room";
+        readonly name: string;
+    };
 };
 ```
 
@@ -1990,6 +2018,42 @@ interface Role {
     readonly description?: string;
     readonly name: string;
     readonly permissions?: ReadonlyArray<Permission | string>;
+}
+```
+
+### `RoomJoinHandler` (type)
+
+```ts
+type RoomJoinHandler<Message = unknown> = (context: MutationCtx, socket: RoomSocket<Message>) => Promise<void> | void;
+```
+
+### `RoomLeaveHandler` (type)
+
+```ts
+type RoomLeaveHandler<Message = unknown> = (context: MutationCtx, socket: RoomSocket<Message>) => Promise<void> | void;
+```
+
+### `RoomMessageHandler` (type)
+
+```ts
+type RoomMessageHandler<Message> = (context: MutationCtx, message: Message, socket: RoomSocket<Message>) => Promise<void> | void;
+```
+
+### `RoomMessageOf` (type)
+
+```ts
+type RoomMessageOf<Room> = Room extends RegisteredRoom<infer Message> ? Message : never;
+```
+
+### `RoomSocket` (interface)
+
+```ts
+interface RoomSocket<Message = unknown> {
+    broadcast: (message: Message) => void;
+    readonly connectionId: string;
+    readonly context?: Record<string, unknown>;
+    readonly shardKey: string;
+    readonly userId: null | string;
 }
 ```
 
@@ -2257,6 +2321,7 @@ interface SpanOptions {
 interface SseEvent<R> {
     readonly data: R;
     readonly id: string;
+    readonly [SSE_EVENT_BRAND]: true;
 }
 ```
 
@@ -3354,6 +3419,12 @@ const defineRankIndex: (name: string, options: RankIndexOptions) => RankIndexDef
 
 ```ts
 const defineRole: (name: string, options?: Omit<Role, "name">) => Role;
+```
+
+### `defineRoom` (const)
+
+```ts
+const defineRoom: <Message extends Validator>(options: DefineRoomOptions<Message>) => RegisteredRoom<Infer<Message>>;
 ```
 
 ### `defineSchema` (const)

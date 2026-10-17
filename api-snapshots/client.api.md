@@ -427,7 +427,15 @@ class LunoraClient {
     }): Unsubscribe;
     whisper(topic: string, data?: unknown, options?: {
         shardKey?: string;
-    }): void;
+    }): boolean;
+    connectRoom<Message>(room: RoomRef<Message>, handlers: {
+        onMessage: (message: Message) => void;
+    }, options?: {
+        shardKey?: string;
+    }): {
+        close: () => void;
+        send: (message: Message) => boolean;
+    };
     onTokenExpired(listener: () => void): Unsubscribe;
     connectionStatus(): ConnectionStatus;
     onConnectionStatus(listener: (status: ConnectionStatus) => void): Unsubscribe;
@@ -1136,6 +1144,15 @@ type ReplayIdentityVerdict = {
 
 ```ts
 type ReturnOf<F> = F extends FunctionReference<infer _K, infer _A, infer R> ? R : never;
+```
+
+### `RoomRef` (interface)
+
+```ts
+interface RoomRef<Message = unknown> {
+    readonly __lunoraRoomMessage?: Message;
+    readonly name: string;
+}
 ```
 
 ### `RowOp` (interface)

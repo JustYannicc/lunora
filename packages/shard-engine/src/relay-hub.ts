@@ -39,7 +39,17 @@ import {
 import { envPositiveInt } from "./env-int";
 import type { MaskPoliciesResult, RlsPoliciesResult } from "./introspect";
 import { stableWireKey } from "./reactive-cache";
-import type { OwnerRelayFrame, PromotionState, RelayFrame, RelayShapePoke, RelayShapeSeed, RelayShapeSubscribe, RelayShapeUnsubscribe } from "./relay";
+import type {
+    OwnerRelayFrame,
+    PromotionState,
+    RelayFrame,
+    RelayRoomEvent,
+    RelayRoomVerdict,
+    RelayShapePoke,
+    RelayShapeSeed,
+    RelayShapeSubscribe,
+    RelayShapeUnsubscribe,
+} from "./relay";
 import { clampPromotionThresholds, DEFAULT_PROMOTION_THRESHOLDS, nextPromotionState, parseRelayName, relayName, relayProxyKey, shapeRoutingKey } from "./relay";
 import type { ShapeRowOp } from "./shape-global-diff";
 import { buildPokeFrames, encodeRowsPatch } from "./shape-global-diff";
@@ -118,7 +128,6 @@ interface RelayHost {
     doName: () => string | undefined;
     /** This DO's env record (read for relay binding + threshold/fan/cap knobs). */
     env: () => unknown;
-    /** This DO's live hibernatable sockets. */
 
     /**
      * The shard's live sockets, as the host's handles — the same identity the
@@ -126,6 +135,8 @@ interface RelayHost {
      * differently and silently miss every memo lookup.
      */
     getWebSockets: () => ShardSocketLike[];
+    /** This DO's live hibernatable sockets. */
+
     /** The schema's masked columns (codegen-emitted), for the gate's mask check. */
     maskMetadata: () => MaskPoliciesResult;
     /** A fresh, process-unique poke id (shared monotonic counter with the owner-local poke path). */
@@ -134,6 +145,8 @@ interface RelayHost {
     readAttachment: (ws: ShardSocketLike) => SocketAttachment;
     /** Record a shape-poke fan-out pass into `getFanoutMetrics.shapePoke`. */
     recordShapePokeFanout: (iterated: number, delivered: number, elapsedMs: number) => void;
+    /** Run a room event a relay forwarded (join, leave or message) as the relay-hosted socket on the owner, and report whether it was admitted. */
+    relayRoomEvent: (event: RelayRoomEvent) => Promise<RelayRoomVerdict>;
     /** Resolve a shape under a given identity (RLS-correct); the codegen subclass dispatches via its generated registry. */
     resolveShape: (name: string, args: Record<string, unknown>, identity?: SubscriptionIdentity) => ResolvedShape | undefined;
     /** The schema's RLS policies (codegen-emitted), for the gate's static read-policy guard. */
@@ -257,10 +270,20 @@ abstract class RelayLink {
                 return noContent();
             }
             case "relay_frame": {
-                this.host.deliverWhisperLocal(message.topic, message.frame, undefined);
+                // The joiner of a room's own join broadcast is held on this relay: skip it by connection id.
+                const { exceptConnectionId } = message;
+                const except =
+                    exceptConnectionId === undefined
+                        ? undefined
+                        : this.host.getWebSockets().find((ws) => this.host.readAttachment(ws).connectionId === exceptConnectionId);
+
+                this.host.deliverWhisperLocal(message.topic, message.frame, except);
                 await this.onWhisperFrame(message);
 
                 return noContent();
+            }
+            case "relay_room_event": {
+                return jsonRelayResponse(await this.host.relayRoomEvent(message));
             }
             case "relay_shape_poke": {
                 // Deliver to this relay's cohort sockets, recording the fan-out so a
@@ -372,7 +395,7 @@ abstract class RelayLink {
     }
 
     /** Forward an opaque whisper frame through the hub (owner → its relays, or relay → its owner). No-op in single-DO mode. */
-    public abstract forwardWhisper(topic: string, frame: string): Promise<void>;
+    public abstract forwardWhisper(topic: string, frame: string, exceptConnectionId?: string): Promise<void>;
 
     /** Owner-side per-flush fan-out (cohort multicast + per-socket proxy); a no-op on a relay (relays never flush their own writes). */
     public abstract onFlush(changed: Set<string>, frameCursor: number): Promise<void>;
@@ -481,7 +504,7 @@ class OwnerRelay extends RelayLink {
         super(host, { ownerKey });
     }
 
-    public override async forwardWhisper(topic: string, frame: string): Promise<void> {
+    public override async forwardWhisper(topic: string, frame: string, exceptConnectionId?: string): Promise<void> {
         if (!this.canAddressSiblings()) {
             return;
         }
@@ -492,7 +515,11 @@ class OwnerRelay extends RelayLink {
             return;
         }
 
-        await Promise.all([...relays].map((index) => this.postRelayMessage(relayName(this.roleId.ownerKey, index), { frame, topic, type: "relay_frame" })));
+        await Promise.all(
+            [...relays].map((index) =>
+                this.postRelayMessage(relayName(this.roleId.ownerKey, index), { exceptConnectionId, frame, topic, type: "relay_frame" }),
+            ),
+        );
     }
 
     public override async onFlush(changed: Set<string>, frameCursor: number): Promise<void> {
@@ -1341,6 +1368,31 @@ class RelayMember extends RelayLink {
         // A relay sends the frame UP to its owner, stamped with its own index so the
         // owner won't echo it back.
         await this.postRelayMessage(this.roleId.ownerKey, { frame, originRelay: this.roleId.relayIndex, topic, type: "relay_frame" });
+    }
+
+    /**
+     * Forward one room event to the owner, which runs the room handler. Resolves
+     * `false` when the owner refuses it or cannot be reached, so the relay refuses
+     * the event too rather than run a room it has no state for.
+     */
+    public async forwardRoomEvent(event: Omit<RelayRoomEvent, "relayIndex" | "type">): Promise<boolean> {
+        const response = await this.requestRelayMessage(this.roleId.ownerKey, {
+            ...event,
+            relayIndex: this.roleId.relayIndex as number,
+            type: "relay_room_event",
+        });
+
+        if (!response?.ok) {
+            return false;
+        }
+
+        try {
+            const verdict = (await response.json()) as RelayRoomVerdict;
+
+            return verdict.admitted;
+        } catch {
+            return false;
+        }
     }
 
     // eslint-disable-next-line class-methods-use-this -- role hook: a relay receives no writes, so it never flushes its own CDC

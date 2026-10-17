@@ -37,7 +37,7 @@ import {
     renderThrowingStub,
 } from "./shard-bindings";
 import renderBuildContext from "./shard-context";
-import { DISPATCH_METHODS, DISPATCH_RUN_SOURCE, SUBSCRIPTION_METHODS } from "./shard-dispatch";
+import { DISPATCH_RUN_SOURCE, dispatchMethods, SUBSCRIPTION_METHODS } from "./shard-dispatch";
 import { buildStorageColumns, buildTableColumns, buildTableIndexes, buildTableReferences, buildTtlSweeps } from "./shard-metadata";
 import {
     buildDoTypeImports,
@@ -74,6 +74,8 @@ interface EmitShardOptions {
     hasFlags?: boolean;
     /** The project declares `lunora/notify.ts` — wires `ctx.notify` + its `ctx.push` alias (`@lunora/notify`) onto every ctx. */
     hasNotify?: boolean;
+    /** The project declares at least one `defineRoom` — wires the `LUNORA_ROOMS` topic→path resolution in the `roomHandlerPath` override. */
+    hasRooms?: boolean;
 
     /**
      * The target platform supports a vector store. `false` withholds the whole
@@ -123,6 +125,7 @@ const emitShard = ({
     flagKeys = [],
     hasFlags = false,
     hasNotify = false,
+    hasRooms = false,
     hasVectors = true,
     maskMetadata,
     mutators = [],
@@ -377,7 +380,7 @@ const LUNORA_SCHEMA_SNAPSHOT: { hash: string; json: string } = { hash: ${JSON.st
         `import schema from "../schema.js";`,
         // Local-first sync registries are pulled in alongside the function table
         // only when the project declares them, so the import list stays minimal.
-        `import { ${["LUNORA_FUNCTIONS", "LUNORA_LIFECYCLE_HOOKS", "LUNORA_MIGRATIONS", ...(hasMutators ? ["LUNORA_MUTATOR_PATHS"] : []), ...(hasShapes ? ["LUNORA_SHAPES"] : [])].join(", ")} } from "./functions.js";`,
+        `import { ${["LUNORA_FUNCTIONS", "LUNORA_LIFECYCLE_HOOKS", "LUNORA_MIGRATIONS", ...(hasMutators ? ["LUNORA_MUTATOR_PATHS"] : []), ...(hasRooms ? ["LUNORA_ROOMS"] : []), ...(hasShapes ? ["LUNORA_SHAPES"] : [])].join(", ")} } from "./functions.js";`,
     );
 
     const vectorsConfigField = hasVectorIndexes ? `\n    vectors?: (env: Record<string, unknown>) => Record<string, VectorizeIndexLike>;` : "";
@@ -557,6 +560,17 @@ const LUNORA_SCHEMA_SNAPSHOT: { hash: string; json: string } = { hash: ${JSON.st
         : "";
 
     const globalShapeReaderOverride = emitGlobalShapeReaderOverride(hasShapes && hasGlobalTables, globalDatabaseThunk);
+
+    // `defineRoom` → the base's `roomHandlerPath` seam. Gated on a declared room
+    // so a room-free project's ShardDO subclass is byte-identical (it inherits
+    // the base's `undefined` default).
+    const roomHandlerOverride = hasRooms
+        ? `        protected override roomHandlerPath(topic: string): string | undefined {
+            // Own properties only: a plain object would resolve \`toString\` and the like to inherited functions.
+            return Object.hasOwn(LUNORA_ROOMS, topic) ? LUNORA_ROOMS[topic] : undefined;
+        }
+`
+        : "";
 
     const { externalSourceOverride, sourceBootstrap, sourceClientCacheConst } = emitExternalSourceFragments(hasSourcedTables);
 
@@ -806,14 +820,14 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
     class extends ShardDOBase {${constructorOverride}
         private migrated = false;
 
-${DISPATCH_METHODS}
+${dispatchMethods(hasRooms)}
 ${relationFanout.override}
 ${SUBSCRIPTION_METHODS}
 ${customMutatorOverride}${shapeResolveOverride}${globalShapeReaderOverride}${externalSourceOverride}
         protected override lifecycleHookPaths(event: "connect" | "disconnect" | "init" | "reactor" | "whisper"): readonly string[] {
             return LUNORA_LIFECYCLE_HOOKS[event];
         }
-${shardRegistryFragments.override}${shardInitOverride}
+${roomHandlerOverride}${shardRegistryFragments.override}${shardInitOverride}
         // One \`onQueryChange\` dispatch. Mirrors \`executeSubscription\` — the
         // socket-terminated half of the same reactivity — and differs only in who
         // consumes the result: the base's \`dispatchReactors\` stores the digest as

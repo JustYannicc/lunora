@@ -2437,11 +2437,10 @@ const probeRelayCount = async (namespace: ShardNamespaceLike, shardKey: string):
         const response = await resolveShard(namespace, shardKey).fetch(new Request("https://shard.internal/_lunora/route"));
 
         if (response.ok) {
-            const body: unknown = await response.json();
-            const reported = (body as { relayCount?: unknown }).relayCount;
+            const body: { relayCount?: unknown } = await response.json();
 
-            if (typeof reported === "number" && reported > 0) {
-                relayCount = Math.floor(reported);
+            if (typeof body.relayCount === "number" && body.relayCount > 0) {
+                relayCount = Math.floor(body.relayCount);
             }
         }
     } catch {

@@ -1,4 +1,6 @@
+import { LunoraError } from "@lunora/errors";
 import type { CallExpression, Project, SourceFile } from "ts-morph";
+import { Node } from "ts-morph";
 
 import declaredOutputWins from "../../declared-output";
 import type { ExposeCacheIR, FunctionIR, ValidatorIR } from "../../ir";
@@ -16,6 +18,8 @@ interface DiscoveredFunction {
     /** Set when the builder chain carries `.use(platformAdmin(...))` — see `classifyProcedureCall`. */
     adminOnly?: true;
     args: Record<string, ValidatorIR>;
+    /** A channel registration (`defineRoom`): its kind and literal name. */
+    channel?: { kind: "room"; name: string };
     /** Set when the builder chain includes `.expose({ rest: true })` (plan 167). */
     expose?: { cache?: ExposeCacheIR; rest?: boolean };
     kind: string;
@@ -32,11 +36,42 @@ interface DiscoveredFunction {
  * form (`query({...})` / `internalQuery({...})`) and the builder terminal
  * (`c.query(...)`).
  */
+
+/**
+ * The literal `name` of a `defineRoom({ name: "…" })` call. The name is the room's
+ * whisper-topic key and the `connectRoom` reference, so codegen must read it at
+ * build time: a computed name cannot be typed or deduplicated.
+ */
+const roomNameOf = (call: CallExpression): string => {
+    const options = call.getArguments()[0];
+    const name = Node.isObjectLiteralExpression(options) ? options.getProperty("name") : undefined;
+    const initializer = Node.isPropertyAssignment(name) ? name.getInitializer() : undefined;
+
+    if (!initializer || !Node.isStringLiteral(initializer)) {
+        throw new LunoraError(
+            "ROOM_NAME_NOT_LITERAL",
+            'defineRoom needs a string-literal `name` (e.g. `defineRoom({ name: "chat", … })`) so codegen can type its reference.',
+        );
+    }
+
+    return initializer.getLiteralValue();
+};
+
 const discoverFromCall = (call: CallExpression): DiscoveredFunction | undefined => {
     const classified = classifyProcedureCall(call);
 
     if (!classified) {
         return undefined;
+    }
+
+    if (classified.channel) {
+        return {
+            args: {},
+            channel: { kind: classified.channel, name: roomNameOf(call) },
+            kind: classified.kind,
+            returnType: "void",
+            visibility: classified.visibility,
+        };
     }
 
     // Builder terminal: pull args/return type from the chain; bare factory: from the call.
@@ -99,6 +134,7 @@ const functionIrFromCall = (call: CallExpression, exportName: string, relativePa
         ...(discovered.adminOnly ? { adminOnly: true as const } : {}),
         ...(discovered.expose ? { expose: discovered.expose } : {}),
         ...(discovered.lifecycle ? { lifecycle: discovered.lifecycle } : {}),
+        ...(discovered.channel ? { channel: discovered.channel } : {}),
     };
 };
 
@@ -146,6 +182,9 @@ const defaultExportFunctions = (source: SourceFile, relativePath: string): Funct
  */
 const discoverFileFunctions = (source: SourceFile, relativePath: string): FunctionIR[] => {
     const exportNames = exportNamesByLocalOf(source);
+    // The call each room name was first registered by. Two export names of one call are aliases of
+    // one room; two different calls under one name are a clash, which the emitters cannot represent.
+    const roomCalls = new Map<string, CallExpression>();
     const found = source
         .getVariableStatements()
         .flatMap((statement) => statement.getDeclarations())
@@ -153,7 +192,24 @@ const discoverFileFunctions = (source: SourceFile, relativePath: string): Functi
         .flatMap(([localName, call]) =>
             (exportNames.get(localName) ?? [])
                 .filter((name) => isAddressableExportName(name))
-                .flatMap((name) => functionIrFromCall(call, name, relativePath) ?? []),
+                .flatMap((name) => {
+                    const entry = functionIrFromCall(call, name, relativePath);
+
+                    if (entry?.channel !== undefined) {
+                        const prior = roomCalls.get(entry.channel.name);
+
+                        if (prior !== undefined && prior !== call) {
+                            throw new LunoraError(
+                                "DUPLICATE_ROOM_NAME",
+                                `Duplicate room name "${entry.channel.name}" in ${relativePath}: two defineRoom calls share it. Room names must be unique.`,
+                            );
+                        }
+
+                        roomCalls.set(entry.channel.name, call);
+                    }
+
+                    return entry ? [entry] : [];
+                }),
         );
     const named = new Set(found.map((entry) => entry.exportName));
 
@@ -175,6 +231,39 @@ const discoverFileFunctions = (source: SourceFile, relativePath: string): Functi
  * exact `filePath`. So a migration-only file that sanitizes to the same namespace
  * as a function file cannot collide — only function↔function pairs can.
  */
+
+/**
+ * Two `defineRoom`s under one name would share a whisper topic, and the generated
+ * room map would keep whichever came last. Caught here, at build time, naming both.
+ *
+ * Two exports of one module under one name are an alias of a single registration
+ * (`export const lobby = chat`), so they are not a clash here; the generated room
+ * map checks that they are one object at load. Across modules the same name is a
+ * clash, since a re-export is not visible to discovery.
+ */
+const assertUniqueRoomNames = (functions: ReadonlyArray<FunctionIR>): void => {
+    const origins = new Map<string, { file: string; origin: string }>();
+
+    for (const entry of functions) {
+        if (entry.channel?.kind !== "room") {
+            continue;
+        }
+
+        const prior = origins.get(entry.channel.name);
+
+        if (prior !== undefined && prior.file !== entry.filePath) {
+            throw new LunoraError(
+                "DUPLICATE_ROOM_NAME",
+                `Duplicate room name "${entry.channel.name}": defined in ${prior.origin} and ${entry.filePath}:${entry.exportName}. Room names must be unique across the project.`,
+            );
+        }
+
+        if (prior === undefined) {
+            origins.set(entry.channel.name, { file: entry.filePath, origin: `${entry.filePath}:${entry.exportName}` });
+        }
+    }
+};
+
 const assertNoNamespaceCollision = (functions: ReadonlyArray<FunctionIR>): void => {
     const namespaceOrigins = new Map<string, string>();
 
@@ -213,6 +302,7 @@ const discoverFunctions = (project: Project, lunoraDirectory: string): FunctionI
     functions.sort((a, b) => `${a.filePath}:${a.exportName}`.localeCompare(`${b.filePath}:${b.exportName}`));
 
     assertNoNamespaceCollision(functions);
+    assertUniqueRoomNames(functions);
 
     return functions;
 };

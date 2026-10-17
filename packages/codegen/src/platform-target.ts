@@ -317,6 +317,8 @@ interface PlatformSignals {
     durableStreams?: boolean;
     /** A `.global()` table. */
     globalTables?: boolean;
+    /** A `defineLiveStream` declaration: a topic SSE stream the shard serves. */
+    liveStreams?: boolean;
     /** A `defineQueue` declaration. */
     queues?: boolean;
     /** At least one `v.id("target")` column — the schema declares a relation graph `ctx.db.related` can walk. */
@@ -327,6 +329,8 @@ interface PlatformSignals {
     services?: boolean;
     /** A `defineTopic` declaration. */
     topics?: boolean;
+    /** A `defineWebSocket` route or `defineRoom` room — both ride hibernated shard sockets. */
+    typedWebSockets?: boolean;
     /** A `.vectorize()` / `defineVectorIndex` declaration in the schema. */
     vectorStore?: boolean;
     /** A `jsCodeTool` import from `@lunora/agent` in `lunora/`. */
@@ -348,11 +352,13 @@ const PLATFORM_SIGNAL_KEYS = [
     "crossShardFanout",
     "durableStreams",
     "globalTables",
+    "liveStreams",
     "queues",
     "relationGraph",
     "secrets",
     "services",
     "topics",
+    "typedWebSockets",
     "vectorStore",
     "workerLoaders",
     "workflowRollback",
@@ -370,11 +376,13 @@ const PLATFORM_SIGNAL_LABELS: Readonly<Record<keyof PlatformSignals, string>> = 
     crossShardFanout: "cross-shard fan-out queries (a `.shardBy(...)` schema)",
     durableStreams: "durable streams (`.stream(handler, { durable: true })`)",
     globalTables: "global tables (`.global()`)",
+    liveStreams: "live topic streams (`defineLiveStream`)",
     queues: "queues (`defineQueue`)",
     relationGraph: "relation-graph traversal (`ctx.db.related`, derived from `v.id(...)` columns)",
     secrets: "the secrets store (`ctx.secrets`)",
     services: "service bindings to sibling Workers (`lunora.config` `services`)",
     topics: "pub/sub topics (`defineTopic` / `defineSubscription`)",
+    typedWebSockets: "typed WebSocket routes and rooms (`defineWebSocket` / `defineRoom`)",
     vectorStore: "vector indexes (`.vectorize()`)",
     workerLoaders: "sandboxed agent scripts (`jsCodeTool`, on Worker Loaders)",
     workflowRollback: "workflow step rollback (`defineStep({ rollback })`)",

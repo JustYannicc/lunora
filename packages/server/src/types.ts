@@ -601,20 +601,31 @@ interface RegisteredFunction<A extends ArgsValidator, R, Kind extends FunctionKi
     readonly args: A;
 
     /**
+     * Set on a channel registration, which a socket reaches by its name rather
+     * than a lifecycle moment: a `defineRoom` (`kind: "room"`, with the room's name,
+     * WITHOUT the topic prefix). Codegen collects it into the generated
+     * `LUNORA_ROOMS` map (topic → function path) the DO resolves a room whisper
+     * topic through. Absent on every other registration.
+     */
+    readonly channel?: { readonly kind: "room"; readonly name: string };
+
+    /**
      * Set by the `.expose({ rest: true })` builder modifier. Marks the procedure
      * as published on the public REST surface (plan 167). Absent on procedures that
      * are reachable only via typed RPC (the default).
      */
     readonly expose?: ExposeConfig;
+
     readonly handler: (context: unknown, args: InferArgs<A>) => Promise<R> | R;
 
     readonly kind: Kind;
 
     /**
-     * Set on connection-lifecycle hooks (`onConnect` / `onDisconnect`).
-     * Marks the function for the generated `LUNORA_LIFECYCLE_HOOKS` manifest so the
-     * DO dispatches it on socket connect/disconnect rather than via a client RPC.
-     * Absent on ordinary registrations.
+     * Set on connection-lifecycle hooks (`onConnect` / `onDisconnect`), and on the
+     * other four moments. Marks the function for the generated
+     * `LUNORA_LIFECYCLE_HOOKS` manifest so the DO dispatches it from the socket
+     * lifecycle rather than via a client RPC. Absent on ordinary registrations
+     * and on channel registrations (`channel`).
      */
     readonly lifecycle?: LifecycleEventKind;
 
@@ -748,7 +759,9 @@ interface RunAction {
  * a watched read's result changed — see `onQueryChange`. `whisper` is per-TOPIC
  * and decides whether a socket may join or broadcast to one — see `onWhisper`
  * and {@link WhisperEvent}; unlike the other four it is a query, and its return
- * value is the verdict.
+ * value is the verdict. `room` is per-ROOM-MESSAGE and is a mutation: a
+ * `defineRoom` registration dispatched when a socket joins, leaves, or sends a
+ * typed message to the room's whisper topic.
  */
 type LifecycleEventKind = "connect" | "disconnect" | "init" | "reactor" | "whisper";
 
