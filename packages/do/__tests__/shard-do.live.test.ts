@@ -285,6 +285,31 @@ describe("shardDO live streams", () => {
         expect(response.status).toBe(413);
     });
 
+    it("drops a live reader that stops draining once its queued bytes pass the bound", async () => {
+        expect.assertions(2);
+
+        const shard = makeShard([]);
+        // The response is never read, so every frame queues on the stream.
+        const { connectionId } = await connect(shard);
+
+        await control(shard, { action: "subscribe", connectionId, stream: "s", subscriptionId: "s1", topic: "feed" });
+
+        const delivered: number[] = [];
+
+        for (let index = 0; index < 200; index += 1) {
+            // eslint-disable-next-line no-await-in-loop -- publishes are ordered; each reads its own count
+            const response = await publish(shard, { data: "x".repeat(4000), stream: "s", topic: "feed" });
+
+            // eslint-disable-next-line no-await-in-loop -- see above
+            const body: { delivered: number } = await response.json();
+
+            delivered.push(body.delivered);
+        }
+
+        expect(delivered[0]).toBe(1);
+        expect(delivered.at(-1)).toBe(0);
+    });
+
     it("refuses a control call naming a topic or subscription id over the length bound", async () => {
         expect.assertions(3);
 

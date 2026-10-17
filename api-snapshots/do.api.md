@@ -371,6 +371,7 @@ abstract class ShardDO {
     protected static readonly MAX_LIVE_TOPICS_PER_CONNECTION = 64;
     protected static readonly MAX_LIVE_CONNECTIONS = 1024;
     protected static readonly MAX_LIVE_CONNECTIONS_PER_CALLER = 32;
+    protected static readonly MAX_LIVE_QUEUED_BYTES: number;
     protected static readonly WHISPER_RATE_BURST = 50;
     protected static readonly WHISPER_RATE_PER_SEC = 25;
     static resetRootSizeWarning(): void;

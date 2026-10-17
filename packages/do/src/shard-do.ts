@@ -1946,6 +1946,12 @@ abstract class ShardDO {
     protected static readonly MAX_LIVE_CONNECTIONS_PER_CALLER = 32;
 
     /**
+     * Bytes a live SSE connection may hold queued unread. A reader that falls this far behind
+     * is dropped rather than letting its response queue grow with every publish.
+     */
+    protected static readonly MAX_LIVE_QUEUED_BYTES: number = 256 * 1024;
+
+    /**
      * Whisper-rate token bucket: each socket may burst {@link ShardDO.WHISPER_RATE_BURST}
      * whispers, refilling at {@link ShardDO.WHISPER_RATE_PER_SEC}/s. Without this a single
      * client could loop `whisper` frames, each costing O(connections) to fan out
@@ -15733,33 +15739,46 @@ abstract class ShardDO {
             userId,
         };
 
-        const stream = new ReadableStream<Uint8Array>({
-            cancel: () => {
-                // The client dropped the stream (a browser tab closed, a network
-                // drop). Deregister so a later publish stops scanning it.
-                this.liveSubscribers.delete(connectionId);
+        const stream = new ReadableStream<Uint8Array>(
+            {
+                cancel: () => {
+                    // The client dropped the stream (a browser tab closed, a network
+                    // drop). Deregister so a later publish stops scanning it.
+                    this.liveSubscribers.delete(connectionId);
+                },
+                start: (controller) => {
+                    subscriber.close = () => {
+                        try {
+                            controller.close();
+                        } catch {
+                            // Already closed by a concurrent disconnect.
+                        }
+                    };
+                    subscriber.enqueue = (chunk) => {
+                        // A reader that stopped draining while publishes continue would grow the queue
+                        // without bound. Past the byte bound, end the stream and deregister it: the
+                        // client reconnects and re-registers its subscriptions.
+                        if (controller.desiredSize !== null && controller.desiredSize < chunk.byteLength) {
+                            this.liveSubscribers.delete(connectionId);
+                            subscriber.close();
+
+                            return;
+                        }
+
+                        try {
+                            controller.enqueue(chunk);
+                        } catch {
+                            // Stream already closed by a concurrent disconnect.
+                        }
+                    };
+                    // An initial comment flushes the response headers (including the
+                    // connection id) to the client immediately rather than on the
+                    // first publish, so `connectLiveStream` can start subscribing.
+                    controller.enqueue(encoder.encode(":ok\n\n"));
+                },
             },
-            start: (controller) => {
-                subscriber.close = () => {
-                    try {
-                        controller.close();
-                    } catch {
-                        // Already closed by a concurrent disconnect.
-                    }
-                };
-                subscriber.enqueue = (chunk) => {
-                    try {
-                        controller.enqueue(chunk);
-                    } catch {
-                        // Stream already closed by a concurrent disconnect.
-                    }
-                };
-                // An initial comment flushes the response headers (including the
-                // connection id) to the client immediately rather than on the
-                // first publish, so `connectLiveStream` can start subscribing.
-                controller.enqueue(encoder.encode(":ok\n\n"));
-            },
-        });
+            { highWaterMark: ShardDO.MAX_LIVE_QUEUED_BYTES, size: (chunk) => chunk.byteLength },
+        );
 
         this.liveSubscribers.set(connectionId, subscriber);
 
