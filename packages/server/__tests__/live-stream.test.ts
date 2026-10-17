@@ -1,0 +1,237 @@
+import { describe, expect, it, vi } from "vitest";
+
+import type { HttpActionCtx as HttpActionContext, LunoraRouteHandler, ShardFetch } from "../src/index";
+import { defineLiveStream, httpRouter } from "../src/index";
+
+interface ShardCall {
+    init: { body?: string; method?: string } | undefined;
+    path: string;
+    shardKey: string | undefined;
+}
+
+const makeContext = (calls: ShardCall[], respond?: (path: string) => Response): HttpActionContext => {
+    const fetchShard: ShardFetch = (shardKey, path, init) => {
+        calls.push({ init, path, shardKey });
+
+        return Promise.resolve(respond ? respond(path) : new Response("forwarded"));
+    };
+
+    return { fetchShard } as unknown as HttpActionContext;
+};
+
+const dispatch = async (route: LunoraRouteHandler, context: HttpActionContext, method: string, path: string, body?: unknown): Promise<Response> => {
+    const app = httpRouter();
+
+    // Mount on the pathname; the query string rides the request URL.
+    app.on(method, path.split("?")[0] ?? path, route);
+
+    return app.fetch(
+        new Request(`https://x${path}`, {
+            body: body === undefined ? undefined : JSON.stringify(body),
+            headers: body === undefined ? undefined : { "content-type": "application/json" },
+            method,
+        }),
+        { __lunoraCtx: context },
+    );
+};
+
+describe("defineLiveStream", () => {
+    it("derives its connect + control paths from the id", () => {
+        expect.assertions(2);
+
+        const stream = defineLiveStream({ id: "posts" });
+
+        expect(stream.connectPath).toBe("/live/posts/connect");
+        expect(stream.controlPath).toBe("/live/posts/control");
+    });
+
+    it("forwards the connect without granting any topic, whatever the query string names", async () => {
+        expect.assertions(2);
+
+        const calls: ShardCall[] = [];
+        const stream = defineLiveStream({ id: "posts", onSubscribe: () => true });
+        const context = makeContext(calls);
+
+        await dispatch(stream.connect, context, "GET", "/live/posts/connect?topics=post:1&shard=s1");
+
+        expect(calls).toHaveLength(1);
+        // Authorization is per subscribe; the connect carries no topic list at all.
+        expect(calls[0]).toEqual({ init: { method: "GET" }, path: "/_lunora/live/connect", shardKey: "s1" });
+    });
+
+    it("returns the shard's SSE response untouched", async () => {
+        expect.assertions(1);
+
+        const stream = defineLiveStream({ allowAnonymousControl: true, id: "posts" });
+        const context = makeContext([], () => new Response("event: live\n\ndata: 1\n\n", { headers: { "content-type": "text/event-stream" } }));
+
+        const response = await dispatch(stream.connect, context, "GET", "/live/posts/connect");
+
+        await expect(response.text()).resolves.toBe("event: live\n\ndata: 1\n\n");
+    });
+
+    it("defaults to DENY when onSubscribe is omitted", async () => {
+        expect.assertions(2);
+
+        const calls: ShardCall[] = [];
+        const stream = defineLiveStream({ id: "posts" });
+        const context = makeContext(calls);
+
+        const response = await dispatch(stream.control, context, "POST", "/live/posts/control", {
+            action: "subscribe",
+            connectionId: "c1",
+            subscriptionId: "s1",
+            topic: "post:1",
+        });
+
+        expect(response.status).toBe(403);
+        // A denied subscribe never reaches the shard.
+        expect(calls).toHaveLength(0);
+    });
+
+    it("forwards an allowed subscribe to the control endpoint", async () => {
+        expect.assertions(2);
+
+        const calls: ShardCall[] = [];
+        const stream = defineLiveStream({ id: "posts", onSubscribe: () => true });
+        const context = makeContext(calls);
+
+        const response = await dispatch(stream.control, context, "POST", "/live/posts/control", {
+            action: "subscribe",
+            connectionId: "c1",
+            subscriptionId: "s1",
+            topic: "post:1",
+        });
+
+        expect(response.status).toBe(200);
+        expect(calls[0]).toEqual({
+            init: { body: JSON.stringify({ action: "subscribe", connectionId: "c1", subscriptionId: "s1", topic: "post:1", stream: "posts" }), method: "POST" },
+            path: "/_lunora/live/control",
+            shardKey: undefined,
+        });
+    });
+
+    it("does not authorize an unsubscribe", async () => {
+        expect.assertions(1);
+
+        const calls: ShardCall[] = [];
+        const onSubscribe = vi.fn<() => boolean>(() => false);
+        const stream = defineLiveStream({ id: "posts", onSubscribe });
+        const context = makeContext(calls);
+
+        // A revoked member must still be able to leave.
+        await dispatch(stream.control, context, "POST", "/live/posts/control", {
+            action: "unsubscribe",
+            connectionId: "c1",
+            subscriptionId: "s1",
+            topic: "post:1",
+        });
+
+        expect(onSubscribe).not.toHaveBeenCalled();
+    });
+
+    it("lets allowAnonymousControl bypass onSubscribe entirely", async () => {
+        expect.assertions(1);
+
+        const calls: ShardCall[] = [];
+        const onSubscribe = vi.fn<() => boolean>(() => false);
+        const stream = defineLiveStream({ allowAnonymousControl: true, id: "posts", onSubscribe });
+        const context = makeContext(calls);
+
+        const response = await dispatch(stream.control, context, "POST", "/live/posts/control", {
+            action: "subscribe",
+            connectionId: "c1",
+            subscriptionId: "s1",
+            topic: "anything",
+        });
+
+        expect(response.status).toBe(200);
+    });
+
+    it("denies a handler that returns a truthy value other than a literal true", async () => {
+        expect.assertions(1);
+
+        // A row, an object or a truthy string must not open a topic: only `true` allows.
+        const stream = defineLiveStream({
+            id: "posts",
+            onSubscribe: () => ({ id: "post:1" }) as unknown as boolean,
+        });
+        const context = makeContext([]);
+
+        const response = await dispatch(stream.control, context, "POST", "/live/posts/control", {
+            action: "subscribe",
+            connectionId: "c1",
+            subscriptionId: "s1",
+            topic: "post:1",
+        });
+
+        expect(response.status).toBe(403);
+    });
+
+    it("refuses publish on the public control route; publish has its own endpoint", async () => {
+        expect.assertions(2);
+
+        const calls: ShardCall[] = [];
+        const stream = defineLiveStream({ allowAnonymousControl: true, id: "posts" });
+        const context = makeContext(calls);
+
+        const response = await dispatch(stream.control, context, "POST", "/live/posts/control", {
+            action: "publish",
+            data: "forged",
+            topic: "room:chat",
+        });
+
+        expect(response.status).toBe(400);
+        expect(calls).toHaveLength(0);
+    });
+
+    it("stamps the control body with this stream's id, ignoring any stream the browser names", async () => {
+        expect.assertions(1);
+
+        const calls: ShardCall[] = [];
+        const stream = defineLiveStream({ allowAnonymousControl: true, id: "posts" });
+        const context = makeContext(calls);
+
+        await dispatch(stream.control, context, "POST", "/live/posts/control", {
+            action: "subscribe",
+            connectionId: "c1",
+            stream: "private",
+            subscriptionId: "s1",
+            topic: "post:1",
+        });
+
+        expect(JSON.parse(calls[0]?.init?.body ?? "{}") as unknown).toMatchObject({ stream: "posts" });
+    });
+
+    it("denies when the onSubscribe handler throws", async () => {
+        expect.assertions(1);
+
+        const stream = defineLiveStream({
+            id: "posts",
+            onSubscribe: () => {
+                throw new Error("membership lookup failed");
+            },
+        });
+        const context = makeContext([]);
+
+        const response = await dispatch(stream.control, context, "POST", "/live/posts/control", {
+            action: "subscribe",
+            connectionId: "c1",
+            subscriptionId: "s1",
+            topic: "post:1",
+        });
+
+        expect(response.status).toBe(403);
+    });
+
+    it("rejects a control request with no topic", async () => {
+        expect.assertions(1);
+
+        const stream = defineLiveStream({ allowAnonymousControl: true, id: "posts" });
+        const context = makeContext([]);
+
+        const response = await dispatch(stream.control, context, "POST", "/live/posts/control", { action: "subscribe" });
+
+        expect(response.status).toBe(400);
+    });
+});

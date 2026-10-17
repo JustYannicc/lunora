@@ -202,6 +202,18 @@ interface ClientShapeUnsubscribeMessage {
 }
 ```
 
+### `ConnectLiveStreamOptions` (interface)
+
+```ts
+interface ConnectLiveStreamOptions {
+    fetch?: typeof fetch;
+    headers?: Record<string, string>;
+    maxDelayMs?: number;
+    retryDelay?: number;
+    withCredentials?: boolean;
+}
+```
+
 ### `ConnectionStatus` (type)
 
 ```ts
@@ -387,6 +399,37 @@ Re-exported from `@lunora/runtime` — signature tracked at its source.
 ### `KvValueResult` (interface)
 
 Re-exported from `@lunora/runtime` — signature tracked at its source.
+
+### `LiveStream` (interface)
+
+```ts
+interface LiveStream {
+    close: () => void;
+    readonly connectionId: string | undefined;
+    onEvent: (handler: (event: LiveStreamEvent) => void) => () => void;
+    readonly ready: Promise<void>;
+    subscribe: (options: LiveStreamSubscribeOptions) => () => void;
+}
+```
+
+### `LiveStreamEvent` (interface)
+
+```ts
+interface LiveStreamEvent {
+    payload: unknown;
+    topic: string;
+}
+```
+
+### `LiveStreamSubscribeOptions` (interface)
+
+```ts
+interface LiveStreamSubscribeOptions {
+    id?: string;
+    onEvent?: (payload: unknown) => void;
+    topic: string;
+}
+```
 
 ### `LunoraClient` (class)
 
@@ -1553,6 +1596,12 @@ type WsTokenProvider = () => Promise<string | undefined> | string | undefined;
 
 ```ts
 const applyDelta: (current: unknown, delta: MutationDelta) => Record<string, unknown> | undefined | unknown[];
+```
+
+### `connectLiveStream` (const)
+
+```ts
+const connectLiveStream: (url: string, options?: ConnectLiveStreamOptions) => LiveStream;
 ```
 
 ### `createAsyncStoragePersistence` (const)

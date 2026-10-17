@@ -962,7 +962,18 @@ interface HttpActionContext {
         }) => Promise<unknown>;
     };
     fetch: typeof globalThis.fetch;
+    fetchShard: (shardKey: string | undefined, path: string, init?: {
+        body?: string;
+        headers?: Record<string, string>;
+        method?: string;
+    }) => Promise<Response>;
     forShard: (shardKey: string) => Pick<HttpActionContext, "runAction" | "runMutation" | "runQuery">;
+    live: {
+        publish: (topic: string, payload: unknown, options: {
+            shardKey?: string;
+            stream: string;
+        }) => Promise<void>;
+    };
     runAction: <R>(reference: unknown, args?: Record<string, unknown>) => Promise<R>;
     runMutation: <R>(reference: unknown, args?: Record<string, unknown>) => Promise<R>;
     runQuery: <R>(reference: unknown, args?: Record<string, unknown>) => Promise<R>;

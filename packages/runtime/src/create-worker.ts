@@ -18,6 +18,7 @@ import {
     EXPECT_SUBJECT_HEADER,
     isIdentityExpired,
 } from "../../../shared/identity-header";
+import { LIVE_PUBLISH_PATH } from "../../../shared/live-stream";
 import { ORIGIN_PAYWALL_APPLIED, ORIGIN_PAYWALL_HEADER } from "../../../shared/origin-paywall";
 import { buildTraceparent, otlpRandomHex } from "../../../shared/otlp";
 import { CF_RAY_HEADER, parseRayId } from "../../../shared/ray-id";
@@ -129,6 +130,15 @@ interface HttpActionContext {
     fetch: typeof globalThis.fetch;
 
     /**
+     * Forward a server-to-server request to a shard DO, carrying the caller's
+     * resolved identity headers. Structural mirror of `@lunora/server`'s
+     * `ShardFetch` — kept structural so the runtime stays free of a
+     * `@lunora/server` dependency. The live-stream primitive uses it to reach
+     * the shard's SSE + subscriber-registry endpoints.
+     */
+    fetchShard: (shardKey: string | undefined, path: string, init?: { body?: string; headers?: Record<string, string>; method?: string }) => Promise<Response>;
+
+    /**
      * The same `run*` trio bound to a named shard, mirroring
      * `createShardClient(...).forShard(key)`.
      *
@@ -140,6 +150,13 @@ interface HttpActionContext {
      * (usually none) with no error and no way to say otherwise.
      */
     forShard: (shardKey: string) => Pick<HttpActionContext, "runAction" | "runMutation" | "runQuery">;
+
+    /**
+     * Publish an arbitrary event to a live topic on a stream. Structural mirror of
+     * `@lunora/server`'s `LivePublisher`.
+     */
+    live: { publish: (topic: string, payload: unknown, options: { shardKey?: string; stream: string }) => Promise<void> };
+
     runAction: <R>(reference: unknown, args?: Record<string, unknown>) => Promise<R>;
     runMutation: <R>(reference: unknown, args?: Record<string, unknown>) => Promise<R>;
     runQuery: <R>(reference: unknown, args?: Record<string, unknown>) => Promise<R>;
@@ -3969,7 +3986,7 @@ const createWorker = (options: WorkerOptions): LunoraWorker => {
         // sign-in page, webhooks — before any route matched, so a refusal would
         // lock a user with a stale cookie out of the very page that refreshes it.
         // A route that needs a caller answers its own 401 off `auth.userId`.
-        const { claims, headers, userId } = withoutLapsedCredential(await forwardContext(request, env, publicResolveIdentity));
+        const { claims, headers, identity, userId } = withoutLapsedCredential(await forwardContext(request, env, publicResolveIdentity));
 
         const sinkContext = buildSinkContext(env, request, (promise) => context.waitUntil?.(promise));
 
@@ -4045,6 +4062,45 @@ const createWorker = (options: WorkerOptions): LunoraWorker => {
 
         const run = runOn(defaultShard);
 
+        // Forward a server-to-server request to a shard DO under the caller's
+        // resolved identity headers. The live-stream primitive (`defineLiveStream`)
+        // uses this to reach the shard's subscriber registry: the SSE stream is
+        // served by the DO, so the worker-side route forwards to it rather than
+        // holding a connection-scoped subscription it could not keep.
+        const fetchShard: HttpActionContext["fetchShard"] = async (shardKey, path, init = {}) => {
+            // A shard the caller names is client-addressable (`?shard=` on a live
+            // connect), so it passes the same gate the REST path applies. The
+            // default shard is the app's own and is not gated here.
+            if (shardKey !== undefined) {
+                await assertShardAuthorized(identity, shardKey);
+            }
+
+            const forwardedHeaders = new Headers();
+
+            // Only the caller's ordinary headers pass. Every `x-lunora-*` header is the
+            // runtime's to set: an anonymous caller must not be able to forge identity
+            // through a header the resolved context does not carry.
+            for (const [name, value] of Object.entries(init.headers ?? {})) {
+                if (!name.toLowerCase().startsWith("x-lunora-")) {
+                    forwardedHeaders.set(name, value);
+                }
+            }
+
+            for (const [name, value] of Object.entries(headers)) {
+                forwardedHeaders.set(name, value);
+            }
+
+            return forwardToShard(
+                shardDO,
+                shardKey ?? defaultShard,
+                new Request(new URL(path, request.url), {
+                    headers: forwardedHeaders,
+                    method: init.method ?? "GET",
+                    ...(init.body === undefined ? {} : { body: init.body }),
+                }),
+            );
+        };
+
         return {
             auth: {
                 getIdentity: () => Promise.resolve(claims),
@@ -4052,10 +4108,40 @@ const createWorker = (options: WorkerOptions): LunoraWorker => {
             },
             cache: context.cache,
             fetch: globalThis.fetch.bind(globalThis),
+            fetchShard,
             forShard: (shardKey: string) => {
                 const scoped = runOn(shardKey);
 
                 return { runAction: scoped, runMutation: scoped, runQuery: scoped };
+            },
+            live: {
+                // Wire-encode the payload once so bytes/bigint survive the hop; the
+                // shard embeds it verbatim into the whisper + SSE frames. A publish
+                // is best-effort — a topic with no subscribers is a no-op, and a
+                // forward failure is swallowed rather than 500ing the calling route.
+                publish: async (topic, payload, publishOptions) => {
+                    const shardKey = publishOptions.shardKey ?? defaultShard;
+
+                    // Trusted server code, so the caller's identity is not gated; the
+                    // reserved-name refusal still applies (`isAdmin` skips the policy only).
+                    // eslint-disable-next-line unicorn/no-null -- the anonymous identity sentinel is `null`, matching the identity contract
+                    await assertShardAuthorized(null, shardKey, true);
+
+                    const response = await forwardToShard(
+                        shardDO,
+                        shardKey,
+                        new Request(new URL(LIVE_PUBLISH_PATH, request.url), {
+                            // eslint-disable-next-line unicorn/no-null -- an omitted publish payload is delivered as an explicit JSON null
+                            body: JSON.stringify({ data: encodeWire(payload ?? null), stream: publishOptions.stream, topic }),
+                            headers: { "content-type": "application/json" },
+                            method: "POST",
+                        }),
+                    );
+
+                    if (!response.ok) {
+                        throw new LunoraError(`ctx.live.publish to "${topic}" failed with HTTP ${String(response.status)}`, { code: "INTERNAL", status: 500 });
+                    }
+                },
             },
             runAction: run,
             runMutation: run,
