@@ -1,21 +1,25 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
 import { build, transform } from "esbuild";
 import { describe, expect, it } from "vitest";
 
 import { emitFunctions, emitLazyFunctionModules } from "../src/emit";
 import type { FunctionIR } from "../src/ir";
 
-const makeFunction = (exportName: string, overrides: Partial<FunctionIR> = {}): FunctionIR => ({
-    args: { id: { kind: "string" } },
-    exportName,
-    filePath: "posts",
-    kind: "query",
-    returnType: "string",
-    ...overrides,
-});
+const makeFunction = (exportName: string, overrides: Partial<FunctionIR> = {}): FunctionIR => {
+    return {
+        args: { id: { kind: "string" } },
+        exportName,
+        filePath: "posts",
+        kind: "query",
+        returnType: "string",
+        ...overrides,
+    };
+};
 
 describe("lazy function registry", () => {
     it("emits static paid and REST metadata while deferring the user module and AOT validators", () => {
@@ -80,13 +84,17 @@ describe("lazy function registry", () => {
         const generatedDirectory = join(projectRoot, "_generated");
         const shimDirectory = join(generatedDirectory, "fn");
         const packageDirectory = join(projectRoot, "node_modules", "@lunora");
-        const stateName = `__lunoraLazyRegistry${Date.now()}${Math.random().toString(16).slice(2)}`;
+        const stateName = `__lunoraLazyRegistry${randomUUID()}`;
         const definition = makeFunction("premium", { args: { name: { kind: "string" } } });
         const options = { functions: [definition, makeFunction("sibling", { args: {} })], lazyFunctions: true };
         const registrySource = emitFunctions(options);
         const shimSource = emitLazyFunctionModules(options)["fn/lunora_posts_0.ts"];
 
         try {
+            if (shimSource === undefined) {
+                throw new Error("Missing generated lazy function shim: fn/lunora_posts_0.ts");
+            }
+
             mkdirSync(shimDirectory, { recursive: true });
             mkdirSync(join(packageDirectory, "server"), { recursive: true });
             mkdirSync(join(packageDirectory, "errors"), { recursive: true });
@@ -122,8 +130,11 @@ export const sibling = { args: {}, kind: "query", handler() { return "sibling"; 
             const registryFile = join(generatedDirectory, "functions.mjs");
             const shimFile = join(shimDirectory, "lunora_posts_0.js");
             const shimPayloadFile = join(projectRoot, "lazy-shim.js");
-            writeFileSync(registryFile, (await transform(registrySource, { format: "esm", loader: "ts", target: "node22" })).code);
-            writeFileSync(shimPayloadFile, (await transform(shimSource, { format: "esm", loader: "ts", target: "node22" })).code);
+            const registryModule = await transform(registrySource, { format: "esm", loader: "ts", target: "node22" });
+            const shimModule = await transform(shimSource, { format: "esm", loader: "ts", target: "node22" });
+
+            writeFileSync(registryFile, registryModule.code);
+            writeFileSync(shimPayloadFile, shimModule.code);
 
             const runnerFile = join(projectRoot, "run-lazy-registry.mjs");
             writeFileSync(
@@ -149,7 +160,8 @@ await moduleStarted;
 const coalescedEvaluations = state.evaluations;
 state.release();
 await Promise.all([first, second]);
-const loaded = registry.LUNORA_FUNCTIONS["posts:premium"];
+const { LUNORA_FUNCTIONS: handlers } = registry;
+const loaded = handlers["posts:premium"];
 const values = await import(pathToFileURL(config.valuesFile));
 const parsed = values.parseValidatorMap(loaded.args, { extra: true, name: "Ada" }, "args");
 const handlerResult = await loaded.handler({}, { name: "Ada" });
@@ -170,7 +182,7 @@ process.stdout.write(JSON.stringify({
   parseCalls: state.parseCalls,
   parsed,
 }));
-delete globalThis[config.stateName];
+Reflect.deleteProperty(globalThis, config.stateName);
 `,
             );
             const output = execFileSync(
@@ -189,16 +201,16 @@ delete globalThis[config.stateName];
             );
             const result = JSON.parse(output) as {
                 cacheReusedEntry: boolean;
-                coldEntryMissing: boolean;
-                synchronousEntry: boolean;
-                siblingResult: string;
                 coalescedEvaluations: number;
+                coldEntryMissing: boolean;
                 failedLoadsRejected: boolean;
                 finalEvaluations: number;
                 handlerCalls: number;
                 handlerResult: string;
                 parseCalls: number;
                 parsed: Record<string, unknown>;
+                siblingResult: string;
+                synchronousEntry: boolean;
             };
 
             expect(result.failedLoadsRejected).toBe(true);
@@ -213,7 +225,7 @@ delete globalThis[config.stateName];
             expect(result.parsed).toEqual({ name: "Ada" });
             expect(result.parseCalls).toBe(0);
         } finally {
-            delete (globalThis as Record<string, unknown>)[stateName];
+            Reflect.deleteProperty(globalThis, stateName);
             rmSync(projectRoot, { force: true, recursive: true });
         }
     });
