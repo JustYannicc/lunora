@@ -5150,11 +5150,11 @@ abstract class ShardDO {
         const resultJson = JSON.stringify(encodedResult);
 
         try {
-            if (this.deliveryAuthorization) {
-                // An ungated write must not leave bytes that a later epoch can certify after a marker failure.
+            writeIdempotent(this.sql as SqlExec, namespace, this.currentRequestMutationId, resultJson, now);
+            // Expired ungated claims can overlap: certify only bytes this permit actually produced.
+            if (this.deliveryAuthorization && readIdempotent(this.sql as SqlExec, namespace, this.currentRequestMutationId)?.resultJson === resultJson) {
                 this.deliveryFence.recordReceipt(namespace, this.currentRequestMutationId, this.currentDeliveryPermit, now);
             }
-            writeIdempotent(this.sql as SqlExec, namespace, this.currentRequestMutationId, resultJson, now);
 
             // Throttled GC: drop dedup rows past the retention window at most once
             // per interval per warm instance.
