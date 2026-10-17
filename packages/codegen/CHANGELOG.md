@@ -1,3 +1,22 @@
+## @lunora/codegen [1.0.0-alpha.316](https://github.com/anolilab/lunora/compare/@lunora/codegen@1.0.0-alpha.315...@lunora/codegen@1.0.0-alpha.316) (2026-10-17)
+
+### Features
+
+* **server:** typed rooms (defineRoom) over the whisper transport ([#1217](https://github.com/anolilab/lunora/issues/1217)) ([51f66b8](https://github.com/anolilab/lunora/commit/51f66b8d940ea4f876ff2380225d172a95265922))
+
+
+### Dependencies
+
+* **@lunora/advisor:** upgraded to 1.0.0-alpha.226
+* **@lunora/agent:** upgraded to 1.0.0-alpha.218
+* **@lunora/platform:** upgraded to 1.0.0-alpha.66
+* **@lunora/queue:** upgraded to 1.0.0-alpha.109
+* **@lunora/scheduler:** upgraded to 1.0.0-alpha.131
+* **@lunora/bindings:** upgraded to 1.0.0-alpha.116
+* **@lunora/do:** upgraded to 1.0.0-alpha.219
+* **@lunora/server:** upgraded to 1.0.0-alpha.210
+* **@lunora/shard-engine:** upgraded to 1.0.0-alpha.133
+
 ## @lunora/codegen [1.0.0-alpha.315](https://github.com/anolilab/lunora/compare/@lunora/codegen@1.0.0-alpha.314...@lunora/codegen@1.0.0-alpha.315) (2026-10-16)
 
 
