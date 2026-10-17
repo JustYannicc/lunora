@@ -320,7 +320,16 @@ const inferToFixpoint = (options: {
         const lazyFunctionsForRegistry = lazyFunctions === true;
 
         const apiContent = emitApi({ agents, functions: emittedFunctions, httpRoutes, mutators, useUmbrella, workflows });
-        const functionsOptions = { agents, functions: emittedFunctions, lazyFunctions: lazyFunctionsForRegistry, migrations, mutators, shapes, useUmbrella, usesSandbox };
+        const functionsOptions = {
+            agents,
+            functions: emittedFunctions,
+            lazyFunctions: lazyFunctionsForRegistry,
+            migrations,
+            mutators,
+            shapes,
+            useUmbrella,
+            usesSandbox,
+        };
         const functionsContent = emitFunctions(functionsOptions);
         const functionModulesContent = emitLazyFunctionModules(functionsOptions);
         const internalContent = emitInternalApi({ functions, useUmbrella });
@@ -333,9 +342,21 @@ const inferToFixpoint = (options: {
             (projectFileMatches(project, apiPath, apiContent) &&
                 projectFileMatches(project, internalPath, internalContent) &&
                 projectFileMatches(project, generatedFunctionsPath, functionsContent) &&
-                Object.entries(functionModulesContent).every(([path, content]) => projectFileMatches(project, join(lunoraDirectory, "_generated", path), content)))
+                Object.entries(functionModulesContent).every(([path, content]) =>
+                    projectFileMatches(project, join(lunoraDirectory, "_generated", path), content),
+                ))
         ) {
-            return { apiContent, erased, functions, functionModulesContent, functionsContent, httpRoutes, internalContent, lazyFunctions: lazyFunctionsForRegistry, mutators };
+            return {
+                apiContent,
+                erased,
+                functions,
+                functionModulesContent,
+                functionsContent,
+                httpRoutes,
+                internalContent,
+                lazyFunctions: lazyFunctionsForRegistry,
+                mutators,
+            };
         }
 
         syncProjectFile(project, apiPath, apiContent);
@@ -854,9 +875,7 @@ export const runCodegen = (options: CodegenOptions): CodegenResult => {
             : undefined;
     const schemaSnapshotPath = join(lunoraDirectory, SCHEMA_SNAPSHOT_FILENAME);
     const schemaSnapshotExists = existsSync(schemaSnapshotPath);
-    const lazyFunctionShimFiles = Object.fromEntries(
-        Object.entries(functionModulesContent).map(([path, content]) => [path.replace(/^fn\//u, ""), content]),
-    );
+    const lazyFunctionShimFiles = Object.fromEntries(Object.entries(functionModulesContent).map(([path, content]) => [path.replace(/^fn\//u, ""), content]));
 
     // The `_generated/` files this run emits, in write order. Which files those
     // are depends on the project (conditional features, `apiSpec`), so it is
