@@ -71,22 +71,23 @@ interface LiveStream {
     subscribe: (options: LiveStreamSubscribeOptions) => () => void;
 }
 
-/** A `…/connect` (optionally followed by a query string) at the end of a URL. */
-const CONNECT_SUFFIX = /\/connect(?:\?.*)?$/u;
-
-/** The trailing `/connect` to swap for `/control`, matched only at the end. */
-const CONNECT_REPLACE = /\/connect(?=\?|$)/u;
-
 /** A single leading space after an SSE field colon. */
 const LEADING_SPACE = /^ /u;
 
-/** Derive the control URL from the connect URL (`…/connect` → `…/control`). */
+/**
+ * Derive the control URL from the connect URL (`…/connect` → `…/control`), keeping any
+ * query string. The path is split off by hand: a regex over the whole URL backtracks
+ * polynomially on a crafted `/connect?/connect?…` input.
+ */
 const controlUrlFor = (url: string): string => {
-    if (!CONNECT_SUFFIX.test(url)) {
+    const queryAt = url.indexOf("?");
+    const path = queryAt === -1 ? url : url.slice(0, queryAt);
+
+    if (!path.endsWith("/connect")) {
         throw new Error(`connectLiveStream: expected a connect URL ending in "/connect", got "${url}"`);
     }
 
-    return url.replace(CONNECT_REPLACE, "/control");
+    return `${path.slice(0, -"/connect".length)}/control${queryAt === -1 ? "" : url.slice(queryAt)}`;
 };
 
 /** Parse one SSE block into its `event:` name and joined `data:` payload. */

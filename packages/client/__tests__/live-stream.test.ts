@@ -221,6 +221,36 @@ describe("connectLiveStream", () => {
         expect(() => connectLiveStream("https://x/live/posts")).toThrow(/connect URL/u);
     });
 
+    it("derives the control url from the connect path, keeping the query string as written", async () => {
+        expect.assertions(2);
+
+        const { fetchImpl } = setup();
+        const urls: string[] = [];
+        const fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+            if (typeof input === "string") {
+                urls.push(input);
+            } else {
+                urls.push(input instanceof URL ? input.href : input.url);
+            }
+
+            return fetchImpl(input, init);
+        };
+
+        const live = connectLiveStream("https://x/app/connect/connect?note=/connect&shard=t", { fetch });
+
+        await live.ready;
+
+        live.subscribe({ id: "s1", topic: "feed" });
+
+        await flush();
+
+        // Only the final path segment is swapped; a `/connect` inside the query is left alone.
+        expect(urls.at(-1)).toBe("https://x/app/connect/control?note=/connect&shard=t");
+        expect(live.connectionId).toBe("c1");
+
+        live.close();
+    });
+
     it("routes a multiplexed frame to every subscription on its topic", async () => {
         expect.assertions(2);
 
