@@ -369,7 +369,7 @@ import {
 import { buildBatchEntryRequest } from "./batch";
 import { CdcRetentionRunner } from "./cdc-retention";
 import { deliveryAccessDenied, isDeliveryAccessDenied } from "./delivery-access-denied";
-import type { DeliveryAuthorization, DeliveryPermit } from "./delivery-authorization";
+import type { DeliveryAuthorization, DeliveryAuthorizationRequest, DeliveryPermit } from "./delivery-authorization";
 import { DeliveryFence, validDeliveryPermit } from "./delivery-authorization";
 import type { InFlightClaim } from "./in-flight-claims";
 import { InFlightClaims } from "./in-flight-claims";
@@ -5611,6 +5611,9 @@ abstract class ShardDO {
      * identical, so we build a payload keyed by `subId` lazily.
      */
     protected broadcastDelta(delta: MutationDelta): void {
+        if (this.deliveryAuthorization) {
+            throw new LunoraError("NOT_IMPLEMENTED", "broadcastDelta is unsupported with delivery authorization");
+        }
         const sockets = this.runner.sockets();
         // Pre-stringify the immutable portion. The only per-message variation
         // is `id`, which we splice in below — cheaper than calling
@@ -8124,9 +8127,12 @@ abstract class ShardDO {
         registrations.set(subId, registration);
         let permit: DeliveryPermit | undefined;
         try {
-            permit = await this.authorizeDelivery(identity, functionPath, args, "subscription");
+            permit = await this.authorizeDelivery(identity, functionPath, args, "subscription", { admin: false, system: false });
         } catch (error) {
             if (registrations.get(subId) !== registration) {
+                return undefined;
+            }
+            if (this.endSubscriptionOnAuthorityFailure(ws, subId, functionPath, error)) {
                 return undefined;
             }
             throw error;
@@ -8158,21 +8164,42 @@ abstract class ShardDO {
         return { ...permit, registration };
     }
 
+    private endSubscriptionOnAuthorityFailure(ws: ShardSocketLike, subId: string, functionPath: string, error: unknown): boolean {
+        // Called only around authority resolution; a query throwing the same code keeps its existing recovery behavior.
+        if (!isLunoraError(error) || !["FORBIDDEN", "INTERNAL"].includes(error.code)) {
+            return false;
+        }
+        this.unsubscribe(ws, subId);
+        const { body } = toErrorBody(error, { redactedMessage: "internal error" });
+        this.sendSubscriptionError(ws, subId, body.code, body.message);
+        this.recordSubscriptionRefreshError(functionPath, error, { subId });
+        return true;
+    }
+
     private async authorizeDelivery(
         identity: SubscriptionIdentity,
         functionPath: string,
         args: Record<string, unknown>,
         transport: "subscription" | "rpc",
+        flags: Pick<DeliveryAuthorizationRequest, "admin" | "system">,
     ): Promise<DeliveryPermit | undefined> {
         if (!this.deliveryAuthorization) {
             return undefined;
         }
-        const permit = await this.deliveryAuthorization({ identity, functionPath, args, shardKey: this.runner.shardKey, transport });
+        let permit: DeliveryPermit | undefined;
+        try {
+            permit = await this.deliveryAuthorization({ identity, functionPath, args, shardKey: this.runner.shardKey, transport, ...flags });
+        } catch (error) {
+            if (error instanceof TypeError) {
+                throw new LunoraError("INTERNAL", "delivery authority failed", { cause: error });
+            }
+            throw error;
+        }
         if (permit === undefined) {
             throw deliveryAccessDenied();
         }
         if (!validDeliveryPermit(permit)) {
-            throw new TypeError("delivery authority returned an invalid permit");
+            throw new LunoraError("INTERNAL", "delivery authority returned an invalid permit");
         }
         if (!this.deliveryFence.allows(permit)) {
             throw deliveryAccessDenied();
@@ -8233,11 +8260,15 @@ abstract class ShardDO {
         }
         let permit: DeliveryPermit | undefined;
         try {
-            permit = await this.authorizeDelivery(identity, payload.functionPath, args, "rpc");
+            permit = await this.authorizeDelivery(identity, payload.functionPath, args, "rpc", {
+                admin: typeof payload.functionPath === "string" && payload.functionPath.startsWith(ADMIN_FUNCTION_PREFIX) && this.isAdminAuthorized(request),
+                system: request.headers.get("x-lunora-system") === "1",
+            });
         } catch (error) {
-            return isDeliveryAccessDenied(error)
-                ? jsonResponse({ error: { code: "FORBIDDEN", message: "AccessDenied" } }, 403)
-                : jsonResponse({ error: { code: "SHARD_UNAVAILABLE", message: "delivery authority unavailable" } }, 503);
+            if (isLunoraError(error)) {
+                return this.errorToResponse(error);
+            }
+            return jsonResponse({ error: { code: "SHARD_UNAVAILABLE", message: "delivery authority unavailable" } }, 503);
         }
         if (permit !== undefined) {
             this.deliveryRequestPermits.set(request, permit);

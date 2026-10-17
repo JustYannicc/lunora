@@ -10,10 +10,14 @@ interface DeliveryPermit {
 }
 
 interface DeliveryAuthorizationRequest {
+    /** True only for a reserved admin RPC with a validated bearer. */
+    readonly admin: boolean;
     readonly args: Record<string, unknown>;
     readonly functionPath: string;
     readonly identity: SubscriptionIdentity;
     readonly shardKey: string | undefined;
+    /** Trusted server dispatch at the native binding; always false for subscriptions. */
+    readonly system: boolean;
     readonly transport: "subscription" | "rpc";
 }
 

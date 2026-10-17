@@ -39,10 +39,12 @@ type DeliveryAuthorization = (request: DeliveryAuthorizationRequest) => Promise<
 
 ```ts
 interface DeliveryAuthorizationRequest {
+    readonly admin: boolean;
     readonly args: Record<string, unknown>;
     readonly functionPath: string;
     readonly identity: SubscriptionIdentity;
     readonly shardKey: string | undefined;
+    readonly system: boolean;
     readonly transport: "subscription" | "rpc";
 }
 ```

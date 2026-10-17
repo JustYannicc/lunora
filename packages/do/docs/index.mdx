@@ -84,9 +84,15 @@ studio's metrics panel.
 ## Delivery authorization
 
 Opt in with the generated app builder's `.deliveryAuthorization(env => callback)`.
-The async callback receives `{ identity, shardKey, functionPath, args, transport }`,
-with `transport: "rpc" | "subscription"`. Return `undefined` to deny or `{ scope, epoch }`
-from current authority. Queries still own row and field filtering.
+The async callback receives
+`{ identity, shardKey, functionPath, args, transport, system, admin }`. `transport` is
+`"rpc" | "subscription"`; `system` and `admin` are booleans.
+Lunora sets `system: true` only for server-initiated RPCs at its trusted binding.
+It sets `admin: true` only when a reserved admin function passes the configured bearer check.
+Subscription callbacks receive `system: false` and `admin: false`. These flags describe
+the request. Your callback decides whether either context receives a permit. Return
+`undefined` to deny or `{ scope, epoch }` from current authority. Queries still own row
+and field filtering.
 
 ```ts
 import { installDeliveryFence, type DeliveryPermit } from "@lunora/do";
@@ -111,15 +117,24 @@ exact shard key. The helper signs a private binding request and waits for acknow
 Commit policy and durable pending invalidations together, deny stale permits immediately,
 and retry every affected shard's fence before acknowledging revocation.
 
-This supports RPCs and ordinary subscriptions. Guarded shards refuse shapes, streams,
-raw subscriptions, whispers, rooms and relays; replicas must route to the owner.
+This supports RPCs and ordinary query-backed subscriptions. Guarded shards refuse
+shapes, streams, raw subscriptions, whispers, rooms and relays. The legacy
+`broadcastDelta` path throws `NOT_IMPLEMENTED` rather than delivering deltas. Replicas
+must route to the owner.
 Query caches and shared subscription evaluations are bypassed. Every write flush
 reauthorizes and reevaluates guarded subscriptions; reconnects send fresh full snapshots.
 
-`DELIVERY_FENCED` means the operation may have committed; retry with the same native
-transport key. An older receipt returns terminal `DELIVERY_RECEIPT_FENCED` without
-its stored result or another execution. A fresh transport call requires your own durable
-operation key and current authorization; never blindly replace a possibly committed key.
+`DELIVERY_FENCED` means the operation may have committed. Retry with the same native
+transport key to check for its receipt. If authority changed, the shard may return
+terminal `DELIVERY_RECEIPT_FENCED` (409), without the stored result or another execution.
+Reconcile that operation against your own durable operation key and state before deciding
+whether to start a new operation. Do not replace the native key just to get past the fence.
+
+Delivery authorization adds receipt markers to native idempotency rows. Rows written
+before opt-in have no marker. Replaying one while its native row is retained returns
+`DELIVERY_RECEIPT_FENCED`; the shard does not migrate or replay its stored result. Native
+rows and receipt markers use the same 24-hour retention window, so enabling delivery
+authorization can fence recent pre-opt-in operations.
 
 ## `SessionDO`
 
