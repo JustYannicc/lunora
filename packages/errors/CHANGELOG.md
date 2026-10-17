@@ -1,3 +1,9 @@
+## @lunora/errors [1.0.0-alpha.58](https://github.com/anolilab/lunora/compare/@lunora/errors@1.0.0-alpha.57...@lunora/errors@1.0.0-alpha.58) (2026-10-17)
+
+### Bug Fixes
+
+* **errors:** register the stream and room codes in the error catalog ([#1231](https://github.com/anolilab/lunora/issues/1231)) ([00c51eb](https://github.com/anolilab/lunora/commit/00c51eb7dda307cfd07ec7b8cc3313113a105b2f))
+
 ## @lunora/errors [1.0.0-alpha.57](https://github.com/anolilab/lunora/compare/@lunora/errors@1.0.0-alpha.56...@lunora/errors@1.0.0-alpha.57) (2026-10-16)
 
 ### Features
