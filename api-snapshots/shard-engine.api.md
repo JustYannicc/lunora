@@ -2912,6 +2912,7 @@ interface SocketAttachment {
     ip?: string;
     pageDeltas?: boolean;
     shapes?: Record<string, ShapeSubscriptionQuery>;
+    socketPath?: string;
     subs: Record<string, SubscriptionQuery>;
     userId?: string;
     whispers?: string[];
