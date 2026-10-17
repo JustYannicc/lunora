@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { build, transform } from "esbuild";
+import { createProgram, flattenDiagnosticMessageText, getPreEmitDiagnostics, ModuleKind, ModuleResolutionKind, ScriptTarget } from "typescript";
 import { describe, expect, it } from "vitest";
 
 import { emitFunctions, emitLazyFunctionModules } from "../src/emit";
@@ -21,7 +22,83 @@ const makeFunction = (exportName: string, overrides: Partial<FunctionIR> = {}): 
     };
 };
 
+const typecheckGeneratedFunctions = (projectRoot: string, source: string): ReadonlyArray<string> => {
+    const generatedDirectory = join(projectRoot, "_generated");
+    const functionsFile = join(generatedDirectory, "functions.ts");
+    writeFileSync(functionsFile, source);
+
+    const program = createProgram({
+        options: {
+            module: ModuleKind.ESNext,
+            moduleResolution: ModuleResolutionKind.Bundler,
+            noEmit: true,
+            skipLibCheck: true,
+            strict: true,
+            target: ScriptTarget.ES2022,
+            types: [],
+        },
+        rootNames: [functionsFile],
+    });
+
+    return getPreEmitDiagnostics(program).map((diagnostic) => flattenDiagnosticMessageText(diagnostic.messageText, "\n"));
+};
+
+const makeFunctionTypecheckProject = (projectRoot: string): void => {
+    const generatedDirectory = join(projectRoot, "_generated");
+    const generatedFunctionDirectory = join(generatedDirectory, "fn");
+    const serverPackage = join(projectRoot, "node_modules", "@lunora", "server");
+    mkdirSync(generatedFunctionDirectory, { recursive: true });
+    mkdirSync(serverPackage, { recursive: true });
+
+    writeFileSync(join(serverPackage, "index.d.ts"), "export class LunoraError extends Error { constructor(code: string, message: string); code: string; }\n");
+    writeFileSync(
+        join(generatedDirectory, "server.ts"),
+        "export type ActionCtx = {}; export type MutationCtx = {}; export type QueryCtx = {}; export type RoomMessageOf<T> = unknown;\n",
+    );
+    writeFileSync(join(generatedDirectory, "dataModel.ts"), "export type Id<Table extends string = string> = string & { readonly __table: Table };\n");
+    writeFileSync(
+        join(projectRoot, "posts.ts"),
+        'export const premium = { args: {}, kind: "query" as const, handler: (_ctx: unknown, _args: { id: string }) => "ok" };\n',
+    );
+    writeFileSync(
+        join(generatedFunctionDirectory, "lunora_posts_0.ts"),
+        'export const premium = { args: {}, kind: "query" as const, handler: (_ctx: unknown, _args: { id: string }) => "ok" };\n',
+    );
+};
+
 describe("lazy function registry", () => {
+    it("checks lazy placeholder metadata without changing its emitted JavaScript", async () => {
+        expect.assertions(5);
+
+        const projectRoot = mkdtempSync(join(tmpdir(), "lunora-lazy-registry-types-"));
+
+        try {
+            makeFunctionTypecheckProject(projectRoot);
+            const source = emitFunctions({
+                functions: [makeFunction("premium", { expose: { rest: true }, x402: { price: "$0.05" } })],
+                lazyFunctions: true,
+            });
+            const checkedType = 'satisfies RegisteredLunoraFunction & Pick<FunctionManifestEntry, "argumentDescriptors" | "channel" | "expose">';
+            const invalidPlaceholder = source.replace(/(handler: unloadedFunctionHandler, \.\.\..*?)"kind":"query"/u, '$1"kind":"invalid"');
+            const oldCastControl = invalidPlaceholder.replaceAll(checkedType, "as unknown as RegisteredLunoraFunction");
+
+            expect(typecheckGeneratedFunctions(projectRoot, source)).toEqual([]);
+            expect(invalidPlaceholder).not.toBe(source);
+            expect(typecheckGeneratedFunctions(projectRoot, invalidPlaceholder)).toEqual([
+                expect.stringContaining("Type '\"invalid\"' is not assignable"),
+                expect.stringContaining("does not satisfy the expected type"),
+            ]);
+            expect(typecheckGeneratedFunctions(projectRoot, oldCastControl)).toEqual([]);
+
+            const checked = await transform(source, { loader: "ts", target: "es2022" });
+            const asserted = await transform(source.replaceAll(checkedType, "as unknown as RegisteredLunoraFunction"), { loader: "ts", target: "es2022" });
+
+            expect(checked.code).toBe(asserted.code);
+        } finally {
+            rmSync(projectRoot, { force: true, recursive: true });
+        }
+    });
+
     it("emits static paid and REST metadata while deferring the user module and AOT validators", () => {
         expect.assertions(8);
 

@@ -181,7 +181,7 @@ const renderFunctionRegistry = (
                     ...(definition.visibility ? { visibility: definition.visibility } : {}),
                     ...(definition.x402?.price === undefined ? {} : { x402: { price: definition.x402.price } }),
                 },
-            )} } as unknown as RegisteredLunoraFunction,`;
+            )} } satisfies RegisteredLunoraFunction & Pick<FunctionManifestEntry, "argumentDescriptors" | "channel" | "expose">,`;
         })
         .join("\n");
 
