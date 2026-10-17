@@ -70,7 +70,15 @@ describe("delivery-authorized transports", () => {
     it("keeps the private fence route absent when authorization is disabled", async () => {
         const test = setup();
         const unguarded = new TestShard(test.state, {});
-        expect((await unguarded.fetch(new Request("https://shard.internal/_lunora/delivery-fence", { method: "POST", body: "{}" }))).status).toBe(404);
+        const response = await unguarded.fetch(
+            new Request("https://shard.internal/_lunora/delivery-fence", {
+                method: "POST",
+                body: "{}",
+                headers: { "x-lunora-shard-binding": "LEGACY_SHARD" },
+            }),
+        );
+        expect(response.status).toBe(404);
+        expect(unguarded).toMatchObject({ shardBinding: "LEGACY_SHARD" });
     });
 
     it("reports an authority outage as retryable instead of access denial", async () => {

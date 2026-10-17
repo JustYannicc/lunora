@@ -3050,12 +3050,12 @@ abstract class ShardDO {
     public async fetch(request: Request): Promise<Response> {
         await this.ensureShardInit();
 
-        const url = new URL(request.url);
-        if (url.pathname === "/_lunora/delivery-fence") {
-            return this.deliveryAuthorization ? this.installDeliveryFence(request) : new Response("Not found", { status: 404 });
-        }
         if (!this.deliveryAuthorization) {
             return this.runner.handleFetch(request);
+        }
+        const url = new URL(request.url);
+        if (url.pathname === "/_lunora/delivery-fence") {
+            return this.installDeliveryFence(request);
         }
         if (!this.deliveryRoleSupported()) {
             if (this.runner.shardKey !== undefined && parseReplicaName(this.runner.shardKey) !== undefined) {
@@ -12438,7 +12438,7 @@ abstract class ShardDO {
                     // operator could see anywhere. See `recordSubscriptionRefreshError`.
                     if (isDeliveryAccessDenied(error)) {
                         this.revokeSubscription(ws, subId);
-                    } else if (isLunoraError(error) && error.code === "SUBSCRIPTION_PERSIST_FAILED") {
+                    } else if (this.deliveryAuthorization && isLunoraError(error) && error.code === "SUBSCRIPTION_PERSIST_FAILED") {
                         this.unsubscribe(ws, subId);
                         this.sendSubscriptionError(ws, subId, error.code, error.message);
                     }

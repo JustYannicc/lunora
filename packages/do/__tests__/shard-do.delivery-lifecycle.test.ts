@@ -3,11 +3,32 @@ import { serialize } from "node:v8";
 import { LunoraError } from "@lunora/errors";
 import { describe, expect, it } from "vitest";
 
-import { dataFrames, gate, permit, setup } from "./_helpers/delivery-authorization";
+import { dataFrames, gate, permit, setup, TestShard } from "./_helpers/delivery-authorization";
 
 const errors = (test: ReturnType<typeof setup>) => test.socket.frames.filter((frame) => frame.type === "error");
 
 describe("delivery authorization lifecycle", () => {
+    it("retains feature-off subscriptions when a handler throws the persistence error code", async () => {
+        const test = setup();
+        const unguarded = new TestShard(test.state, {});
+        const write = () =>
+            unguarded.fetch(
+                new Request("https://shard.internal/rpc", {
+                    method: "POST",
+                    body: JSON.stringify({ functionPath: "messages:write", args: {} }),
+                }),
+            );
+        await test.send(unguarded);
+        unguarded.queryFailure = new LunoraError("SUBSCRIPTION_PERSIST_FAILED", "user handler failure");
+        await write();
+        expect(test.socket.attachment.subs.view).toBeDefined();
+        expect(errors(test)).toEqual([]);
+        unguarded.queryFailure = undefined;
+        unguarded.rows = ["recovered"];
+        await write();
+        expect(dataFrames(test.socket).at(-1)?.data).toEqual(["recovered"]);
+    });
+
     it.each(["BAD_REQUEST", "NOT_FOUND", "UNAUTHORIZED"])("preserves a seed handler's %s error", async (code) => {
         const test = setup();
         test.shard.queryFailure = new LunoraError(code, "query refused");
