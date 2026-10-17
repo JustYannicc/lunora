@@ -130,12 +130,17 @@ This supports RPCs and ordinary query-backed subscriptions. Guarded shards refus
 shapes, streams, raw subscriptions, whispers, rooms and relays. The legacy
 `broadcastDelta` path throws `NOT_IMPLEMENTED` rather than delivering deltas. Replicas
 must route to the owner.
-Query caches and shared subscription evaluations are bypassed. Every write flush
-reauthorizes and reevaluates guarded subscriptions; reconnects send fresh full snapshots.
+Query caches and shared subscription evaluations are bypassed. Every write flush calls
+the authority callback again for guarded subscriptions. If the permit is unchanged, the
+subscription already has a delivered result and the write leaves its read set untouched,
+Lunora skips the query and sends no `settled` frame. Reconnects send fresh full snapshots.
 
 `DELIVERY_FENCED` means the operation may have committed. Retry with the same native
 transport key to check for its receipt. If authority changed, the shard may return
 terminal `DELIVERY_RECEIPT_FENCED` (409), without the stored result or another execution.
+Receipt replay requires the exact original scope and epoch, including after access is
+regranted: a new epoch can grant different row visibility, so its permit does not authorize
+returning bytes produced under the old one.
 Reconcile that operation against your own durable operation key and state before deciding
 whether to start a new operation. Do not replace the native key just to get past the fence.
 

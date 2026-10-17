@@ -14,19 +14,20 @@ const request = (mutationId?: string) =>
 class CachedReadShard extends ShardDO {
     public value = "old-policy";
     public runs = 0;
+    private readonly queries = new Set(["messages:list"]);
     public override handleRpc(): Promise<unknown> {
         this.runs += 1;
         return Promise.resolve(this.value);
     }
-    // eslint-disable-next-line class-methods-use-this -- mirrors generated registry classification
-    protected override isCacheableQuery(): boolean {
-        return true;
+    protected override isCacheableQuery(functionPath: string): boolean {
+        return this.queries.has(functionPath);
     }
 }
 
 class TransactionalReceiptShard extends ShardDO {
     public fail = false;
     public runs = 0;
+    private readonly mutations = new Set(["messages:list"]);
     public override handleRpc(): Promise<unknown> {
         return this.runInTransaction(() => {
             this.runs += 1;
@@ -37,9 +38,8 @@ class TransactionalReceiptShard extends ShardDO {
             return { runs: this.runs };
         });
     }
-    // eslint-disable-next-line class-methods-use-this -- mirrors generated registry classification
-    protected override isMutationFunction(): boolean {
-        return true;
+    protected override isMutationFunction(functionPath: string): boolean {
+        return this.mutations.has(functionPath);
     }
 }
 

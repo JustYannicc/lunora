@@ -24,6 +24,7 @@ class TwoRunShard extends TestShard {
 }
 
 class ReceiptMutationShard extends TestShard {
+    private readonly mutations = new Set(["messages:act"]);
     public constructor(
         state: ShardDOState,
         env: ConstructorParameters<typeof TestShard>[1],
@@ -42,9 +43,8 @@ class ReceiptMutationShard extends TestShard {
             return result;
         });
     }
-    // eslint-disable-next-line class-methods-use-this -- mirrors generated registry classification
-    protected override isMutationFunction(): boolean {
-        return true;
+    protected override isMutationFunction(functionPath: string): boolean {
+        return this.mutations.has(functionPath);
     }
 }
 

@@ -13,6 +13,7 @@ const request = (user: string, path: string, mutationId: string) =>
 class OverlappingMutationShard extends TestShard {
     public readonly action = { entered: gate(), release: gate() };
     public readonly mutation = { entered: gate(), release: gate() };
+    private readonly mutations = new Set(["messages:mutation"]);
     public override async handleRpc(path: string): Promise<unknown> {
         this.rpcRuns += 1;
         if (path === "messages:action") {
@@ -28,9 +29,8 @@ class OverlappingMutationShard extends TestShard {
             return value;
         });
     }
-    // eslint-disable-next-line class-methods-use-this -- mirrors the generated mutation registry
     protected override isMutationFunction(path: string): boolean {
-        return path === "messages:mutation";
+        return this.mutations.has(path);
     }
 }
 

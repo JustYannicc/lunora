@@ -25,6 +25,8 @@ interface DeliverySnapshot {
 class AuthorizedShard extends ShardDO {
     public attempts = 0;
     public parkActions = false;
+    private readonly mutations = new Set(["fixture:write"]);
+    private readonly subscriptionResult = { value: "private" };
     private readonly actions = new Map<number, { entered: PromiseWithResolvers<undefined>; released: PromiseWithResolvers<undefined> }>();
 
     public constructor(
@@ -75,14 +77,12 @@ class AuthorizedShard extends ShardDO {
         });
     }
 
-    // eslint-disable-next-line class-methods-use-this -- mirrors generated mutation classification
     protected override isMutationFunction(functionPath: string): boolean {
-        return functionPath === "fixture:write";
+        return this.mutations.has(functionPath);
     }
 
-    // eslint-disable-next-line class-methods-use-this -- supplies an ordinary live-query result through the production sender
     protected override executeSubscription(): Promise<SubscriptionOutcome> {
-        return Promise.resolve({ result: { value: "private" }, tables: new Set(["delivery_fixture"]) });
+        return Promise.resolve({ result: this.subscriptionResult, tables: new Set(["delivery_fixture"]) });
     }
 }
 
