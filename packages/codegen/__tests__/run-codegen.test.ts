@@ -1743,7 +1743,9 @@ export default app.extend(() => ({ backupCron: "0 4 * * *" })).build();
             expect(result.generated.functions).not.toContain('import * as lunora_messages_0 from "../messages.js";');
             expect(result.generated.functions).toContain("export const LUNORA_FUNCTION_MANIFEST");
             expect(result.generated.functions).toContain('"argumentDescriptors"');
-            expect(result.generated.shard).toContain("protected override prepareFunction(functionPath: string): Promise<void> | undefined");
+            expect(result.generated.shard).toContain(
+                'protected override prepareFunction(functionPath: string, reason: "rpc" | "subscription" | "stream" | "reactor" = "rpc"): Promise<void> | undefined',
+            );
             expect(result.generated.functions).toContain('"lunora_messages_0": () => import("./fn/lunora_messages_0.js")');
         });
 

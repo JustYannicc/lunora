@@ -48,6 +48,7 @@ const destructuredFactory = (binding: BindingElement): string | undefined => {
         binding.getInitializer() ||
         !Node.isIdentifier(name) ||
         !FACTORIES.has(name.getText()) ||
+        // `initLunora.create()` returns query/action/mutation roots; stream is a query terminal.
         name.getText() === "stream"
     ) {
         return undefined;

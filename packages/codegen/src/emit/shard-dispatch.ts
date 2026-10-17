@@ -272,13 +272,13 @@ __COMMITTED_CATCH__            } finally {
         }`;
 
 const SUBSCRIPTION_METHODS = `        protected override async executeSubscription(functionPath: string, args: Record<string, unknown>, identity?: SubscriptionIdentity): Promise<{ ranges?: Map<string, KeyRange[]>; result: unknown; tables: Set<string> } | null> {
-__PREPARE_FUNCTION__            const registered = LUNORA_FUNCTIONS[functionPath];
+            const registered = LUNORA_FUNCTIONS[functionPath];
 
             if (!registered || registered.kind !== "query" || registered.visibility === "internal") {
                 return null;
             }
 
-            this.ensureMigrated();
+__PREPARE_FUNCTION__            this.ensureMigrated();
 
             const footprint = createReadFootprint();
             // Identity is threaded EXPLICITLY from the (deferred/interleaved)
@@ -334,7 +334,7 @@ const dispatchMethods = (hasRooms: boolean, lazyFunctions = false): string => {
         ? '            const registeredBeforeLoad = LUNORA_FUNCTIONS[functionPath];\n\n            if (registeredBeforeLoad?.visibility === "internal" && !this.isSystemDispatch()) {\n                throw new LunoraError("FUNCTION_NOT_FOUND", "function not registered: " + functionPath);\n            }\n\n'
         : "";
     const preparation = lazyFunctions
-        ? "            const requestScope = this.captureRequestScope();\n            const preparation = this.prepareFunction(functionPath);\n\n            if (preparation !== undefined) {\n                try {\n                    await preparation;\n                } finally {\n                    this.restoreRequestScope(requestScope);\n                }\n            }\n\n"
+        ? '            const requestScope = this.captureRequestScope();\n            const preparation = this.prepareFunction(functionPath, "rpc");\n\n            if (preparation !== undefined) {\n                try {\n                    await preparation;\n                } finally {\n                    this.restoreRequestScope(requestScope);\n                }\n            }\n\n'
         : "";
 
     return DISPATCH_METHODS_TEMPLATE.replace("__COMMITTED_CATCH__", hasRooms ? COMMITTED_CATCH : "").replace(

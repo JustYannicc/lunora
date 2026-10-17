@@ -69,6 +69,12 @@ const moduleAliasesFor = (
     return aliases;
 };
 
+/** Keep eager registry imports and lazy shim emission on the same file-path policy. */
+const eagerModulePaths = (migrations: ReadonlyArray<MigrationIR>, mutators: ReadonlyArray<MutatorIR>, shapes: ReadonlyArray<ShapeIR>): ReadonlySet<string> =>
+    new Set([...migrations.map((migration) => migration.filePath), ...mutators.map((mutator) => mutator.filePath), ...shapes.map((shape) => shape.filePath)]);
+
+// Split this generated lookup so no-secrets can keep checking strings without
+// mistaking a framework access for a credential-shaped literal.
 const renderFunctionTableLookup = (table: "LUNORA_FUNCTIONS" | "LUNORA_FUNCTION_MANIFEST"): string => `${table}[functionPath]`;
 
 /**
@@ -136,11 +142,7 @@ const renderFunctionRegistry = (
     shapeBody: string;
 } => {
     const aliasByPath = moduleAliasesFor(functions, migrations, mutators, shapes);
-    const eagerPaths = new Set([
-        ...migrations.map((migration) => migration.filePath),
-        ...mutators.map((mutator) => mutator.filePath),
-        ...shapes.map((shape) => shape.filePath),
-    ]);
+    const eagerPaths = eagerModulePaths(migrations, mutators, shapes);
 
     const importLines = [...aliasByPath.entries()]
         .filter(([filePath]) => {
@@ -471,6 +473,11 @@ const renderRoomFragments = (
     };
 };
 
+/**
+ * Return nothing for room-free apps so their output stays byte-identical. Keep
+ * `room:` literal here; the room codegen test keeps it matched to ROOM_TOPIC_PREFIX
+ * without requiring another server export.
+ */
 const renderRoomRegistry = (hasRooms: boolean, lazyFunctions: boolean, functions: ReadonlyArray<FunctionIR>): string => {
     if (!hasRooms) {
         return "";
@@ -491,6 +498,11 @@ const renderRoomRegistry = (hasRooms: boolean, lazyFunctions: boolean, functions
     return `\n/**\n * Room registry: the whisper topic of each \`defineRoom\` registration → its\n * function path. The generated ShardDO's \`roomHandlerPath\` override resolves a\n * room topic through this map so a room's typed \`onJoin\`/\`onMessage\`/\`onLeave\`\n * dispatch server-side, reusing the whisper channel for membership and fan-out.\n * Two registrations under one name throw at module load: the map would otherwise\n * silently keep whichever came last.\n */\nexport const LUNORA_ROOMS: Readonly<Record<string, string>> = (() => {\n    const registry: Record<string, string> = {};\n    const owners = new Map<string, unknown>();\n\n    for (const [path, fn] of Object.entries(LUNORA_FUNCTIONS)) {\n        if (fn.channel?.kind !== "room") {\n            continue;\n        }\n\n        const topic = \`room:\${fn.channel.name}\`;\n        const owner = owners.get(topic);\n\n        // The same registration exported under two names (an alias) is one room.\n        if (owner !== undefined && owner !== fn) {\n            throw new Error(\`two defineRoom registrations are named "\${fn.channel.name}"; room names must be unique\`);\n        }\n\n        if (owner === undefined) {\n            owners.set(topic, fn);\n            registry[topic] = path;\n        }\n    }\n\n    return registry;\n})();\n`;
 };
 
+/**
+ * Assemble caller types, implementation and imports. Import only the referenced
+ * Doc/Id aliases; omit callRegistered (and its context parameter) without
+ * functions so generated files avoid noUnusedLocals errors.
+ */
 const renderCallerAssembly = (functions: ReadonlyArray<FunctionIR>, lazyFunctions: boolean) => {
     const caller = renderCaller(functions);
     const types = caller.types ? `\n${caller.types}\n` : "";
@@ -800,11 +812,7 @@ const emitLazyFunctionModules = (options: EmitFunctionsOptions): Record<string, 
     const mutators = options.mutators ?? [];
     const shapes = options.shapes ?? [];
     const aliases = moduleAliasesFor(functions, migrations, mutators, shapes);
-    const eagerPaths = new Set([
-        ...migrations.map((migration) => migration.filePath),
-        ...mutators.map((mutator) => mutator.filePath),
-        ...shapes.map((shape) => shape.filePath),
-    ]);
+    const eagerPaths = eagerModulePaths(migrations, mutators, shapes);
     const filePaths = [...new Set(functions.filter((definition) => !eagerPaths.has(definition.filePath)).map((definition) => definition.filePath))];
     const base = baseSpecifiers(options.useUmbrella ?? false);
     const output: Record<string, string> = {};

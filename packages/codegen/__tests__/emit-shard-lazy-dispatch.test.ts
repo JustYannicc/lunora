@@ -51,17 +51,30 @@ describe("emitted lazy function dispatch", () => {
     });
 
     it("keeps preparation synchronous after module resolution and pins request-scoped entry points", () => {
-        expect.assertions(12);
+        expect.assertions(17);
 
         const shard = emit(true);
 
         expect(shard).toContain("import { LUNORA_FUNCTIONS, LUNORA_LIFECYCLE_HOOKS, LUNORA_MIGRATIONS, getLoadedFunction, loadFunction }");
-        expect(shard).toContain("protected override prepareFunction(functionPath: string): Promise<void> | undefined {");
+        expect(shard).toContain(
+            'protected override prepareFunction(functionPath: string, reason: "rpc" | "subscription" | "stream" | "reactor" = "rpc"): Promise<void> | undefined {',
+        );
+        expect(shard).toContain('const allowsInternal = reason === "reactor" || (reason === "rpc" && this.isSystemDispatch());');
         expect(shard).toContain("if (getLoadedFunction(functionPath) !== undefined) {");
         expect(shard).toContain("return loadFunction(functionPath).then(() => undefined);");
         expect(shard).toContain("const loaded = getLoadedFunction(functionPath) ?? await loadFunction(functionPath);");
         expect(shard).toContain("const requestScope = this.captureRequestScope();");
-        expect(shard).toContain("const preparation = this.prepareFunction(functionPath);");
+        expect(shard).toContain('const preparation = this.prepareFunction(functionPath, "rpc");');
+        expect(shard).toContain('this.prepareFunction(functionPath, "subscription");');
+        expect(shard).toContain('this.prepareFunction(functionPath, "reactor");');
+
+        const subscriptionStart = shard.indexOf("protected override async executeSubscription");
+        const streamStart = shard.indexOf("protected override executeStream", subscriptionStart);
+        const subscriptionMethods = shard.slice(subscriptionStart, streamStart);
+        const internalGate = subscriptionMethods.indexOf('registered.visibility === "internal"');
+
+        expect(internalGate).toBeGreaterThanOrEqual(0);
+        expect(subscriptionMethods.indexOf('this.prepareFunction(functionPath, "subscription")')).toBeGreaterThan(internalGate);
         expect(shard).toContain("await preparation;");
         expect(shard).toContain("this.restoreRequestScope(requestScope);");
         expect(shard.match(/const requestScope = this\.captureRequestScope\(\);/gu)).toHaveLength(2);

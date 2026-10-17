@@ -470,6 +470,21 @@ const WS_KEEPALIVE_PONG = "lunora-pong";
  */
 const MAX_WS_FRAME_UNITS = 1024 * 1024;
 
+/** Abort can arrive from unsubscribe or socket close while a stream awaits its next chunk. */
+const isStreamCancelled = (controller: AbortController): boolean => controller.signal.aborted;
+
+const reportStreamError = (ws: ShardSocketLike, id: string, error: unknown, logMessage: string): void => {
+    // Keep developer-facing non-internal errors; redact unexpected errors.
+    const { body, redacted } = toErrorBody(error, { fallbackCode: "INTERNAL_SERVER_ERROR", redactedMessage: "internal error" });
+
+    if (redacted) {
+        // eslint-disable-next-line no-console -- server-side diagnostic for an internal/unhandled stream error
+        console.error(`[@lunora/do] ${logMessage}:`, error);
+    }
+
+    trySendFrame(ws, JSON.stringify({ error: { code: body.code, message: body.message }, id, type: "error" }));
+};
+
 /** Get the per-socket `Map` stored under `ws` in `store`, creating it on first use. */
 const socketMap = <V>(store: WeakMap<ShardSocketLike, Map<string, V>>, ws: ShardSocketLike): Map<string, V> => {
     let map = store.get(ws);
@@ -4964,9 +4979,9 @@ abstract class ShardDO {
         return false;
     }
 
-    /** Prepare a codegen-lazy procedure before dispatch. */
+    /** Prepare a codegen-lazy procedure only after the caller's purpose is known. */
     // eslint-disable-next-line class-methods-use-this -- the generated subclass overrides this for lazy function registries
-    protected prepareFunction(_functionPath: string): void | Promise<void> {}
+    protected prepareFunction(_functionPath: string, _reason: "rpc" | "subscription" | "stream" | "reactor" = "rpc"): void | Promise<void> {}
 
     /**
      * Whether `functionPath` names a registered `mutation` — the only function
@@ -7576,7 +7591,7 @@ abstract class ShardDO {
             // temporarily yields through are not. Prepare before entering the
             // shard-wide mutation gate; this remains after the synchronous
             // preDispatchAnswer above.
-            const preparation = this.prepareFunction(payload.functionPath);
+            const preparation = this.prepareFunction(payload.functionPath, "rpc");
 
             if (preparation !== undefined) {
                 try {
@@ -11393,6 +11408,24 @@ abstract class ShardDO {
         // captured BEFORE the first await and passed by value, because the
         // iterator is pulled long after this frame was dispatched.
         const attachment = this.readAttachment(ws);
+        const reservation = this.reserveStream(ws, id);
+
+        if (reservation === undefined) {
+            return;
+        }
+
+        let durableAttached = false;
+
+        try {
+            durableAttached = await this.startStream(ws, id, functionPath, args, attachment, reservation.controller, sinceSeq, generation);
+        } catch (error: unknown) {
+            reportStreamError(ws, id, error, "unhandled stream error");
+        } finally {
+            this.releaseStream(ws, id, reservation.cancellers, reservation.controller, durableAttached);
+        }
+    }
+
+    private reserveStream(ws: ShardSocketLike, id: string): { cancellers: Map<string, AbortController>; controller: AbortController } | undefined {
         const existingCancellers = this.streamCancellers.get(ws);
 
         // One live stream per `id`, refused rather than silently replacing the
@@ -11412,7 +11445,7 @@ abstract class ShardDO {
                 }),
             );
 
-            return;
+            return undefined;
         }
 
         // Enforce the per-socket in-flight cap before allocating any state
@@ -11429,128 +11462,133 @@ abstract class ShardDO {
                 }),
             );
 
-            return;
+            return undefined;
         }
 
         const cancellers = existingCancellers ?? socketMap(this.streamCancellers, ws);
         const controller = new AbortController();
         cancellers.set(id, controller);
-        let durableAttached = false;
+        return { cancellers, controller };
+    }
 
-        try {
-            const preparation = this.prepareFunction(functionPath);
+    private async startStream(
+        ws: ShardSocketLike,
+        id: string,
+        functionPath: string,
+        args: Record<string, unknown>,
+        attachment: SocketAttachment,
+        controller: AbortController,
+        sinceSeq: number,
+        generation?: number,
+    ): Promise<boolean> {
+        const preparation = this.prepareFunction(functionPath, "stream");
 
-            if (preparation !== undefined) {
-                try {
-                    await preparation;
-                } catch (error: unknown) {
-                    if (!controller.signal.aborted) {
-                        const { body, redacted } = toErrorBody(error, { fallbackCode: "INTERNAL_SERVER_ERROR", redactedMessage: "internal error" });
-
-                        if (redacted) {
-                            // eslint-disable-next-line no-console -- server-side diagnostic for a lazy stream module load failure
-                            console.error("[@lunora/do] stream preparation failed:", error);
-                        }
-
-                        trySendFrame(ws, JSON.stringify({ error: { code: body.code, message: body.message }, id, type: "error" }));
-                    }
-
-                    return;
-                }
-            }
-
-            // An unsubscribe or close can land while a cold module is loading.
-            // The reservation makes either one visible before a pump exists.
-            if (controller.signal.aborted || this.closingSockets.has(ws)) {
-                return;
-            }
-
-            const iterable = this.executeStream(functionPath, args, socketIdentity(attachment));
-
-            if (!iterable) {
-                trySendFrame(ws, JSON.stringify({ error: { code: "NOT_FOUND", message: `stream not registered: ${functionPath}` }, id, type: "error" }));
-
-                return;
-            }
-
-            if (iterable.durable) {
-                await this.attachDurableStream(
-                    ws,
-                    id,
-                    functionPath,
-                    args,
-                    { durable: iterable.durable, iterator: iterable.iterator },
-                    controller,
-                    sinceSeq,
-                    generation,
-                );
-                durableAttached = true;
-
-                return;
-            }
-
-            trySendFrame(ws, JSON.stringify({ id, type: "ack" }));
-
-            for await (const chunk of iterable.iterator(controller.signal)) {
-                if (controller.signal.aborted) {
-                    break;
+        if (preparation !== undefined) {
+            try {
+                await preparation;
+            } catch (error: unknown) {
+                if (!isStreamCancelled(controller)) {
+                    reportStreamError(ws, id, error, "stream preparation failed");
                 }
 
-                // A credential can lapse mid-stream: the inbound check ran once,
-                // on the frame that STARTED this stream, and a pump can outlive
-                // it indefinitely. Tear the iterator down rather than keep
-                // pushing the user's data at an expired socket.
-                if (this.isSocketExpired(ws)) {
-                    this.dropExpiredSocket(ws);
-                    controller.abort();
-
-                    break;
-                }
-
-                // Defensive backpressure: when the runtime surfaces
-                // `bufferedAmount`, pause iteration if the socket already
-                // has > 1 MiB queued. Without this, a slow consumer can
-                // make the runtime's outbound buffer grow without bound
-                // while we keep pumping `ws.send` calls.
-                await awaitWsDrain(ws);
-
-                ws.send(JSON.stringify({ data: encodeWire(chunk), id, type: "chunk" }));
+                return false;
             }
+        }
 
-            if (!controller.signal.aborted) {
-                ws.send(JSON.stringify({ id, type: "complete" }));
-            }
-        } catch (error: unknown) {
-            // Apply the shared redaction invariant: a non-internal `LunoraError`
-            // keeps its intentional, developer-facing message; an internal-coded
-            // or bare/unexpected throw is redacted so SQL fragments, file paths,
-            // or internal identifiers never reach the client.
-            const { body, redacted } = toErrorBody(error, { fallbackCode: "INTERNAL_SERVER_ERROR", redactedMessage: "internal error" });
+        // An unsubscribe or close can land while a cold module is loading.
+        // The reservation makes either one visible before a pump exists.
+        if (this.isStreamStopped(ws, controller)) {
+            return false;
+        }
 
-            if (redacted) {
-                // eslint-disable-next-line no-console -- server-side diagnostic for an internal/unhandled stream error
-                console.error("[@lunora/do] unhandled stream error:", error);
-            }
+        const iterable = this.executeStream(functionPath, args, socketIdentity(attachment));
 
-            trySendFrame(
+        if (!iterable) {
+            trySendFrame(ws, JSON.stringify({ error: { code: "NOT_FOUND", message: `stream not registered: ${functionPath}` }, id, type: "error" }));
+
+            return false;
+        }
+
+        if (iterable.durable) {
+            await this.attachDurableStream(
                 ws,
-                JSON.stringify({
-                    error: { code: body.code, message: body.message },
-                    id,
-                    type: "error",
-                }),
+                id,
+                functionPath,
+                args,
+                { durable: iterable.durable, iterator: iterable.iterator },
+                controller,
+                sinceSeq,
+                generation,
             );
-        } finally {
-            if (!durableAttached && cancellers.get(id) === controller) {
-                cancellers.delete(id);
 
-                // Drop the now-empty per-socket canceller map so a socket that
-                // churns through many short-lived streams doesn't accumulate empty
-                // `Map` instances for the lifetime of the WeakMap entry.
-                if (cancellers.size === 0) {
-                    this.streamCancellers.delete(ws);
-                }
+            return true;
+        }
+
+        await this.pumpStream(ws, id, iterable, controller);
+
+        return false;
+    }
+
+    private async pumpStream(
+        ws: ShardSocketLike,
+        id: string,
+        iterable: { durable?: { ttlMs?: number }; iterator: (signal: AbortSignal) => AsyncIterable<unknown> },
+        controller: AbortController,
+    ): Promise<void> {
+        trySendFrame(ws, JSON.stringify({ id, type: "ack" }));
+
+        for await (const chunk of iterable.iterator(controller.signal)) {
+            if (isStreamCancelled(controller)) {
+                break;
             }
+
+            // A credential can lapse mid-stream: the inbound check ran once,
+            // on the frame that STARTED this stream, and a pump can outlive
+            // it indefinitely. Tear the iterator down rather than keep
+            // pushing the user's data at an expired socket.
+            if (this.isSocketExpired(ws)) {
+                this.dropExpiredSocket(ws);
+                controller.abort();
+
+                break;
+            }
+
+            // Defensive backpressure: when the runtime surfaces
+            // `bufferedAmount`, pause iteration if the socket already
+            // has > 1 MiB queued. Without this, a slow consumer can
+            // make the runtime's outbound buffer grow without bound
+            // while we keep pumping `ws.send` calls.
+            await awaitWsDrain(ws);
+
+            ws.send(JSON.stringify({ data: encodeWire(chunk), id, type: "chunk" }));
+        }
+
+        if (!isStreamCancelled(controller)) {
+            ws.send(JSON.stringify({ id, type: "complete" }));
+        }
+    }
+
+    private isStreamStopped(ws: ShardSocketLike, controller: AbortController): boolean {
+        return isStreamCancelled(controller) || this.closingSockets.has(ws);
+    }
+
+    private releaseStream(
+        ws: ShardSocketLike,
+        id: string,
+        cancellers: Map<string, AbortController>,
+        controller: AbortController,
+        durableAttached: boolean,
+    ): void {
+        if (durableAttached || cancellers.get(id) !== controller) {
+            return;
+        }
+
+        cancellers.delete(id);
+
+        // Drop the now-empty per-socket canceller map so a socket that churns
+        // through many short-lived streams doesn't accumulate empty `Map`s.
+        if (cancellers.size === 0) {
+            this.streamCancellers.delete(ws);
         }
     }
 

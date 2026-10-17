@@ -76,8 +76,6 @@ interface EmitShardOptions {
     hasNotify?: boolean;
     /** The project declares at least one `defineRoom` — wires the `LUNORA_ROOMS` topic→path resolution in the `roomHandlerPath` override. */
     hasRooms?: boolean;
-    /** User function handlers are imported through generated per-module loaders. */
-    lazyFunctions?: boolean;
 
     /**
      * The target platform supports a vector store. `false` withholds the whole
@@ -87,6 +85,9 @@ interface EmitShardOptions {
      * `emitApp` withhold from the type surface for the same verdict.
      */
     hasVectors?: boolean;
+
+    /** User function handlers are imported through generated per-module loaders. */
+    lazyFunctions?: boolean;
     maskMetadata?: MaskMetadataIR;
     /** Custom mutators declared via `defineMutator` in `lunora/mutators.ts` — wires the `isCustomMutator` push-protocol override. */
     mutators?: ReadonlyArray<MutatorIR>;
@@ -675,7 +676,14 @@ ${sourceBootstrap}${ttlBootstrap}        }
     /* eslint-enable no-secrets/no-secrets */
     const prepareFunctionOverride = lazyFunctions
         ? `
-        protected override prepareFunction(functionPath: string): Promise<void> | undefined {
+        protected override prepareFunction(functionPath: string, reason: "rpc" | "subscription" | "stream" | "reactor" = "rpc"): Promise<void> | undefined {
+            const registered = LUNORA_FUNCTIONS[functionPath];
+            const allowsInternal = reason === "reactor" || (reason === "rpc" && this.isSystemDispatch());
+
+            if (registered?.visibility === "internal" && !allowsInternal) {
+                return;
+            }
+
             if (getLoadedFunction(functionPath) !== undefined) {
                 return;
             }
@@ -687,7 +695,7 @@ ${sourceBootstrap}${ttlBootstrap}        }
     const renderedPrepareFunctionOverride = prepareFunctionOverride === "" ? "\n\n" : `${prepareFunctionOverride}\n`;
     const dispatchRun = dispatchRunSource(lazyFunctions);
     const prepareFunctionCall = lazyFunctions
-        ? "            const preparation = this.prepareFunction(functionPath);\n            if (preparation !== undefined) await preparation;\n"
+        ? '            const preparation = this.prepareFunction(functionPath, "subscription");\n            if (preparation !== undefined) await preparation;\n'
         : "";
     const subscriptionMethods = SUBSCRIPTION_METHODS.replace("__PREPARE_FUNCTION__", prepareFunctionCall);
     const shardDispatchMethods = dispatchMethods(hasRooms, lazyFunctions);
@@ -867,7 +875,7 @@ ${roomHandlerOverride}${shardRegistryFragments.override}${shardInitOverride}
         // would instead run an app's reactor as whichever user happened to write
         // last, which is worse than running it as nobody.
         protected override async runReactor(functionPath: string, previousDigest?: string): Promise<{ digest: string; ran: boolean; tables: readonly string[] } | undefined> {
-${lazyFunctions ? "            const requestScope = this.captureRequestScope();\n            const preparation = this.prepareFunction(functionPath);\n\n            if (preparation !== undefined) {\n                try {\n                    await preparation;\n                } finally {\n                    this.restoreRequestScope(requestScope);\n                }\n            }\n\n" : ""}            const registered = LUNORA_FUNCTIONS[functionPath];
+${lazyFunctions ? '            const requestScope = this.captureRequestScope();\n            const preparation = this.prepareFunction(functionPath, "reactor");\n\n            if (preparation !== undefined) {\n                try {\n                    await preparation;\n                } finally {\n                    this.restoreRequestScope(requestScope);\n                }\n            }\n\n' : ""}            const registered = LUNORA_FUNCTIONS[functionPath];
 
             if (!registered || registered.kind !== "mutation") {
                 return undefined;

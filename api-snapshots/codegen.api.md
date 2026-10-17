@@ -2539,8 +2539,8 @@ interface EmitShardOptions {
     hasFlags?: boolean;
     hasNotify?: boolean;
     hasRooms?: boolean;
-    lazyFunctions?: boolean;
     hasVectors?: boolean;
+    lazyFunctions?: boolean;
     maskMetadata?: MaskMetadataIR;
     mutators?: ReadonlyArray<MutatorIR>;
     queues?: ReadonlyArray<QueueIR>;
