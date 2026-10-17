@@ -354,4 +354,21 @@ describe("connectLiveStream", () => {
 
         await expect(live.ready).rejects.toThrow("closed before the first connection");
     });
+
+    it("refuses subscribe after close without registering or sending a control call", async () => {
+        expect.assertions(2);
+
+        const { controls, fetchImpl } = setup();
+        const live = connectLiveStream("https://x/live/posts/connect", { fetch: fetchImpl });
+
+        await live.ready;
+
+        live.close();
+
+        expect(() => live.subscribe({ id: "s1", topic: "feed" })).toThrow(/subscribe on a closed stream/u);
+
+        await flush();
+
+        expect(controls).toEqual([]);
+    });
 });

@@ -345,6 +345,10 @@ const connectLiveStream = (url: string, options: ConnectLiveStreamOptions = {}):
         },
         ready,
         subscribe: ({ id, onEvent, topic }) => {
+            if (closed) {
+                throw new Error("connectLiveStream: subscribe on a closed stream");
+            }
+
             idCounter += 1;
 
             const subscriptionId = id ?? `live-${String(idCounter)}`;
