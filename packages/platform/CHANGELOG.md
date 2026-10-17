@@ -1,3 +1,9 @@
+## @lunora/platform [1.0.0-alpha.66](https://github.com/anolilab/lunora/compare/@lunora/platform@1.0.0-alpha.65...@lunora/platform@1.0.0-alpha.66) (2026-10-17)
+
+### Features
+
+* **server:** typed rooms (defineRoom) over the whisper transport ([#1217](https://github.com/anolilab/lunora/issues/1217)) ([51f66b8](https://github.com/anolilab/lunora/commit/51f66b8d940ea4f876ff2380225d172a95265922))
+
 ## @lunora/platform [1.0.0-alpha.65](https://github.com/anolilab/lunora/compare/@lunora/platform@1.0.0-alpha.64...@lunora/platform@1.0.0-alpha.65) (2026-10-16)
 
 ### Features
