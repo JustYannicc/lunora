@@ -151,6 +151,51 @@ describe("connectLiveStream", () => {
         live.close();
     });
 
+    it("does not abort a fresh connection when a subscribe sent before it connects returns 404", async () => {
+        expect.assertions(3);
+
+        const { fetchImpl } = setup();
+        const signals: (AbortSignal | null | undefined)[] = [];
+        // Holds the first subscribe, sent before any connection exists, until the test releases it.
+        const held: { release?: (response: Response) => void } = {};
+
+        const fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+            const url = input instanceof Request ? input.url : String(input);
+
+            if (/\/connect(?:\?|$)/u.test(url)) {
+                signals.push(init?.signal);
+            }
+
+            const body = typeof init?.body === "string" ? (JSON.parse(init.body) as ControlCall) : undefined;
+
+            if (body?.action === "subscribe" && body.connectionId === undefined && held.release === undefined) {
+                return new Promise<Response>((resolve) => {
+                    held.release = resolve;
+                });
+            }
+
+            return fetchImpl(input, init);
+        };
+
+        const live = connectLiveStream("https://x/live/posts/connect", { fetch, maxDelayMs: 5, retryDelay: 5 });
+
+        live.subscribe({ id: "s1", topic: "feed" });
+
+        await flush();
+
+        // The connection is up, and the resubscribe waits behind the held reply.
+        expect(live.connectionId).toBe("c1");
+        expect(held.release).toBeDefined();
+
+        held.release?.(new Response(null, { status: 404 }));
+
+        await flush(20);
+
+        expect(signals[0]?.aborted).toBe(false);
+
+        live.close();
+    });
+
     it("sends the shard named on the connect url with every control call", async () => {
         expect.assertions(2);
 

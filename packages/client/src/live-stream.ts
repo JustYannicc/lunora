@@ -356,7 +356,12 @@ const connectLiveStream = (url: string, options: ConnectLiveStreamOptions = {}):
 
             subscriptions.set(subscriptionId, entry);
 
-            control(subscriptionId, { action: "subscribe", connectionId, subscriptionId, topic })
+            // The reply is judged against the connection the subscribe was sent on. A reply that
+            // lands after a reconnect must not abort the connection that replaced it.
+            const sentOn = connectionId;
+            const sentAborter = aborter;
+
+            control(subscriptionId, { action: "subscribe", connectionId: sentOn, subscriptionId, topic })
                 .then((status) => {
                     // A subscribe that never reached the shard, failed server-side, or names a
                     // connection the shard no longer has is retried by reconnecting, which
@@ -365,8 +370,8 @@ const connectLiveStream = (url: string, options: ConnectLiveStreamOptions = {}):
                     // there is nothing to interrupt; the connect itself registers it.
                     const transient = status === undefined || status >= 500 || status === 404;
 
-                    if (transient && connectionId !== undefined) {
-                        aborter?.abort();
+                    if (transient && sentOn !== undefined && sentOn === connectionId) {
+                        sentAborter?.abort();
                     }
 
                     return undefined;
