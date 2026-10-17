@@ -355,6 +355,50 @@ describe("connectLiveStream", () => {
         await expect(live.ready).rejects.toThrow("closed before the first connection");
     });
 
+    it("keeps the first handler when an active id is re-subscribed to the same topic", async () => {
+        expect.assertions(5);
+
+        const { controls, fetchImpl, streams } = setup();
+        const live = connectLiveStream("https://x/live/posts/connect", { fetch: fetchImpl });
+
+        await live.ready;
+
+        const first: unknown[] = [];
+        const second: unknown[] = [];
+        const offFirst = live.subscribe({ id: "s1", onEvent: (payload) => first.push(payload), topic: "feed" });
+        const offSecond = live.subscribe({ id: "s1", onEvent: (payload) => second.push(payload), topic: "feed" });
+
+        await flush();
+
+        // One shard-side subscription serves both handlers.
+        expect(controls).toEqual([{ action: "subscribe", connectionId: "c1", subscriptionId: "s1", topic: "feed" }]);
+
+        streams[0]?.send(liveFrame("feed", { event: "one" }));
+
+        await flush();
+
+        expect(first).toEqual([{ event: "one" }]);
+        expect(second).toEqual([{ event: "one" }]);
+
+        // Releasing the first handle leaves the registration and the second handler in place.
+        offFirst();
+        offFirst();
+
+        streams[0]?.send(liveFrame("feed", { event: "two" }));
+
+        await flush();
+
+        expect(second).toEqual([{ event: "one" }, { event: "two" }]);
+
+        offSecond();
+
+        await flush();
+
+        expect(controls.at(-1)).toEqual({ action: "unsubscribe", connectionId: "c1", subscriptionId: "s1", topic: "feed" });
+
+        live.close();
+    });
+
     it("refuses subscribe after close without registering or sending a control call", async () => {
         expect.assertions(2);
 

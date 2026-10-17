@@ -120,7 +120,7 @@ const connectLiveStream = (url: string, options: ConnectLiveStreamOptions = {}):
     // name the same shard or they miss the connection (`LIVE_CONNECTION_NOT_FOUND`).
     const shardKey = new URL(url, "https://lunora.invalid").searchParams.get("shard") ?? undefined;
 
-    const subscriptions = new Map<string, { handlers: Set<(payload: unknown) => void>; topic: string }>();
+    const subscriptions = new Map<string, { handlers: Set<(payload: unknown) => void>; refs: number; topic: string }>();
     const eventHandlers = new Set<(event: LiveStreamEvent) => void>();
 
     let connectionId: string | undefined;
@@ -360,41 +360,61 @@ const connectLiveStream = (url: string, options: ConnectLiveStreamOptions = {}):
                 throw new Error(`connectLiveStream: subscription id "${subscriptionId}" already follows "${active.topic}"; unsubscribe it first`);
             }
 
-            const handlers = new Set<(payload: unknown) => void>();
-            const entry = { handlers, topic };
+            // A re-subscribe on an active id joins that registration: one shard-side subscription
+            // carries every handler, and each handle releases only its own.
+            const entry = active ?? { handlers: new Set<(payload: unknown) => void>(), refs: 0, topic };
+            const listener = onEvent === undefined ? undefined : (payload: unknown) => { onEvent(payload); };
 
-            if (onEvent) {
-                handlers.add(onEvent);
+            entry.refs += 1;
+
+            if (listener !== undefined) {
+                entry.handlers.add(listener);
             }
 
-            subscriptions.set(subscriptionId, entry);
+            if (active === undefined) {
+                subscriptions.set(subscriptionId, entry);
 
-            // The reply is judged against the connection the subscribe was sent on. A reply that
-            // lands after a reconnect must not abort the connection that replaced it.
-            const sentOn = connectionId;
-            const sentAborter = aborter;
+                // The reply is judged against the connection the subscribe was sent on. A reply that
+                // lands after a reconnect must not abort the connection that replaced it.
+                const sentOn = connectionId;
+                const sentAborter = aborter;
 
-            control(subscriptionId, { action: "subscribe", connectionId: sentOn, subscriptionId, topic })
-                .then((status) => {
-                    // A subscribe that never reached the shard, failed server-side, or names a
-                    // connection the shard no longer has is retried by reconnecting, which
-                    // re-registers every active subscription. A deliberate refusal (403) is not
-                    // retried: a reconnect would only be denied again. Before the first connect
-                    // there is nothing to interrupt; the connect itself registers it.
-                    const transient = status === undefined || status >= 500 || status === 404;
+                control(subscriptionId, { action: "subscribe", connectionId: sentOn, subscriptionId, topic })
+                    .then((status) => {
+                        // A subscribe that never reached the shard, failed server-side, or names a
+                        // connection the shard no longer has is retried by reconnecting, which
+                        // re-registers every active subscription. A deliberate refusal (403) is not
+                        // retried: a reconnect would only be denied again. Before the first connect
+                        // there is nothing to interrupt; the connect itself registers it.
+                        const transient = status === undefined || status >= 500 || status === 404;
 
-                    if (transient && sentOn !== undefined && sentOn === connectionId) {
-                        sentAborter?.abort();
-                    }
+                        if (transient && sentOn !== undefined && sentOn === connectionId) {
+                            sentAborter?.abort();
+                        }
 
-                    return undefined;
-                })
-                .catch(() => undefined);
+                        return undefined;
+                    })
+                    .catch(() => undefined);
+            }
+
+            let released = false;
 
             return () => {
-                // A handle only removes the subscription it created: after a re-subscribe that
-                // reused this id, the old handle must not tear down the newer one.
-                if (subscriptions.get(subscriptionId) !== entry) {
+                if (released) {
+                    return;
+                }
+
+                released = true;
+
+                if (listener !== undefined) {
+                    entry.handlers.delete(listener);
+                }
+
+                entry.refs -= 1;
+
+                // Only the last handle tears the registration down, and only while it is still the
+                // live one: a stale handle (the stream was closed, or the id was re-registered) is a no-op.
+                if (entry.refs > 0 || subscriptions.get(subscriptionId) !== entry) {
                     return;
                 }
 
