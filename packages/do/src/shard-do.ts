@@ -15877,35 +15877,26 @@ abstract class ShardDO {
             return jsonResponse({ error: { code: "PAYLOAD_TOO_LARGE", message: `a publish may be at most ${String(ShardDO.MAX_WHISPER_BYTES)} bytes` } }, 413);
         }
 
-        const delivered = await this.broadcastLiveTopic(stream, topic, dataJson);
+        const delivered = this.broadcastLiveTopic(stream, topic, dataJson);
 
         return jsonResponse({ delivered });
     }
 
     /**
-     * Fan a server-published event out to every subscriber of `topic` on `stream`:
-     * the live SSE connections on THIS DO subscribed through that stream (see
-     * {@link liveSubscriptionKey}), the WebSocket whisper members on this instance,
-     * and — through the relay hub — the WebSocket whisper members on the other DOs
-     * serving the shard. SSE connections are local to the DO they connected to.
+     * Fan a server-published event out to every live SSE connection on THIS DO that
+     * subscribed to `topic` through `stream` (see {@link liveSubscriptionKey}).
+     *
+     * Live publishes are SSE-only. WebSocket whisper members join a bare topic with
+     * no stream scope, so fanning a stream's event to them would bypass that
+     * stream's `onSubscribe`. SSE connections are local to the DO they connected to.
      *
      * `dataJson` is the already-serialized, wire-encoded payload (the producer
-     * encodes once so a `bigint`/`Uint8Array` survives the hop); it is embedded
-     * verbatim in both frame shapes, exactly as {@link ShardDO.broadcastWhisper}
-     * relays a client's encoded payload. The caller has checked the size bound.
+     * encodes once so a `bigint`/`Uint8Array` survives the hop). The caller has
+     * checked the size bound.
      * @returns the number of LOCAL live SSE connections the frame was written to
      */
-    private async broadcastLiveTopic(stream: string, topic: string, dataJson: string): Promise<number> {
-        // Reuse the whisper frame shape so a WebSocket whisper subscriber on the
-        // same topic observes one event stream with the SSE subscribers. No `from`
-        // — a server publish is unattributed, unlike a socket's self-attributed
-        // whisper.
-        const whisperFrame = `{"type":"whisper","topic":${JSON.stringify(topic)},"data":${dataJson}}`;
+    private broadcastLiveTopic(stream: string, topic: string, dataJson: string): number {
         const liveFrame = encodeLiveFrame(topic, dataJson);
-
-        this.deliverWhisperLocal(topic, whisperFrame, undefined);
-        await this.relay?.forwardWhisper(topic, whisperFrame);
-
         const key = liveSubscriptionKey(stream, topic);
         const bytes = new TextEncoder().encode(liveFrame);
         let delivered = 0;

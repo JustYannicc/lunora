@@ -4,9 +4,9 @@ import type { ShardDOState } from "../src/shard-do";
 import { ShardDO } from "../src/shard-do";
 
 /**
- * Live topic streams over the shard DO's SSE + control endpoints, plus the
- * reuse of the whisper fan-out: a server publish reaches both the SSE
- * subscribers of a topic and the WebSocket whisper members on it.
+ * Live topic streams over the shard DO's SSE + control endpoints. A server
+ * publish reaches only the SSE connections subscribed through its stream; it
+ * is never fanned to WebSocket whisper members, which have no stream scope.
  */
 
 interface Frame {
@@ -184,17 +184,24 @@ describe("shardDO live streams", () => {
         await expect(readerB.next()).resolves.toEqual({ data: { data: { event: "new_post" }, topic: "feed" }, event: "live" });
     });
 
-    it("delivers a publish to a WebSocket whisper member of the same topic", async () => {
-        expect.assertions(1);
+    it("does not deliver a stream publish to a WebSocket whisper member of the same bare topic", async () => {
+        expect.assertions(2);
 
         const socket = new FakeSocket({ subs: {} });
         const shard = makeShard([socket]);
 
         await shard.webSocketMessage(socket as unknown as WebSocket, JSON.stringify({ topic: "feed", type: "whisper_subscribe" }));
 
+        const sse = await connect(shard);
+        const reader = new SseReader(sse.response);
+
+        await reader.next();
+        await control(shard, { action: "subscribe", stream: "s", connectionId: sse.connectionId, subscriptionId: "s1", topic: "feed" });
         await publish(shard, { stream: "s", data: { event: "new_post" }, topic: "feed" });
 
-        expect(socket.frames).toEqual([{ data: { event: "new_post" }, topic: "feed", type: "whisper" }]);
+        // The SSE subscriber that passed the stream's onSubscribe gets the event; the bare-topic whisper member does not.
+        await expect(reader.next()).resolves.toEqual({ data: { data: { event: "new_post" }, topic: "feed" }, event: "live" });
+        expect(socket.frames).toEqual([]);
     });
 
     it("stops delivering to a connection after its unsubscribe", async () => {

@@ -3,11 +3,11 @@
  *
  * A live stream lets server code publish an arbitrary event to a named topic
  * (`ctx.live.publish`) and lets a browser follow several of them over ONE
- * Server-Sent Events connection. It is a transport seam over the fan-out the
- * whisper channel already uses: the subscriber registry is the shard Durable
- * Object, a live event is delivered to WebSocket whisper members of the same
- * topic as well as to SSE subscribers, and the relay hub carries it to the
- * other DOs serving the shard.
+ * Server-Sent Events connection. The subscriber registry is the shard Durable
+ * Object, and a live event is delivered only to the SSE subscribers that
+ * followed its topic through the publishing stream. WebSocket whisper members
+ * never receive one: a whisper join has no stream scope, so it would bypass the
+ * stream's `onSubscribe`.
  *
  * It does NOT replace either existing realtime primitive.
  *
@@ -65,9 +65,9 @@
  * That is the deliberate ceiling of reusing the shard instead of minting a
  * Durable Object per stream id. When throughput matters, shard by key: connect
  * with `?shard=<key>` and publish with `{ shardKey }` so a topic's publishers
- * and subscribers land on the same DO. Cross-DO fan-out for SSE subscribers is
- * not wired (the relay hub fans the WebSocket whisper members only), so a
- * publisher that targets the wrong shard reaches no SSE subscriber.
+ * and subscribers land on the same DO. Cross-DO fan-out is not wired (the relay
+ * hub carries no live events), so a publisher that targets the wrong shard
+ * reaches no SSE subscriber.
  *
  * # Publish reach
  *
