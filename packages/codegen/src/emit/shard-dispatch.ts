@@ -79,6 +79,7 @@ const dispatchRunSource = (lazyFunctions: boolean): string => {
         return DISPATCH_RUN_SOURCE;
     }
 
+    // The loadedFunction const preserves handler narrowing inside callbacks on TypeScript 5.0 through 5.3.
     return DISPATCH_RUN_SOURCE.replace(
         "    runTransactional?: (work: () => Promise<unknown>) => Promise<unknown>,",
         "    runTransactional?: (work: () => Promise<unknown>) => Promise<unknown>,\n    captureScope?: () => () => void,",

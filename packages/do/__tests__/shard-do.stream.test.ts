@@ -407,11 +407,21 @@ describe("shardDO streaming queries", () => {
         const oldNextStarted = createDeferred();
         const oldCancellationObserved = createDeferred();
         const releaseOldFailure = createDeferred();
-        const oldThrowing = createDeferred();
+        const oldFinished = createDeferred();
         const newChunkSent = createDeferred();
         const releaseNewCompletion = createDeferred();
         const newCompleted = createDeferred();
         const shard = new StreamShard(state, {});
+        const handleStream = shard["handleStream"].bind(shard);
+
+        // Join the real handler after its catch/finally, while keeping the public WebSocket dispatch path.
+        shard["handleStream"] = async (...args) => {
+            await handleStream(...args);
+
+            if (args[3].phase === "old") {
+                oldFinished.resolve();
+            }
+        };
         const ws = createFakeWebSocket();
         const send = ws.send.bind(ws);
 
@@ -444,7 +454,6 @@ describe("shardDO streaming queries", () => {
                 });
                 oldCancellationObserved.resolve();
                 await releaseOldFailure.promise;
-                oldThrowing.resolve();
                 throw new Error("old iterator failed after unsubscribe");
             }
 
@@ -462,8 +471,7 @@ describe("shardDO streaming queries", () => {
         await newChunkSent.promise;
 
         releaseOldFailure.resolve();
-        // The old iterator signals immediately before rejecting its pending next(). The new stream stays live until that rejection has propagated.
-        await oldThrowing.promise;
+        await oldFinished.promise;
         releaseNewCompletion.resolve();
         await newCompleted.promise;
 
