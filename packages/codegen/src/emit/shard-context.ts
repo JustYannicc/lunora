@@ -64,7 +64,10 @@ const renderBuildContext = ({
     const actionOnlyHasAny = actionOnlyFields.length > 0;
     const databaseContextReturn = ormContextField === "" ? "{ db }" : "{ db, orm: bindOrm(facade) }";
     const databaseContextField = ormContextField === "" ? "" : "\n                orm: databaseContext.orm,";
-    const mutationOrmDescriptor = ormContextField === "" ? "" : "\n                                orm: { configurable: true, enumerable: true, value: mutationDatabase.orm, writable: true },";
+    const mutationOrmDescriptor =
+        ormContextField === ""
+            ? ""
+            : "\n                                orm: { configurable: true, enumerable: true, value: mutationDatabase.orm, writable: true },";
     // The builds are written at `buildCtx` body depth (they are shared with the
     // every-context helpers' shape); here they sit one block deeper.
     const actionOnlyBlock = actionOnlyHasAny
