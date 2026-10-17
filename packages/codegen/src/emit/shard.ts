@@ -498,9 +498,11 @@ const LUNORA_SCHEMA_SNAPSHOT: { hash: string; json: string } = { hash: ${JSON.st
                 // Left \`undefined\` when there is no scope so \`createShardCtxDb\`
                 // keeps its own "degrade a provable slice to a whole-table dep"
                 // fallback rather than reporting into a no-op.
-                onReadRange: options.onReadRange ?? (options.scope === undefined ? undefined : this.getCtxDbReadRangeHook(options.scope)),${
-                    hasVectorIndexes
-                        ? `
+                ...(options.onReadRange !== undefined
+                    ? { onReadRange: options.onReadRange }
+                    : options.scope === undefined ? {} : { onReadRange: this.getCtxDbReadRangeHook(options.scope) }),${
+                        hasVectorIndexes
+                            ? `
                 // Vectorize is outside this shard's SQLite and cannot roll back, so
                 // the sync is held until the mutation's transaction has COMMITTED
                 // (\`deferAfterCommit\`) instead of running inline. Inline, a write
@@ -509,8 +511,8 @@ const LUNORA_SCHEMA_SNAPSHOT: { hash: string; json: string } = { hash: ${JSON.st
                 // left the row with its vector already purged. Outside a
                 // transaction (an action) nothing is open and it runs at once.
                 onWrite: onWrite === undefined ? undefined : (event) => this.deferAfterCommit(() => onWrite(event)),`
-                        : ""
-                }
+                            : ""
+                    }
                 scheduler,
                 schema: schema as unknown as SchemaLike,
                 sql: this.sql as SqlExec,

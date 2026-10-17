@@ -38,7 +38,7 @@ const adminWriterMethod = `        /**
                     this.recordChangedTable(delta.table, delta.indexKeys);
                 },
                 cdc: config.cdc ?? false,
-                headroom,
+                ...(headroom === undefined ? {} : { headroom }),
                 // Live predicate, same as the user-facing ctx — see \`databaseOptions\`.
                 inTransaction: () => this.isInTransaction(),
                 scheduler,
@@ -71,10 +71,10 @@ const ADMIN_WRITE_METHODS: string = `${adminWriterMethod}
 ${adminWriterPrelude()}
 
             return runDataMigration({
-                batchSize: args.batchSize,
-                direction: args.direction,
-                dryRun: args.dryRun,
-                maxBatches: args.maxBatches,
+                ...(args.batchSize === undefined ? {} : { batchSize: args.batchSize }),
+                ...(args.direction === undefined ? {} : { direction: args.direction }),
+                ...(args.dryRun === undefined ? {} : { dryRun: args.dryRun }),
+                ...(args.maxBatches === undefined ? {} : { maxBatches: args.maxBatches }),
                 migration: migration as unknown as DataMigrationLike,
                 // Flush after each batch so live migrationStatus subscribers see
                 // progress mid-run (the base method records the reserved state
@@ -163,7 +163,7 @@ ${adminWriterPrelude()}
             // \`exportShardRows\` walks in keyset batches so a large table does not
             // materialize at once inside the generator; the admin RPC's response
             // is a single array, so it is collected here rather than streamed.
-            for await (const row of exportShardRows(writer, schema as unknown as SchemaLike, { batchSize: args.batchSize, tables: args.tables })) {
+            for await (const row of exportShardRows(writer, schema as unknown as SchemaLike, args)) {
                 rows.push(row);
             }
 
@@ -178,7 +178,7 @@ ${adminWriterPrelude()}
             // \`importShardRows\` inserts with \`allowExplicitId\`, so a source
             // database's \`_id\`s carry across verbatim and every foreign key
             // referencing them stays valid without a second remapping pass.
-            return importShardRows(writer, schema as unknown as SchemaLike, { rows: args.rows, startLine: args.startLine });
+            return importShardRows(writer, schema as unknown as SchemaLike, args);
         }
 
         protected override async runShardRankBefore(args: RunShardRankBeforeArgs): Promise<{ before: number; total: number }> {
@@ -213,7 +213,7 @@ ${adminWriterPrelude()}
 
             return writer.related(
                 { id: args.id, table: args.table },
-                { cursor: args.cursor, depth: args.depth, direction: args.direction, edges: args.edges, limit: args.limit },
+                args,
             );
         }
 
@@ -231,10 +231,10 @@ ${adminWriterPrelude()}
             }
 
             return writer.rankPageRows(args.table, args.index, {
-                after: args.after,
-                cursor: args.cursor,
-                partitionKey: args.partitionKey,
-                take: args.take,
+                ...(args.after === undefined ? {} : { after: args.after }),
+                ...(args.cursor === undefined ? {} : { cursor: args.cursor }),
+                ...(args.partitionKey === undefined ? {} : { partitionKey: args.partitionKey }),
+                ...(args.take === undefined ? {} : { take: args.take }),
             });
         }
 

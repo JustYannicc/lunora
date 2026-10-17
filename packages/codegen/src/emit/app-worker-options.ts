@@ -176,7 +176,11 @@ const buildWorkerOptionLines = (options: ResolvedAppOptions): string[] => [
     // `LUNORA_LOG_ARCHIVE_TABLE` (the R2 Data Catalog table `pipelineLogSink` writes
     // to), the durable archive becomes readable; unset ⇒ `undefined` ⇒ the feed
     // reports "not configured". The R2 SQL credentials come from `R2_SQL_*` env vars.
-    `        options.logArchive = resolveLogArchiveFromEnv(env);`,
+    `        const logArchive = resolveLogArchiveFromEnv(env);
+
+        if (logArchive !== undefined) {
+            options.logArchive = logArchive;
+        }`,
     ...(options.hasAuth
         ? [
               `        // Captured before the branch so the narrowing survives — reading

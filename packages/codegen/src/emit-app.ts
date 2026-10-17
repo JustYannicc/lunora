@@ -305,8 +305,10 @@ ${buildSchedulerHelper(options)}${buildStorageHelpers(options.hasStorage)}
 ${buildBaseWorkerOptions(options).join("\n")}
         };
 
-        if (this.adminToken) {
-            options.adminToken = this.adminToken(env);
+        const adminToken = this.adminToken?.(env);
+
+        if (adminToken !== undefined) {
+            options.adminToken = adminToken;
         }
 
 ${workerOptionLines.join("\n\n")}${workerOptionLines.length > 0 ? "\n\n" : ""}        for (const fn of this.extendFns) {

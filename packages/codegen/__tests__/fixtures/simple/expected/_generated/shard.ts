@@ -556,7 +556,9 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
 
             // Ranges come from THIS run's reads, never a shared field on the DO:
             // a deferred re-run interleaves with unrelated dispatches.
-            return { ranges: footprint.ranges(), result, tables: footprint.tables };
+            const ranges = footprint.ranges();
+
+            return { ...(ranges === undefined ? {} : { ranges }), result, tables: footprint.tables };
         }
 
         protected override executeStream(functionPath: string, args: Record<string, unknown>, identity?: SubscriptionIdentity): null | { durable?: { ttlMs?: number }; iterator: (signal: AbortSignal) => AsyncIterable<unknown> } {
@@ -716,7 +718,7 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
                     this.recordChangedTable(delta.table, delta.indexKeys);
                 },
                 cdc: config.cdc ?? false,
-                headroom,
+                ...(headroom === undefined ? {} : { headroom }),
                 // Live predicate, same as the user-facing ctx — see `databaseOptions`.
                 inTransaction: () => this.isInTransaction(),
                 scheduler,
@@ -743,10 +745,10 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
             const writer = this.adminWriter();
 
             return runDataMigration({
-                batchSize: args.batchSize,
-                direction: args.direction,
-                dryRun: args.dryRun,
-                maxBatches: args.maxBatches,
+                ...(args.batchSize === undefined ? {} : { batchSize: args.batchSize }),
+                ...(args.direction === undefined ? {} : { direction: args.direction }),
+                ...(args.dryRun === undefined ? {} : { dryRun: args.dryRun }),
+                ...(args.maxBatches === undefined ? {} : { maxBatches: args.maxBatches }),
                 migration: migration as unknown as DataMigrationLike,
                 // Flush after each batch so live migrationStatus subscribers see
                 // progress mid-run (the base method records the reserved state
@@ -835,7 +837,7 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
             // `exportShardRows` walks in keyset batches so a large table does not
             // materialize at once inside the generator; the admin RPC's response
             // is a single array, so it is collected here rather than streamed.
-            for await (const row of exportShardRows(writer, schema as unknown as SchemaLike, { batchSize: args.batchSize, tables: args.tables })) {
+            for await (const row of exportShardRows(writer, schema as unknown as SchemaLike, args)) {
                 rows.push(row);
             }
 
@@ -850,7 +852,7 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
             // `importShardRows` inserts with `allowExplicitId`, so a source
             // database's `_id`s carry across verbatim and every foreign key
             // referencing them stays valid without a second remapping pass.
-            return importShardRows(writer, schema as unknown as SchemaLike, { rows: args.rows, startLine: args.startLine });
+            return importShardRows(writer, schema as unknown as SchemaLike, args);
         }
 
         protected override async runShardRankBefore(args: RunShardRankBeforeArgs): Promise<{ before: number; total: number }> {
@@ -885,7 +887,7 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
 
             return writer.related(
                 { id: args.id, table: args.table },
-                { cursor: args.cursor, depth: args.depth, direction: args.direction, edges: args.edges, limit: args.limit },
+                args,
             );
         }
 
@@ -903,10 +905,10 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
             }
 
             return writer.rankPageRows(args.table, args.index, {
-                after: args.after,
-                cursor: args.cursor,
-                partitionKey: args.partitionKey,
-                take: args.take,
+                ...(args.after === undefined ? {} : { after: args.after }),
+                ...(args.cursor === undefined ? {} : { cursor: args.cursor }),
+                ...(args.partitionKey === undefined ? {} : { partitionKey: args.partitionKey }),
+                ...(args.take === undefined ? {} : { take: args.take }),
             });
         }
 
@@ -938,7 +940,7 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
             return backfillSearchIndexes(this.sql as SqlExec, schema as unknown as SchemaLike, options);
         }
 
-        private buildCtx(options: { bookmarks?: DispatchBookmark; functionPath?: string; headroom?: TransactionHeadroomTracker; identity?: SubscriptionIdentity; kind?: "query"; onRead?: (table: string, idOrScan?: string) => void; onReadRange?: (range: KeyRange) => void; scope?: QueryReadScope; trusted?: boolean } = {}): unknown {
+        private buildCtx(options: { bookmarks?: DispatchBookmark | undefined; functionPath?: string | undefined; headroom?: TransactionHeadroomTracker | undefined; identity?: SubscriptionIdentity | undefined; kind?: "query" | undefined; onRead?: ((table: string, idOrScan?: string) => void) | undefined; onReadRange?: ((range: KeyRange) => void) | undefined; scope?: QueryReadScope | undefined; trusted?: boolean | undefined } = {}): unknown {
             const env = (this.env ?? {}) as Record<string, unknown>;
             // The caller context this ctx runs under, resolved ONCE on one
             // discriminant. When the caller threads an explicit identity
@@ -953,11 +955,17 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
             // One expression, not one per field: three parallel ternaries on the
             // same discriminant is how `ip` came to be the only one still reading
             // the shared field.
-            const caller: SubscriptionIdentity = options.identity ?? {
-                identity: this.getCurrentIdentity(),
-                ip: this.getCurrentIp(),
-                userId: this.getCurrentUserId(),
-            };
+            const caller: SubscriptionIdentity = options.identity ?? (() => {
+                const identity = this.getCurrentIdentity();
+                const ip = this.getCurrentIp();
+                const userId = this.getCurrentUserId();
+
+                return {
+                    ...(identity === undefined ? {} : { identity }),
+                    ...(ip === undefined ? {} : { ip }),
+                    ...(userId === undefined ? {} : { userId }),
+                };
+            })();
             const { identity, ip, userId } = caller;
 
             const secrets = createSecrets(env);
@@ -1115,7 +1123,9 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
                 // Left `undefined` when there is no scope so `createShardCtxDb`
                 // keeps its own "degrade a provable slice to a whole-table dep"
                 // fallback rather than reporting into a no-op.
-                onReadRange: options.onReadRange ?? (options.scope === undefined ? undefined : this.getCtxDbReadRangeHook(options.scope)),
+                ...(options.onReadRange !== undefined
+                    ? { onReadRange: options.onReadRange }
+                    : options.scope === undefined ? {} : { onReadRange: this.getCtxDbReadRangeHook(options.scope) }),
                 scheduler,
                 schema: schema as unknown as SchemaLike,
                 sql: this.sql as SqlExec,

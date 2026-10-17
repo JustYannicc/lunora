@@ -271,7 +271,9 @@ const SUBSCRIPTION_METHODS = `        protected override async executeSubscripti
 
             // Ranges come from THIS run's reads, never a shared field on the DO:
             // a deferred re-run interleaves with unrelated dispatches.
-            return { ranges: footprint.ranges(), result, tables: footprint.tables };
+            const ranges = footprint.ranges();
+
+            return { ...(ranges === undefined ? {} : { ranges }), result, tables: footprint.tables };
         }
 
         protected override executeStream(functionPath: string, args: Record<string, unknown>, identity?: SubscriptionIdentity): null | { durable?: { ttlMs?: number }; iterator: (signal: AbortSignal) => AsyncIterable<unknown> } {
