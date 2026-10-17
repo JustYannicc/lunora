@@ -1,5 +1,5 @@
-export { installDeliveryFence } from "./delivery-authorization";
 export type { DeliveryAuthorization, DeliveryAuthorizationRequest, DeliveryPermit } from "./delivery-authorization";
+export { installDeliveryFence } from "./delivery-authorization";
 export type { DurableObjectHandlers, MergedDurableObject, MergedRole, MergedRoles, RoleClass, RoleNamespaceTarget } from "./merge-durable-objects";
 export { MERGED_ROLES, mergeDurableObjects, roleNamespace } from "./merge-durable-objects";
 // `external-source-cursor` is an internal ingest detail (the durable watermark

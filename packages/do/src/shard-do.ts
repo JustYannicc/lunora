@@ -368,8 +368,9 @@ import {
 } from "./alarm-rearm-breaker";
 import { buildBatchEntryRequest } from "./batch";
 import { CdcRetentionRunner } from "./cdc-retention";
+import { deliveryAccessDenied, isDeliveryAccessDenied } from "./delivery-access-denied";
 import type { DeliveryAuthorization, DeliveryPermit } from "./delivery-authorization";
-import { DeliveryFence, deliveryAccessDenied, isDeliveryAccessDenied, validDeliveryPermit } from "./delivery-authorization";
+import { DeliveryFence, validDeliveryPermit } from "./delivery-authorization";
 import type { InFlightClaim } from "./in-flight-claims";
 import { InFlightClaims } from "./in-flight-claims";
 import { ensureScheduleRateTable, readScheduleRateWindow, scheduleRateLimitFrom, writeScheduleRateWindow } from "./schedule-rate-breaker";
@@ -1055,9 +1056,6 @@ type DispatchOutcome = { cached: { value: unknown }; kind: "cached" } | { kind: 
  * subclasses don't break when a knob lands.
  */
 interface ShardDOOptions {
-    /** Current authority for ordinary subscriptions and RPC responses. Other live delivery modes are refused. */
-    deliveryAuthorization?: DeliveryAuthorization;
-
     /**
      * Whether every writer this shard builds spreads {@link ShardDO.ctxDbTuning}.
      * The emitter sets it, because it is the only thing that can see inside the
@@ -1070,6 +1068,9 @@ interface ShardDOOptions {
      * from a call to the accessor.
      */
     ctxDbCacheWired?: boolean;
+
+    /** Current authority for ordinary subscriptions and RPC responses. Other live delivery modes are refused. */
+    deliveryAuthorization?: DeliveryAuthorization;
 
     /**
      * Ceiling on the join keys one relation-crossing `where` predicate may pull
@@ -1641,13 +1642,6 @@ const takeToken = (ws: ShardSocketLike, buckets: WeakMap<ShardSocketLike, { last
  * `serializeAttachment` so they survive hibernation.
  */
 abstract class ShardDO {
-    private readonly deliveryAuthorization: DeliveryAuthorization | undefined;
-    private readonly deliveryFence = new DeliveryFence(() => this.shardHost.sql as unknown as SqlExec);
-    private readonly deliveryResponsePermits = new WeakMap<Response, DeliveryPermit>();
-    private readonly deliveryRequestPermits = new WeakMap<Request, DeliveryPermit>();
-    private currentDeliveryPermit: DeliveryPermit | undefined;
-    private readonly deliveryRegistrations = new WeakMap<ShardSocketLike, Map<string, symbol>>();
-
     /**
      * Per-socket cap on concurrent stream iterators. Each in-flight stream
      * pins an `AbortController` + the user's async generator + any buffered
@@ -1923,6 +1917,13 @@ abstract class ShardDO {
      * changelog proved their table had not moved.
      */
     protected globalPoll: GlobalPollCounters = createGlobalPollCounters();
+
+    private readonly deliveryAuthorization: DeliveryAuthorization | undefined;
+    private readonly deliveryFence = new DeliveryFence(() => this.shardHost.sql);
+    private readonly deliveryResponsePermits = new WeakMap<Response, DeliveryPermit>();
+    private readonly deliveryRequestPermits = new WeakMap<Request, DeliveryPermit>();
+    private currentDeliveryPermit: DeliveryPermit | undefined;
+    private readonly deliveryRegistrations = new WeakMap<ShardSocketLike, Map<string, symbol>>();
 
     /** ctx-db relation knobs from {@link ShardDOOptions}, handed on by {@link ShardDO.ctxDbTuning}. */
     private readonly ctxDbRelationOptions: Pick<ShardDOOptions, "maxRelationKeys" | "relationExistsPushDown">;
@@ -2910,146 +2911,6 @@ abstract class ShardDO {
         this.armWebSocketKeepalive();
     }
 
-    private deliveryRoleSupported(): boolean {
-        const key = this.runner.shardKey;
-        return key === undefined || (parseRelayName(key) === undefined && parseReplicaName(key) === undefined);
-    }
-
-    private revokeSubscription(ws: ShardSocketLike, subId: string): void {
-        if (!Object.hasOwn(this.readAttachment(ws).subs, subId)) {
-            return;
-        }
-        this.unsubscribe(ws, subId);
-        this.subMemos.get(ws)?.delete(subId);
-        this.deliveryRegistrations.get(ws)?.delete(subId);
-        this.sendSubscriptionError(ws, subId, "FORBIDDEN", "AccessDenied");
-    }
-
-    private sendFrame(ws: ShardSocketLike, frame: string, delivery?: "control" | { subId: string; permit: SubscriptionDeliveryPermit | undefined }): boolean {
-        if (this.deliveryAuthorization && delivery !== "control") {
-            if (delivery === undefined) {
-                return false;
-            }
-            const { permit, subId } = delivery;
-            if (permit === undefined || this.deliveryRegistrations.get(ws)?.get(subId) !== permit.registration) {
-                return false;
-            }
-            if (!this.deliveryRoleSupported() || !this.deliveryFence.allows(permit)) {
-                this.revokeSubscription(ws, subId);
-                return false;
-            }
-        }
-        return trySendFrame(ws, frame);
-    }
-
-    private async authorizeSubscription(
-        ws: ShardSocketLike,
-        subId: string,
-        identity: SubscriptionIdentity,
-        functionPath: string,
-        args: Record<string, unknown>,
-    ): Promise<SubscriptionDeliveryPermit | undefined> {
-        if (!this.deliveryAuthorization) {
-            return undefined;
-        }
-        const query = this.readAttachment(ws).subs[subId];
-        if (query?.functionPath !== functionPath || stableWireKey(query.args ?? {}) !== stableWireKey(args)) {
-            return undefined;
-        }
-        const registrations = socketMap(this.deliveryRegistrations, ws);
-        const registration = registrations.get(subId) ?? Symbol();
-        registrations.set(subId, registration);
-        let permit: DeliveryPermit | undefined;
-        try {
-            permit = await this.authorizeDelivery(identity, functionPath, args, "subscription");
-        } catch (error) {
-            if (registrations.get(subId) !== registration) {
-                return undefined;
-            }
-            throw error;
-        }
-        if (registrations.get(subId) !== registration || permit === undefined) {
-            return undefined;
-        }
-        if (!this.deliveryRoleSupported() || !this.deliveryFence.allows(permit)) {
-            throw deliveryAccessDenied();
-        }
-        const attachment = this.readAttachment(ws);
-        if (!Object.hasOwn(attachment.subs, subId)) {
-            return undefined;
-        }
-        const existing = attachment.deliveryPermits?.[subId];
-        if (existing?.scope !== permit.scope || existing.epoch !== permit.epoch) {
-            const next = { ...attachment, deliveryPermits: { ...attachment.deliveryPermits, [subId]: permit } };
-            try {
-                // The host's structured-clone budget includes the permit and decoded query arguments.
-                (ws as HibernatableWebSocket).serializeAttachment?.(next);
-                const memo = this.subMemos.get(ws)?.get(subId);
-                if (memo !== undefined) {
-                    memo.lastJson = UNDELIVERED_BASELINE;
-                }
-            } catch {
-                throw new LunoraError("SUBSCRIPTION_PERSIST_FAILED", `subscription attachment exceeds the ${String(ShardDO.MAX_ATTACHMENT_BYTES)}-byte limit`);
-            }
-        }
-        return { ...permit, registration };
-    }
-
-    private async authorizeDelivery(
-        identity: SubscriptionIdentity,
-        functionPath: string,
-        args: Record<string, unknown>,
-        transport: "subscription" | "rpc",
-    ): Promise<DeliveryPermit | undefined> {
-        if (!this.deliveryAuthorization) {
-            return undefined;
-        }
-        const permit = await this.deliveryAuthorization({ identity, functionPath, args, shardKey: this.runner.shardKey, transport });
-        if (permit === undefined) {
-            throw deliveryAccessDenied();
-        }
-        if (!validDeliveryPermit(permit)) {
-            throw new TypeError("delivery authority returned an invalid permit");
-        }
-        if (!this.deliveryFence.allows(permit)) {
-            throw deliveryAccessDenied();
-        }
-        return { scope: permit.scope, epoch: permit.epoch };
-    }
-
-    private async installDeliveryFence(request: Request): Promise<Response> {
-        const raw = await request.text();
-        if (
-            !this.deliveryAuthorization ||
-            request.method !== "POST" ||
-            !siblingSecretOf(this.env) ||
-            !(await verifySiblingBody(this.env, request.headers.get(RELAY_SIGNATURE_HEADER), raw))
-        ) {
-            return new Response("Forbidden", { status: 403 });
-        }
-        let body: unknown;
-        try {
-            body = JSON.parse(raw);
-        } catch {
-            return new Response("Bad request", { status: 400 });
-        }
-        const control = body as { type?: unknown; shardKey?: unknown; fence?: unknown } | null;
-        if (!control || control.type !== "delivery-fence" || control.shardKey !== this.runner.shardKey || !validDeliveryPermit(control.fence)) {
-            return new Response("Bad request", { status: 400 });
-        }
-        this.deliveryFence.install(control.fence);
-        for (const socket of this.runner.sockets()) {
-            const attachment = this.readAttachment(socket);
-            for (const subId of Object.keys(attachment.subs)) {
-                const permit = attachment.deliveryPermits?.[subId];
-                if (permit !== undefined && !this.deliveryFence.allows(permit)) {
-                    this.revokeSubscription(socket, subId);
-                }
-            }
-        }
-        return new Response(undefined, { status: 204 });
-    }
-
     public async fetch(request: Request): Promise<Response> {
         await this.ensureShardInit();
 
@@ -3078,45 +2939,7 @@ abstract class ShardDO {
         if (url.pathname !== "/rpc" || request.method !== "POST") {
             return jsonResponse({ error: { code: "NOT_IMPLEMENTED", message: "delivery mode unsupported with delivery authorization" } }, 501);
         }
-        let payload: RpcRequest;
-        try {
-            payload = (await request.clone().json()) as RpcRequest;
-        } catch {
-            return jsonResponse({ error: { code: "BAD_REQUEST", message: "invalid JSON body" } }, 400);
-        }
-        const identity: SubscriptionIdentity = {
-            identity: parseIdentityHeader(request.headers.get("x-lunora-identity")),
-            userId: decodeUserIdHeader(request.headers.get("x-lunora-userid")),
-            ip: request.headers.get("x-lunora-client-ip") ?? undefined,
-        };
-        let args: Record<string, unknown>;
-        try {
-            args = decodeWire(payload.args ?? {}) as Record<string, unknown>;
-        } catch {
-            return jsonResponse({ error: { code: "BAD_REQUEST", message: "invalid wire arguments" } }, 400);
-        }
-        let permit: DeliveryPermit | undefined;
-        try {
-            permit = await this.authorizeDelivery(identity, payload.functionPath, args, "rpc");
-        } catch (error) {
-            return isDeliveryAccessDenied(error)
-                ? jsonResponse({ error: { code: "FORBIDDEN", message: "AccessDenied" } }, 403)
-                : jsonResponse({ error: { code: "SHARD_UNAVAILABLE", message: "delivery authority unavailable" } }, 503);
-        }
-        if (permit !== undefined) {
-            this.deliveryRequestPermits.set(request, permit);
-        }
-        const response = await this.runner.handleFetch(request);
-        // Fully consume the body before checking: a deferred response stream must not outlive its permit.
-        const body = await response.arrayBuffer();
-        if (!this.deliveryFence.allows(permit)) {
-            return jsonResponse({ error: { code: "DELIVERY_FENCED", message: "Delivery fenced; operation may have committed" } }, 409);
-        }
-        const delivered = new Response(body, response);
-        if (permit !== undefined) {
-            this.deliveryResponsePermits.set(delivered, permit);
-        }
-        return delivered;
+        return this.fetchAuthorizedRpc(request);
     }
 
     /**
@@ -5561,7 +5384,7 @@ abstract class ShardDO {
         attachment.subs[subId] = query;
         const previousPermit = attachment.deliveryPermits?.[subId];
         if (this.deliveryAuthorization && attachment.deliveryPermits !== undefined) {
-            delete attachment.deliveryPermits[subId];
+            Reflect.deleteProperty(attachment.deliveryPermits, subId);
         }
 
         try {
@@ -5585,7 +5408,7 @@ abstract class ShardDO {
         }
 
         if (this.deliveryAuthorization) {
-            socketMap(this.deliveryRegistrations, ws).set(subId, Symbol());
+            socketMap(this.deliveryRegistrations, ws).set(subId, Symbol("delivery registration"));
         }
         // Drop the diff baseline. A (re)subscribe asks for the current value, so
         // the seed must go out as a full snapshot; diffed against the old memo it
@@ -5603,7 +5426,7 @@ abstract class ShardDO {
         const captured = attachment.subs[subId];
         const capturedPermit = attachment.deliveryPermits?.[subId];
         if (attachment.deliveryPermits !== undefined) {
-            delete attachment.deliveryPermits[subId];
+            Reflect.deleteProperty(attachment.deliveryPermits, subId);
         }
 
         // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- `subs` is a Record keyed by dynamic subscription id; removal is the intended unsubscribe
@@ -7254,7 +7077,7 @@ abstract class ShardDO {
                 (envelope.type === "subscribe" && typeof envelope.query?.functionPath === "string")
             )
         ) {
-            this.sendSubscriptionError(ws, envelope.id ?? "", "NOT_IMPLEMENTED", "delivery mode unsupported with delivery authorization");
+            this.sendSubscriptionError(ws, (envelope as { id?: string }).id ?? "", "NOT_IMPLEMENTED", "delivery mode unsupported with delivery authorization");
             return;
         }
 
@@ -8248,6 +8071,188 @@ abstract class ShardDO {
                 ? this.scheduleGlobalPoll(nextAlarmAt)
                 : this.armRecoveryWake());
         }
+    }
+
+    private deliveryRoleSupported(): boolean {
+        const key = this.runner.shardKey;
+        return key === undefined || (parseRelayName(key) === undefined && parseReplicaName(key) === undefined);
+    }
+
+    private revokeSubscription(ws: ShardSocketLike, subId: string): void {
+        if (!Object.hasOwn(this.readAttachment(ws).subs, subId)) {
+            return;
+        }
+        this.unsubscribe(ws, subId);
+        this.subMemos.get(ws)?.delete(subId);
+        this.deliveryRegistrations.get(ws)?.delete(subId);
+        this.sendSubscriptionError(ws, subId, "FORBIDDEN", "AccessDenied");
+    }
+
+    private sendFrame(ws: ShardSocketLike, frame: string, delivery?: "control" | { permit: SubscriptionDeliveryPermit | undefined; subId: string }): boolean {
+        if (this.deliveryAuthorization && delivery !== "control") {
+            if (delivery === undefined) {
+                return false;
+            }
+            const { permit, subId } = delivery;
+            if (permit === undefined || this.deliveryRegistrations.get(ws)?.get(subId) !== permit.registration) {
+                return false;
+            }
+            if (!this.deliveryRoleSupported() || !this.deliveryFence.allows(permit)) {
+                this.revokeSubscription(ws, subId);
+                return false;
+            }
+        }
+        return trySendFrame(ws, frame);
+    }
+
+    private async authorizeSubscription(
+        ws: ShardSocketLike,
+        subId: string,
+        identity: SubscriptionIdentity,
+        functionPath: string,
+        args: Record<string, unknown>,
+    ): Promise<SubscriptionDeliveryPermit | undefined> {
+        if (!this.deliveryAuthorization) {
+            return undefined;
+        }
+        const query = this.readAttachment(ws).subs[subId];
+        if (query?.functionPath !== functionPath || stableWireKey(query.args ?? {}) !== stableWireKey(args)) {
+            return undefined;
+        }
+        const registrations = socketMap(this.deliveryRegistrations, ws);
+        const registration = registrations.get(subId) ?? Symbol("delivery registration");
+        registrations.set(subId, registration);
+        let permit: DeliveryPermit | undefined;
+        try {
+            permit = await this.authorizeDelivery(identity, functionPath, args, "subscription");
+        } catch (error) {
+            if (registrations.get(subId) !== registration) {
+                return undefined;
+            }
+            throw error;
+        }
+        if (registrations.get(subId) !== registration || permit === undefined) {
+            return undefined;
+        }
+        if (!this.deliveryRoleSupported() || !this.deliveryFence.allows(permit)) {
+            throw deliveryAccessDenied();
+        }
+        const attachment = this.readAttachment(ws);
+        if (!Object.hasOwn(attachment.subs, subId)) {
+            return undefined;
+        }
+        const existing = attachment.deliveryPermits?.[subId];
+        if (existing?.scope !== permit.scope || existing.epoch !== permit.epoch) {
+            const next = { ...attachment, deliveryPermits: { ...attachment.deliveryPermits, [subId]: permit } };
+            try {
+                // The host's structured-clone budget includes the permit and decoded query arguments.
+                (ws as HibernatableWebSocket).serializeAttachment?.(next);
+                const memo = this.subMemos.get(ws)?.get(subId);
+                if (memo !== undefined) {
+                    memo.lastJson = UNDELIVERED_BASELINE;
+                }
+            } catch {
+                throw new LunoraError("SUBSCRIPTION_PERSIST_FAILED", `subscription attachment exceeds the ${String(ShardDO.MAX_ATTACHMENT_BYTES)}-byte limit`);
+            }
+        }
+        return { ...permit, registration };
+    }
+
+    private async authorizeDelivery(
+        identity: SubscriptionIdentity,
+        functionPath: string,
+        args: Record<string, unknown>,
+        transport: "subscription" | "rpc",
+    ): Promise<DeliveryPermit | undefined> {
+        if (!this.deliveryAuthorization) {
+            return undefined;
+        }
+        const permit = await this.deliveryAuthorization({ identity, functionPath, args, shardKey: this.runner.shardKey, transport });
+        if (permit === undefined) {
+            throw deliveryAccessDenied();
+        }
+        if (!validDeliveryPermit(permit)) {
+            throw new TypeError("delivery authority returned an invalid permit");
+        }
+        if (!this.deliveryFence.allows(permit)) {
+            throw deliveryAccessDenied();
+        }
+        return { scope: permit.scope, epoch: permit.epoch };
+    }
+
+    private async installDeliveryFence(request: Request): Promise<Response> {
+        const raw = await request.text();
+        if (
+            !this.deliveryAuthorization ||
+            request.method !== "POST" ||
+            !siblingSecretOf(this.env) ||
+            !(await verifySiblingBody(this.env, request.headers.get(RELAY_SIGNATURE_HEADER), raw))
+        ) {
+            return new Response("Forbidden", { status: 403 });
+        }
+        let body: unknown;
+        try {
+            body = JSON.parse(raw);
+        } catch {
+            return new Response("Bad request", { status: 400 });
+        }
+        const control = body as { fence?: unknown; shardKey?: unknown; type?: unknown } | null;
+        if (control?.type !== "delivery-fence" || control.shardKey !== this.runner.shardKey || !validDeliveryPermit(control.fence)) {
+            return new Response("Bad request", { status: 400 });
+        }
+        this.deliveryFence.install(control.fence);
+        for (const socket of this.runner.sockets()) {
+            const attachment = this.readAttachment(socket);
+            for (const subId of Object.keys(attachment.subs)) {
+                const permit = attachment.deliveryPermits?.[subId];
+                if (permit !== undefined && !this.deliveryFence.allows(permit)) {
+                    this.revokeSubscription(socket, subId);
+                }
+            }
+        }
+        return new Response(undefined, { status: 204 });
+    }
+
+    private async fetchAuthorizedRpc(request: Request): Promise<Response> {
+        let payload: RpcRequest;
+        try {
+            payload = await request.clone().json();
+        } catch {
+            return jsonResponse({ error: { code: "BAD_REQUEST", message: "invalid JSON body" } }, 400);
+        }
+        const identity: SubscriptionIdentity = {
+            identity: parseIdentityHeader(request.headers.get("x-lunora-identity")),
+            userId: decodeUserIdHeader(request.headers.get("x-lunora-userid")),
+            ip: request.headers.get("x-lunora-client-ip") ?? undefined,
+        };
+        let args: Record<string, unknown>;
+        try {
+            args = decodeWire(payload.args ?? {}) as Record<string, unknown>;
+        } catch {
+            return jsonResponse({ error: { code: "BAD_REQUEST", message: "invalid wire arguments" } }, 400);
+        }
+        let permit: DeliveryPermit | undefined;
+        try {
+            permit = await this.authorizeDelivery(identity, payload.functionPath, args, "rpc");
+        } catch (error) {
+            return isDeliveryAccessDenied(error)
+                ? jsonResponse({ error: { code: "FORBIDDEN", message: "AccessDenied" } }, 403)
+                : jsonResponse({ error: { code: "SHARD_UNAVAILABLE", message: "delivery authority unavailable" } }, 503);
+        }
+        if (permit !== undefined) {
+            this.deliveryRequestPermits.set(request, permit);
+        }
+        const response = await this.runner.handleFetch(request);
+        // Fully consume the body before checking: a deferred response stream must not outlive its permit.
+        const body = await response.arrayBuffer();
+        if (!this.deliveryFence.allows(permit)) {
+            return jsonResponse({ error: { code: "DELIVERY_FENCED", message: "Delivery fenced; operation may have committed" } }, 409);
+        }
+        const delivered = new Response(body, response);
+        if (permit !== undefined) {
+            this.deliveryResponsePermits.set(delivered, permit);
+        }
+        return delivered;
     }
 
     /**
@@ -9478,7 +9483,7 @@ abstract class ShardDO {
     private async dispatchBatchEntry(
         batchRequest: Request,
         entry: BatchEntry,
-    ): Promise<{ body: unknown; bookmark: string | undefined; errorDetail?: string; id: unknown; status: number; permit?: DeliveryPermit }> {
+    ): Promise<{ body: unknown; bookmark: string | undefined; errorDetail?: string; id: unknown; permit?: DeliveryPermit; status: number }> {
         try {
             const response = await this.fetch(buildBatchEntryRequest(batchRequest, entry));
 
@@ -12352,6 +12357,55 @@ abstract class ShardDO {
             // `Object.keys` for the same reason as `broadcastDelta` — see there.
             const { subs } = attachment;
 
+            const refreshQuery = async (subId: string, functionPath: string, args: Record<string, unknown>, isAdmin: boolean): Promise<void> => {
+                try {
+                    // Re-run under the socket's OWN verified identity (stamped on the
+                    // attachment at upgrade, unforgeable by the client) — passed BY
+                    // VALUE, so this deferred re-run never reads or mutates the shared
+                    // per-request identity fields. Without it an `rls()` / `ctx.auth`
+                    // scoped live query would evaluate anonymous and return zero rows.
+                    // (Admin + reserved flag reads ignore the identity payload.)
+                    let permit: SubscriptionDeliveryPermit | undefined;
+                    if (this.deliveryAuthorization) {
+                        permit = await this.authorizeSubscription(ws, subId, socketIdentity(attachment), functionPath, args);
+                    }
+                    if (this.deliveryAuthorization && permit === undefined) {
+                        return;
+                    }
+                    const outcome = await this.resolveReactiveOutcomeDeduped(functionPath, args, isAdmin, socketIdentity(attachment), reactiveRunCache);
+
+                    if (!outcome) {
+                        return;
+                    }
+
+                    // Backpressure: a write storm fanning out to a slow consumer
+                    // would otherwise grow this socket's outbound buffer without
+                    // bound (the runtime queues every `ws.send`). Pause this
+                    // socket's fan-out until its buffer drains — the per-socket
+                    // workers run in parallel, so one backed-up socket never
+                    // stalls the others. Mirrors the `handleStream` gate.
+                    await awaitWsDrain(ws);
+
+                    this.pushSubscriptionData(ws, subId, outcome, { cursor: frameCursor, epoch: frameEpoch, generation }, delivery, permit);
+                } catch (error) {
+                    // A throwing subscription must not abort the refresh of its
+                    // siblings, nor fail the mutation that triggered it. The memo
+                    // is left untouched ("unknown deps"), so this subscription
+                    // re-runs on the next flush — but until now that failure was
+                    // silent (DO-01): a subscription whose refresh throws
+                    // DETERMINISTICALLY (a bad handler cast, say) repeated
+                    // unnoticed for the life of the socket with no signal an
+                    // operator could see anywhere. See `recordSubscriptionRefreshError`.
+                    if (isDeliveryAccessDenied(error)) {
+                        this.revokeSubscription(ws, subId);
+                    } else if (this.deliveryAuthorization && isLunoraError(error) && error.code === "SUBSCRIPTION_PERSIST_FAILED") {
+                        this.unsubscribe(ws, subId);
+                        this.sendSubscriptionError(ws, subId, error.code, error.message);
+                    }
+                    this.recordSubscriptionRefreshError(functionPath, error, { subId });
+                }
+            };
+
             for (const subId of Object.keys(subs)) {
                 const query = subs[subId];
 
@@ -12397,63 +12451,8 @@ abstract class ShardDO {
                     continue;
                 }
 
-                try {
-                    // Re-run under the socket's OWN verified identity (stamped on the
-                    // attachment at upgrade, unforgeable by the client) — passed BY
-                    // VALUE, so this deferred re-run never reads or mutates the shared
-                    // per-request identity fields. Without it an `rls()` / `ctx.auth`
-                    // scoped live query would evaluate anonymous and return zero rows.
-                    // (Admin + reserved flag reads ignore the identity payload.)
-                    let permit: SubscriptionDeliveryPermit | undefined;
-                    if (this.deliveryAuthorization) {
-                        // eslint-disable-next-line no-await-in-loop -- authority must resolve before this subscription runs
-                        permit = await this.authorizeSubscription(ws, subId, socketIdentity(attachment), functionPath, query.args ?? {});
-                    }
-                    if (this.deliveryAuthorization && permit === undefined) {
-                        continue;
-                    }
-                    // eslint-disable-next-line no-await-in-loop -- subscriptions on one socket share its SQLite connection
-                    const outcome = await this.resolveReactiveOutcomeDeduped(
-                        functionPath,
-                        query.args ?? {},
-                        isAdmin,
-                        socketIdentity(attachment),
-                        reactiveRunCache,
-                    );
-
-                    if (!outcome) {
-                        continue;
-                    }
-
-                    // Backpressure: a write storm fanning out to a slow consumer
-                    // would otherwise grow this socket's outbound buffer without
-                    // bound (the runtime queues every `ws.send`). Pause this
-                    // socket's fan-out until its buffer drains — the per-socket
-                    // workers run in parallel, so one backed-up socket never
-                    // stalls the others. Mirrors the `handleStream` gate.
-                    // eslint-disable-next-line no-await-in-loop -- intentional per-socket backpressure: drain before pushing the next subscription's frame
-                    await awaitWsDrain(ws);
-
-                    this.pushSubscriptionData(ws, subId, outcome, { cursor: frameCursor, epoch: frameEpoch, generation }, delivery, permit);
-                } catch (error) {
-                    // A throwing subscription must not abort the refresh of its
-                    // siblings, nor fail the mutation that triggered it. The memo
-                    // is left untouched ("unknown deps"), so this subscription
-                    // re-runs on the next flush — but until now that failure was
-                    // silent (DO-01): a subscription whose refresh throws
-                    // DETERMINISTICALLY (a bad handler cast, say) repeated
-                    // unnoticed for the life of the socket with no signal an
-                    // operator could see anywhere. See `recordSubscriptionRefreshError`.
-                    if (isDeliveryAccessDenied(error)) {
-                        this.revokeSubscription(ws, subId);
-                    } else if (this.deliveryAuthorization && isLunoraError(error) && error.code === "SUBSCRIPTION_PERSIST_FAILED") {
-                        this.unsubscribe(ws, subId);
-                        this.sendSubscriptionError(ws, subId, error.code, error.message);
-                    }
-                    this.recordSubscriptionRefreshError(functionPath, error, { subId });
-
-                    continue;
-                }
+                // eslint-disable-next-line no-await-in-loop -- subscriptions on one socket share its SQLite connection
+                await refreshQuery(subId, functionPath, query.args ?? {}, isAdmin);
             }
         };
 
@@ -12651,7 +12650,6 @@ abstract class ShardDO {
     }
 
     /** Send a structured `error` frame for a failed `subscribe`/`shape_subscribe`, swallowing a send on an already-closed socket. */
-    // eslint-disable-next-line class-methods-use-this -- groups with the subscribe flows; uses only its args + the socket
     private sendSubscriptionError(ws: ShardSocketLike, subId: string, code: string, message: string): void {
         try {
             this.sendFrame(ws, JSON.stringify({ code, error: { code, message }, id: subId, type: "error" }), "control");
@@ -14609,23 +14607,11 @@ abstract class ShardDO {
         delivery: SocketDelivery,
         permit?: SubscriptionDeliveryPermit,
     ): void {
-        if (this.deliveryAuthorization && permit !== undefined && this.deliveryRegistrations.get(ws)?.get(subId) !== permit.registration) {
-            return;
-        }
-        if (this.deliveryAuthorization && !this.deliveryFence.allows(permit)) {
-            this.revokeSubscription(ws, subId);
+        if (!this.allowsSubscriptionOutcome(ws, subId, permit, stamp.generation)) {
             return;
         }
         const memos = socketMap(this.subMemos, ws);
         const existing = memos.get(subId);
-
-        // Newer value wins. A run that began before the write that produced the
-        // current baseline read older state; sending it would roll the client
-        // back to a value a later write already replaced (and stamp a cursor on
-        // it). The baseline's own run already delivered the newer value.
-        if (existing !== undefined && stamp.generation < existing.generation) {
-            return;
-        }
 
         const { cursor, epoch, generation } = stamp;
         const cursorSuffix = cdcSuffix(cursor, epoch);
@@ -14722,6 +14708,22 @@ abstract class ShardDO {
             ranges: outcome.ranges,
             tables: outcome.tables,
         });
+    }
+
+    private allowsSubscriptionOutcome(ws: ShardSocketLike, subId: string, permit: SubscriptionDeliveryPermit | undefined, generation: number): boolean {
+        if (this.deliveryAuthorization && permit !== undefined && this.deliveryRegistrations.get(ws)?.get(subId) !== permit.registration) {
+            return false;
+        }
+        if (this.deliveryAuthorization && !this.deliveryFence.allows(permit)) {
+            this.revokeSubscription(ws, subId);
+            return false;
+        }
+        // Newer value wins. A run that began before the write that produced the
+        // current baseline read older state; sending it would roll the client
+        // back to a value a later write already replaced (and stamp a cursor on
+        // it). The baseline's own run already delivered the newer value.
+        const existing = this.subMemos.get(ws)?.get(subId);
+        return existing === undefined || generation >= existing.generation;
     }
 
     /**

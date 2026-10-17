@@ -3,17 +3,17 @@ import type { SqlExec, SubscriptionIdentity } from "@lunora/shard-engine";
 import { RELAY_SIGNATURE_HEADER, siblingSecretOf, signSiblingBody } from "@lunora/shard-engine";
 
 /** Opaque authority scope and its monotonic revision. No access policy is stored on the shard. */
-export interface DeliveryPermit {
+interface DeliveryPermit {
+    readonly epoch: number;
     /** Opaque authority key, at most 256 UTF-8 bytes to bound persisted socket metadata. */
     readonly scope: string;
-    readonly epoch: number;
 }
 
-export interface DeliveryAuthorizationRequest {
+interface DeliveryAuthorizationRequest {
+    readonly args: Record<string, unknown>;
+    readonly functionPath: string;
     readonly identity: SubscriptionIdentity;
     readonly shardKey: string | undefined;
-    readonly functionPath: string;
-    readonly args: Record<string, unknown>;
     readonly transport: "subscription" | "rpc";
 }
 
@@ -23,9 +23,9 @@ export interface DeliveryAuthorizationRequest {
  * permits immediately, and retries installDeliveryFence before acknowledging
  * revocation. It owns affected scopes; the shard stores no grant or topology copy.
  */
-export type DeliveryAuthorization = (request: DeliveryAuthorizationRequest) => Promise<DeliveryPermit | undefined>;
+type DeliveryAuthorization = (request: DeliveryAuthorizationRequest) => Promise<DeliveryPermit | undefined>;
 
-export const validDeliveryPermit = (value: unknown): value is DeliveryPermit => {
+const validDeliveryPermit = (value: unknown): value is DeliveryPermit => {
     if (typeof value !== "object" || value === null) {
         return false;
     }
@@ -41,34 +41,11 @@ export const validDeliveryPermit = (value: unknown): value is DeliveryPermit => 
     );
 };
 
-class DeliveryAccessDenied extends LunoraError {
-    public constructor() {
-        super("FORBIDDEN", "AccessDenied");
-    }
-}
-
-export const deliveryAccessDenied = (): LunoraError => new DeliveryAccessDenied();
-export const isDeliveryAccessDenied = (error: unknown): boolean => error instanceof DeliveryAccessDenied;
-
 /** SQL uses the host's synchronous storage and output durability gate, including after hibernation. */
-export class DeliveryFence {
+class DeliveryFence {
     private initialized = false;
 
     public constructor(private readonly sql: () => SqlExec) {}
-
-    private storage(): SqlExec {
-        const sql = this.sql();
-
-        if (!this.initialized) {
-            sql.exec("CREATE TABLE IF NOT EXISTS __lunora_delivery_fence (scope TEXT PRIMARY KEY, epoch INTEGER NOT NULL)");
-            sql.exec(
-                "CREATE TABLE IF NOT EXISTS __lunora_delivery_receipt (identity TEXT NOT NULL, mutation_id TEXT NOT NULL, scope TEXT NOT NULL, epoch INTEGER NOT NULL, ts REAL NOT NULL, PRIMARY KEY (identity, mutation_id))",
-            );
-            this.initialized = true;
-        }
-
-        return sql;
-    }
 
     public install(permit: DeliveryPermit): void {
         if (!validDeliveryPermit(permit)) {
@@ -98,7 +75,7 @@ export class DeliveryFence {
 
     public assertReceipt(identity: string, mutationId: string, permit: DeliveryPermit | undefined): void {
         const original = this.storage()
-            .exec<{ scope: string; epoch: number }>(
+            .exec<{ epoch: number; scope: string }>(
                 "SELECT scope, epoch FROM __lunora_delivery_receipt WHERE identity = ? AND mutation_id = ?",
                 identity,
                 mutationId,
@@ -122,12 +99,26 @@ export class DeliveryFence {
 
         return row === undefined || permit.epoch >= row.epoch;
     }
+
+    private storage(): SqlExec {
+        const sql = this.sql();
+
+        if (!this.initialized) {
+            sql.exec("CREATE TABLE IF NOT EXISTS __lunora_delivery_fence (scope TEXT PRIMARY KEY, epoch INTEGER NOT NULL)");
+            sql.exec(
+                "CREATE TABLE IF NOT EXISTS __lunora_delivery_receipt (identity TEXT NOT NULL, mutation_id TEXT NOT NULL, scope TEXT NOT NULL, epoch INTEGER NOT NULL, ts REAL NOT NULL, PRIMARY KEY (identity, mutation_id))",
+            );
+            this.initialized = true;
+        }
+
+        return sql;
+    }
 }
 
 /** Install through a private namespace binding. Acknowledgement covers this shard's durable local fence. */
-export const installDeliveryFence = async (
+const installDeliveryFence = async (
     target: { fetch: (url: string, init?: RequestInit) => Promise<Response> },
-    options: { env: unknown; shardKey: string | undefined; fence: DeliveryPermit },
+    options: { env: unknown; fence: DeliveryPermit; shardKey: string | undefined },
 ): Promise<void> => {
     const secret = siblingSecretOf(options.env);
     if (secret === undefined || !validDeliveryPermit(options.fence)) {
@@ -143,3 +134,6 @@ export const installDeliveryFence = async (
         throw new Error(`delivery fence was not acknowledged (${String(response.status)})`);
     }
 };
+
+export { DeliveryFence, installDeliveryFence, validDeliveryPermit };
+export type { DeliveryAuthorization, DeliveryAuthorizationRequest, DeliveryPermit };

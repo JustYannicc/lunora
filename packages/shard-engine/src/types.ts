@@ -206,9 +206,6 @@ export interface RpcRequest {
  * messages are derived on-demand from that map plus the runtime payload.
  */
 export interface SocketAttachment {
-    /** Server-stamped authority markers for invalidating subscriptions after hibernation; never access policy. */
-    deliveryPermits?: Record<string, { scope: string; epoch: number }>;
-
     /**
      * `true` when the upgrade presented a token matching `LUNORA_ADMIN_TOKEN`,
      * gating the reserved `__lunora_admin__:*` introspection subscriptions to
@@ -259,6 +256,9 @@ export interface SocketAttachment {
      * be replayed to the `onDisconnect` hooks at close time.
      */
     context?: Record<string, unknown>;
+
+    /** Server-stamped authority markers for invalidating subscriptions after hibernation; never access policy. */
+    deliveryPermits?: Record<string, { epoch: number; scope: string }>;
 
     /**
      * Token-expiry (epoch ms) of the credential resolved at upgrade, when the

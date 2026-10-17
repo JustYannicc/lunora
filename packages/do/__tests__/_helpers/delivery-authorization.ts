@@ -1,7 +1,8 @@
 import { serialize } from "node:v8";
+
 import type { SocketAttachment, SubscriptionIdentity } from "@lunora/shard-engine";
 import { readCdcEpoch, runShardMigrations } from "@lunora/shard-engine";
-import { afterEach, vi } from "vitest";
+import { vi } from "vitest";
 
 import { signSiblingBody } from "../../../shard-engine/src/sibling-channel";
 import type { DeliveryAuthorization, DeliveryPermit } from "../../src/delivery-authorization";
@@ -10,25 +11,59 @@ import { ShardDO } from "../../src/shard-do";
 import messagesSchema from "./messages-schema";
 import createSqliteExec from "./node-sqlite";
 
-const drainState = vi.hoisted(() => ({ run: async (): Promise<void> => {} }));
-vi.mock("@lunora/shard-engine", async (original) => ({
-    ...(await original<typeof import("@lunora/shard-engine")>()),
-    awaitWsDrain: () => drainState.run(),
-}));
+const drainState = vi.hoisted(() => {
+    return { run: async (): Promise<void> => {} };
+});
+vi.mock(import("@lunora/shard-engine"), async (importOriginal) => {
+    const original = await importOriginal();
+    return { ...original, awaitWsDrain: () => drainState.run() };
+});
 
-export const drain = drainState;
-export const secret = "test-internal-control-secret";
-export const permit = (epoch: number): DeliveryPermit => ({ scope: "opaque-authority-scope", epoch });
-export const gate = () => Promise.withResolvers<void>();
+const secret = "test-internal-control-secret";
+const databases: ReturnType<typeof createSqliteExec>[] = [];
 
-export class Socket {
+type Setup = {
+    authority: ReturnType<typeof vi.fn<DeliveryAuthorization>>;
+    database: ReturnType<typeof createSqliteExec>;
+    fence: (target?: TestShard, nextEpoch?: number, signed?: boolean) => Promise<Response>;
+    makeShard: () => TestShard;
+    regrant: () => void;
+    revoke: () => void;
+    send: (target?: TestShard, sinceSeq?: number) => Promise<void>;
+    shard: TestShard;
+    socket: Socket;
+    state: ShardDOState;
+    write: (operationKey?: string) => Promise<Response>;
+};
+
+type Gate = {
+    promise: Promise<void>;
+    resolve: () => void;
+};
+
+const permit = (epoch: number): DeliveryPermit => {
+    return { scope: "opaque-authority-scope", epoch };
+};
+const gate = (): Gate => {
+    const deferred = Promise.withResolvers<undefined>();
+    return {
+        promise: deferred.promise,
+        resolve: () => {
+            deferred.resolve(undefined);
+        },
+    };
+};
+
+class Socket {
     public attachment: SocketAttachment = { subs: {}, identity: { subject: "alice" }, userId: "alice" };
-    public readonly frames: Array<Record<string, unknown>> = [];
+    public readonly frames: Record<string, unknown>[] = [];
     public saves = 0;
     public attachmentLimit = 16_384;
+
     public deserializeAttachment(): SocketAttachment {
         return structuredClone(this.attachment);
     }
+
     public serializeAttachment(attachment: SocketAttachment): void {
         if (serialize(attachment).byteLength > this.attachmentLimit) {
             throw new Error("attachment too large");
@@ -36,12 +71,13 @@ export class Socket {
         this.saves += 1;
         this.attachment = structuredClone(attachment);
     }
+
     public send(frame: string): void {
-        this.frames.push(JSON.parse(frame));
+        this.frames.push(JSON.parse(frame) as Record<string, unknown>);
     }
 }
 
-export class TestShard extends ShardDO {
+class TestShard extends ShardDO {
     public rows = ["before"];
     public rpcGate: Promise<void> | undefined;
     public rpcStarted = gate();
@@ -49,8 +85,9 @@ export class TestShard extends ShardDO {
     public queryStarted = gate();
     public queryGate: Promise<void> | undefined;
     public queryCalls = 0;
-    public queryFailure: unknown;
+    public queryFailure: Error | undefined;
     public observedIdentity: SubscriptionIdentity | undefined;
+
     public override async handleRpc(functionPath: string): Promise<unknown> {
         this.rpcRuns += 1;
         if (functionPath === "messages:slow") {
@@ -60,6 +97,7 @@ export class TestShard extends ShardDO {
         this.recordChangedTable("messages");
         return { result: "receipt-payload" };
     }
+
     protected override async executeSubscription(_path: string, _args: Record<string, unknown>, identity?: SubscriptionIdentity): Promise<SubscriptionOutcome> {
         this.queryCalls += 1;
         if (this.queryFailure !== undefined) {
@@ -73,15 +111,14 @@ export class TestShard extends ShardDO {
     }
 }
 
-const databases: ReturnType<typeof createSqliteExec>[] = [];
-afterEach(() => {
-    drain.run = async () => {};
+const cleanupDatabases = (): void => {
+    drainState.run = async () => {};
     for (const database of databases.splice(0)) {
         database.close();
     }
-});
+};
 
-export const setup = (shardKey?: string) => {
+const setup = (shardKey?: string): Setup => {
     const database = createSqliteExec();
     databases.push(database);
     runShardMigrations(database.sql, messagesSchema, { cdc: true });
@@ -95,9 +132,9 @@ export const setup = (shardKey?: string) => {
         getWebSockets: () => [socket as unknown as WebSocket],
         storage: { sql: database.sql as unknown as ShardDOState["storage"]["sql"] },
     };
-    const makeShard = () => new TestShard(state, { LUNORA_RELAY_SECRET: secret }, { deliveryAuthorization: authority });
+    const makeShard = (): TestShard => new TestShard(state, { LUNORA_RELAY_SECRET: secret }, { deliveryAuthorization: authority });
     const shard = makeShard();
-    const send = (target = shard, sinceSeq?: number) =>
+    const send = (target: TestShard = shard, sinceSeq?: number): Promise<void> =>
         target.webSocketMessage(
             socket as unknown as WebSocket,
             JSON.stringify({
@@ -106,7 +143,7 @@ export const setup = (shardKey?: string) => {
                 query: { functionPath: "messages:list", args: {}, sinceSeq, sinceEpoch: readCdcEpoch(database.sql) },
             }),
         );
-    const fence = async (target = shard, nextEpoch = 1, signed = true) => {
+    const fence = async (target: TestShard = shard, nextEpoch = 1, signed = true): Promise<Response> => {
         const raw = JSON.stringify({ type: "delivery-fence", shardKey, fence: permit(nextEpoch) });
         return target.fetch(
             new Request("https://shard.internal/_lunora/delivery-fence", {
@@ -116,7 +153,7 @@ export const setup = (shardKey?: string) => {
             }),
         );
     };
-    const write = (operationKey?: string) =>
+    const write = (operationKey?: string): Promise<Response> =>
         shard.fetch(
             new Request("https://shard.internal/rpc", {
                 method: "POST",
@@ -128,25 +165,19 @@ export const setup = (shardKey?: string) => {
                 },
             }),
         );
-    return {
-        database,
-        authority,
-        socket,
-        shard,
-        makeShard,
-        state,
-        send,
-        fence,
-        write,
-        revoke() {
-            allowed = false;
-            epoch += 1;
-        },
-        regrant() {
-            allowed = true;
-            epoch += 1;
-        },
+    const revoke = (): void => {
+        allowed = false;
+        epoch += 1;
     };
+    const regrant = (): void => {
+        allowed = true;
+        epoch += 1;
+    };
+
+    return { database, authority, socket, shard, makeShard, state, send, fence, write, revoke, regrant };
 };
 
-export const dataFrames = (socket: Socket) => socket.frames.filter((frame) => ["data", "delta", "resume", "settled"].includes(String(frame.type)));
+const dataFrames = (socket: Socket): Record<string, unknown>[] =>
+    socket.frames.filter((frame) => ["data", "delta", "resume", "settled"].includes(String(frame.type)));
+
+export { cleanupDatabases, dataFrames, drainState as drain, gate, permit, secret, setup, Socket, TestShard };

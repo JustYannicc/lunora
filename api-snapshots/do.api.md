@@ -39,10 +39,10 @@ type DeliveryAuthorization = (request: DeliveryAuthorizationRequest) => Promise<
 
 ```ts
 interface DeliveryAuthorizationRequest {
+    readonly args: Record<string, unknown>;
+    readonly functionPath: string;
     readonly identity: SubscriptionIdentity;
     readonly shardKey: string | undefined;
-    readonly functionPath: string;
-    readonly args: Record<string, unknown>;
     readonly transport: "subscription" | "rpc";
 }
 ```
@@ -51,8 +51,8 @@ interface DeliveryAuthorizationRequest {
 
 ```ts
 interface DeliveryPermit {
-    readonly scope: string;
     readonly epoch: number;
+    readonly scope: string;
 }
 ```
 
@@ -595,8 +595,8 @@ abstract class ShardDO {
 
 ```ts
 interface ShardDOOptions {
-    deliveryAuthorization?: DeliveryAuthorization;
     ctxDbCacheWired?: boolean;
+    deliveryAuthorization?: DeliveryAuthorization;
     maxRelationKeys?: number;
     reactiveCache?: ReactiveCacheOptions;
     relationExistsPushDown?: "always" | "auto" | "never";
@@ -832,8 +832,8 @@ const installDeliveryFence: (target: {
     fetch: (url: string, init?: RequestInit) => Promise<Response>;
 }, options: {
     env: unknown;
-    shardKey: string | undefined;
     fence: DeliveryPermit;
+    shardKey: string | undefined;
 }) => Promise<void>;
 ```
 

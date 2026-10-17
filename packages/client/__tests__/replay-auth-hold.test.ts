@@ -103,7 +103,10 @@ const replayMutationIds = (call: [string, RequestInit] | undefined): string[] =>
     const [url, init] = call;
 
     if (url.endsWith("/_lunora/rpc-batch")) {
-        const body = JSON.parse(String(init.body)) as { calls: { mutationId: string }[] };
+        if (typeof init.body !== "string") {
+            throw new TypeError("expected a JSON replay body");
+        }
+        const body = JSON.parse(init.body) as { calls: { mutationId: string }[] };
 
         return body.calls.map(({ mutationId }) => mutationId);
     }
@@ -280,13 +283,19 @@ describe("durable replay under an expired bearer", () => {
 
 describe("durable replay after a delivery fence", () => {
     it.each([1, 2])("settles %s epoch-fenced committed receipts without retrying their native mutations", async (writeCount) => {
+        expect.hasAssertions();
+
         vi.useFakeTimers();
         sockets.length = 0;
         const fetchImpl = vi.fn<typeof fetch>(async () => {
             const error = { code: "DELIVERY_RECEIPT_FENCED", message: "committed under old authority" };
             return writeCount === 1
                 ? Response.json({ error }, { status: 409 })
-                : Response.json({ results: Array.from({ length: writeCount }, (_, id) => ({ id, status: 409, body: { error } })) });
+                : Response.json({
+                      results: Array.from({ length: writeCount }, (_, id) => {
+                          return { id, status: 409, body: { error } };
+                      }),
+                  });
         });
         const persistence = createInMemoryPersistence();
         const client = new LunoraClient({
@@ -304,11 +313,14 @@ describe("durable replay after a delivery fence", () => {
             await vi.advanceTimersByTimeAsync(0);
             sockets.at(-1)?.open();
             await vi.advanceTimersByTimeAsync(0);
+
             await expect(Promise.all(outcomes)).resolves.toEqual(
                 Array.from({ length: writeCount }, () => expect.objectContaining({ code: "DELIVERY_RECEIPT_FENCED" })),
             );
             await expect(persistence.load()).resolves.toHaveLength(0);
+
             await vi.advanceTimersByTimeAsync(60_000);
+
             expect(fetchImpl).toHaveBeenCalledTimes(1);
         } finally {
             client.close();
@@ -333,13 +345,19 @@ describe("durable replay after a delivery fence", () => {
                 const error = { code: "DELIVERY_FENCED", message: "operation may have committed" };
                 return writeCount === 1
                     ? Response.json({ error }, { status: 409 })
-                    : Response.json({ results: Array.from({ length: writeCount }, (_, id) => ({ id, status: 409, body: { error } })) });
+                    : Response.json({
+                          results: Array.from({ length: writeCount }, (_, id) => {
+                              return { id, status: 409, body: { error } };
+                          }),
+                      });
             }
 
             return writeCount === 1
                 ? okResponse()
                 : Response.json({
-                      results: Array.from({ length: writeCount }, (_, id) => ({ body: { result: { ok: true } }, id })),
+                      results: Array.from({ length: writeCount }, (_, id) => {
+                          return { body: { result: { ok: true } }, id };
+                      }),
                   });
         });
         const persistence = createInMemoryPersistence();
@@ -369,7 +387,9 @@ describe("durable replay after a delivery fence", () => {
 
             expect(fetchImpl).toHaveBeenCalledTimes(1);
             await expect(persistence.load()).resolves.toHaveLength(writeCount);
+
             const firstIds = replayMutationIds(fetchImpl.mock.calls[0]);
+
             expect(firstIds).toHaveLength(writeCount);
             expect(firstIds.every((id) => id.length > 0)).toBe(true);
 
@@ -377,7 +397,7 @@ describe("durable replay after a delivery fence", () => {
             // socket retries after backoff without needing a reconnect.
             await vi.advanceTimersByTimeAsync(1000 * writeCount);
 
-            await expect(Promise.all(outcomes)).resolves.toStrictEqual(Array.from({ length: writeCount }, () => "committed"));
+            await expect(Promise.all(outcomes)).resolves.toStrictEqual(Array.from({ length: writeCount }).fill("committed"));
             expect(fetchImpl).toHaveBeenCalledTimes(2);
             expect(replayMutationIds(fetchImpl.mock.calls[1])).toStrictEqual(firstIds);
             await expect(persistence.load()).resolves.toHaveLength(0);

@@ -1,8 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import type { ShardDOState, SubscriptionOutcome } from "../src/shard-do";
 import { ShardDO } from "../src/shard-do";
-import { dataFrames, gate, permit, secret, setup, Socket, TestShard } from "./_helpers/delivery-authorization";
+import { cleanupDatabases, dataFrames, gate, permit, secret, setup, Socket, TestShard } from "./_helpers/delivery-authorization";
 
 const request = (mutationId?: string) =>
     new Request("https://shard.internal/rpc", {
@@ -14,23 +14,19 @@ const request = (mutationId?: string) =>
 class CachedReadShard extends ShardDO {
     public value = "old-policy";
     public runs = 0;
-    // eslint-disable-next-line class-methods-use-this -- mirrors generated registry classification
-    protected override isCacheableQuery(): boolean {
-        return true;
-    }
     public override handleRpc(): Promise<unknown> {
         this.runs += 1;
         return Promise.resolve(this.value);
+    }
+    // eslint-disable-next-line class-methods-use-this -- mirrors generated registry classification
+    protected override isCacheableQuery(): boolean {
+        return true;
     }
 }
 
 class TransactionalReceiptShard extends ShardDO {
     public fail = false;
     public runs = 0;
-    // eslint-disable-next-line class-methods-use-this -- mirrors generated registry classification
-    protected override isMutationFunction(): boolean {
-        return true;
-    }
     public override handleRpc(): Promise<unknown> {
         return this.runInTransaction(() => {
             this.runs += 1;
@@ -40,6 +36,10 @@ class TransactionalReceiptShard extends ShardDO {
             }
             return { runs: this.runs };
         });
+    }
+    // eslint-disable-next-line class-methods-use-this -- mirrors generated registry classification
+    protected override isMutationFunction(): boolean {
+        return true;
     }
 }
 
@@ -68,54 +68,94 @@ class UnrelatedWriteShard extends TestShard {
 }
 
 describe("delivery authority epoch", () => {
+    afterEach(cleanupDatabases);
+
     it("keeps the delivered generation while a new epoch resets its diff baseline", async () => {
+        expect.hasAssertions();
+
         const test = setup();
         const releaseOld = gate();
+
         test.shard.queryGate = releaseOld.promise;
+
         const oldSeed = test.send();
+
         await test.shard.queryStarted.promise;
+
         test.shard.queryGate = undefined;
+
         test.shard.rows = ["middle"];
+
         await test.write();
+
         expect(dataFrames(test.socket).map((frame) => frame.data)).toEqual([["middle"]]);
+
         test.regrant();
+
         const releaseNew = gate();
+
         test.shard.queryStarted = gate();
+
         test.shard.queryGate = releaseNew.promise;
+
         test.shard.rows = ["latest"];
+
         const newRefresh = test.write();
+
         await test.shard.queryStarted.promise;
+
         releaseOld.resolve();
         await oldSeed;
+
         expect(dataFrames(test.socket).map((frame) => frame.data)).toEqual([["middle"]]);
+
         releaseNew.resolve();
         await newRefresh;
+
         expect(dataFrames(test.socket).map((frame) => frame.data)).toEqual([["middle"], ["latest"]]);
         expect(dataFrames(test.socket).map((frame) => frame.type)).toEqual(["data", "data"]);
     });
 
     it("reauthorizes and replaces the memo even when the write misses the old read set", async () => {
+        expect.hasAssertions();
+
         const test = setup();
         const shard = new UnrelatedWriteShard(test.state, {}, { deliveryAuthorization: test.authority });
+
         await test.send(shard);
+
         test.regrant();
+
         shard.rows = ["new-policy"];
         await shard.fetch(request());
+
         expect(shard.queryCalls).toBe(2);
         expect(dataFrames(test.socket).at(-1)).toMatchObject({ type: "data", data: ["new-policy"] });
     });
 
     it("bypasses a configured native RPC cache when current policy changes without table writes", async () => {
+        expect.hasAssertions();
+
         const test = setup();
         const shard = new CachedReadShard(test.state, {}, { reactiveCache: {}, deliveryAuthorization: test.authority });
-        expect(await (await shard.fetch(request())).json()).toMatchObject({ result: "old-policy" });
+
+        const originalResponse = await shard.fetch(request());
+
+        await expect(originalResponse.json()).resolves.toMatchObject({ result: "old-policy" });
+
         test.regrant();
+
         shard.value = "new-policy";
-        expect(await (await shard.fetch(request())).json()).toMatchObject({ result: "new-policy" });
+
+        const refreshedResponse = await shard.fetch(request());
+
+        await expect(refreshedResponse.json()).resolves.toMatchObject({ result: "new-policy" });
         expect(shard.runs).toBe(2);
     });
 
     it("does not share an in-flight refresh result across authority epochs", async () => {
+        expect.hasAssertions();
+
         const test = setup();
         const second = new Socket();
         const shard = new InterleavedRefreshShard(
@@ -131,6 +171,7 @@ describe("delivery authority epoch", () => {
         await subscribe(test.socket);
         await subscribe(second);
         let refreshAuthorityCalls = 0;
+
         test.authority.mockImplementation(async ({ transport }) => {
             if (transport === "rpc") {
                 return permit(0);
@@ -143,15 +184,19 @@ describe("delivery authority epoch", () => {
             shard.rows = ["new-policy"];
             return permit(1);
         });
+
         const refresh = shard.fetch(request());
         await shard.newFinished.promise;
         shard.releaseOld.resolve();
         await refresh;
+
         expect(shard.queryCalls).toBe(4);
         expect(dataFrames(second).at(-1)).toMatchObject({ type: "data", data: ["new-policy"] });
     });
 
     it("commits the original permit with its native receipt and rolls both back together", async () => {
+        expect.hasAssertions();
+
         const test = setup();
         const state = {
             ...test.state,
@@ -159,12 +204,16 @@ describe("delivery authority epoch", () => {
                 ...test.state.storage,
                 transaction: async <T>(run: () => Promise<T>): Promise<T> => {
                     test.database.sql.exec("BEGIN");
+
                     try {
                         const value = await run();
+
                         test.database.sql.exec("COMMIT");
+
                         return value;
                     } catch (error) {
                         test.database.sql.exec("ROLLBACK");
+
                         throw error;
                     }
                 },
@@ -172,18 +221,31 @@ describe("delivery authority epoch", () => {
         } as ShardDOState;
         const shard = new TransactionalReceiptShard(state, {}, { deliveryAuthorization: test.authority });
         shard.fail = true;
-        expect((await shard.fetch(request("operation"))).status).toBe(500);
+
+        const failedResponse = await shard.fetch(request("operation"));
+
+        expect(failedResponse.status).toBe(500);
         expect(test.database.raw("SELECT * FROM __idempotency")).toEqual([]);
         expect(test.database.raw("SELECT * FROM __lunora_delivery_receipt")).toEqual([]);
+
         shard.fail = false;
-        expect((await shard.fetch(request("operation"))).status).toBe(200);
+
+        const committedResponse = await shard.fetch(request("operation"));
+
+        expect(committedResponse.status).toBe(200);
         expect(test.database.raw("SELECT scope, epoch FROM __lunora_delivery_receipt")).toEqual([permit(0)]);
-        expect((await shard.fetch(request("operation"))).status).toBe(200);
+
+        const replayResponse = await shard.fetch(request("operation"));
+
+        expect(replayResponse.status).toBe(200);
         expect(shard.runs).toBe(2);
+
         test.regrant();
+
         const replay = await shard.fetch(request("operation"));
+
         expect(replay.status).toBe(409);
-        expect(await replay.json()).toMatchObject({ error: { code: "DELIVERY_RECEIPT_FENCED" } });
+        await expect(replay.json()).resolves.toMatchObject({ error: { code: "DELIVERY_RECEIPT_FENCED" } });
         expect(shard.runs).toBe(2);
     });
 });

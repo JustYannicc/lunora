@@ -445,6 +445,7 @@ export { buildPokeFrames, diffGlobalMembership, encodeRowsPatch, projectColumns 
 export type { ShardRunnerOptions } from "./shard-runner";
 export { ShardRunner } from "./shard-runner";
 export { stubByName } from "./sibling-channel";
+export { RELAY_SIGNATURE_HEADER, siblingSecretOf, signSiblingBody, verifySiblingBody } from "./sibling-channel";
 export { runSocketPool } from "./socket-pool";
 export type { SqlConsoleResult } from "./sql-console";
 export type { SqlLintResult } from "./sql-console";
@@ -498,5 +499,3 @@ export type { RangeOperandType, WhereSqlStrategy } from "./where-sql";
 export { compileWhereSql, serverInList } from "./where-sql";
 export type { FieldOperators, WhereInput } from "./where-types";
 export { RELATION_EXISTS_KEY } from "./where-types";
-
-export { RELAY_SIGNATURE_HEADER, siblingSecretOf, signSiblingBody, verifySiblingBody } from "./sibling-channel";

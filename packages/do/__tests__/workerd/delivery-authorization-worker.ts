@@ -4,30 +4,28 @@ import type { SqlExec } from "@lunora/shard-engine";
 import { runShardMigrations } from "@lunora/shard-engine";
 import { DurableObject } from "cloudflare:workers";
 
-export const DELIVERY_TEST_SECRET = "delivery-authorization-workerd-fixture";
+const DELIVERY_TEST_SECRET = "delivery-authorization-workerd-fixture";
 
 interface Policy {
     allowed: boolean;
     epoch: number;
 }
 
+interface DeliverySnapshot {
+    attachments: { deliveryPermits: Record<string, { epoch: number; scope: string }>; subscriptionIds: string[] }[];
+    attempts: number;
+    boot: string;
+    fences: { epoch: number; scope: string }[];
+    permits: { epoch: number; identity: string; mutation_id: string; scope: string }[];
+    receipts: { identity: string; mutation_id: string; result_json: string }[];
+    runs: number | undefined;
+}
+
 // Import the package export so this regression runs the built ShardDO shipped to users.
 class AuthorizedShard extends ShardDO {
     public attempts = 0;
     public parkActions = false;
-    private readonly actions = new Map<
-        number,
-        { entered: ReturnType<typeof Promise.withResolvers<void>>; released: ReturnType<typeof Promise.withResolvers<void>> }
-    >();
-
-    public action(epoch: number) {
-        let action = this.actions.get(epoch);
-        if (!action) {
-            action = { entered: Promise.withResolvers<void>(), released: Promise.withResolvers<void>() };
-            this.actions.set(epoch, action);
-        }
-        return action;
-    }
+    private readonly actions = new Map<number, { entered: PromiseWithResolvers<undefined>; released: PromiseWithResolvers<undefined> }>();
 
     public constructor(
         state: ShardDOState,
@@ -43,18 +41,26 @@ class AuthorizedShard extends ShardDO {
         );
     }
 
-    // eslint-disable-next-line class-methods-use-this -- mirrors generated mutation classification
-    protected override isMutationFunction(functionPath: string): boolean {
-        return functionPath === "fixture:write";
+    public action(epoch: number) {
+        let action = this.actions.get(epoch);
+        if (!action) {
+            action = { entered: Promise.withResolvers<undefined>(), released: Promise.withResolvers<undefined>() };
+            this.actions.set(epoch, action);
+        }
+        return action;
     }
 
     public override handleRpc(functionPath: string, args: Record<string, unknown>): Promise<unknown> {
         if (functionPath === "fixture:action") {
             this.attempts += 1;
-            const epoch = this.policy.epoch;
+            const { epoch } = this.policy;
             const action = this.action(epoch);
-            action.entered.resolve();
-            return this.parkActions ? action.released.promise.then(() => ({ epoch })) : Promise.resolve({ epoch });
+            action.entered.resolve(undefined);
+            return this.parkActions
+                ? action.released.promise.then(() => {
+                      return { epoch };
+                  })
+                : Promise.resolve({ epoch });
         }
         return this.runInTransaction(() => {
             this.attempts += 1;
@@ -69,13 +75,18 @@ class AuthorizedShard extends ShardDO {
         });
     }
 
+    // eslint-disable-next-line class-methods-use-this -- mirrors generated mutation classification
+    protected override isMutationFunction(functionPath: string): boolean {
+        return functionPath === "fixture:write";
+    }
+
     // eslint-disable-next-line class-methods-use-this -- supplies an ordinary live-query result through the production sender
     protected override executeSubscription(): Promise<SubscriptionOutcome> {
         return Promise.resolve({ result: { value: "private" }, tables: new Set(["delivery_fixture"]) });
     }
 }
 
-export class DeliveryAuthorizationTestDO extends DurableObject {
+class DeliveryAuthorizationTestDO extends DurableObject {
     private readonly boot = crypto.randomUUID();
     private readonly policy: Policy = { allowed: true, epoch: 0 };
     private readonly shard: AuthorizedShard;
@@ -114,11 +125,11 @@ export class DeliveryAuthorizationTestDO extends DurableObject {
     }
 
     public releaseAction(epoch: number): void {
-        this.shard.action(epoch).released.resolve();
+        this.shard.action(epoch).released.resolve(undefined);
     }
 
-    public snapshot() {
-        const sql = this.ctx.storage.sql;
+    public snapshot(): DeliverySnapshot {
+        const { sql } = this.ctx.storage;
         return {
             attempts: this.shard.attempts,
             boot: this.boot,
@@ -127,15 +138,15 @@ export class DeliveryAuthorizationTestDO extends DurableObject {
                 .exec<{ identity: string; mutation_id: string; result_json: string }>("SELECT identity, mutation_id, result_json FROM __idempotency")
                 .toArray(),
             permits: sql
-                .exec<{ identity: string; mutation_id: string; scope: string; epoch: number }>(
+                .exec<{ epoch: number; identity: string; mutation_id: string; scope: string }>(
                     "SELECT identity, mutation_id, scope, epoch FROM __lunora_delivery_receipt",
                 )
                 .toArray(),
-            fences: sql.exec<{ scope: string; epoch: number }>("SELECT scope, epoch FROM __lunora_delivery_fence").toArray(),
+            fences: sql.exec<{ epoch: number; scope: string }>("SELECT scope, epoch FROM __lunora_delivery_fence").toArray(),
             attachments: this.ctx.getWebSockets().map((socket) => {
                 const attachment = socket.deserializeAttachment() as {
+                    deliveryPermits: Record<string, { epoch: number; scope: string }>;
                     subs: Record<string, unknown>;
-                    deliveryPermits: Record<string, { scope: string; epoch: number }>;
                 };
                 return { subscriptionIds: Object.keys(attachment.subs), deliveryPermits: attachment.deliveryPermits };
             }),
@@ -158,3 +169,5 @@ export class DeliveryAuthorizationTestDO extends DurableObject {
         return this.shard.webSocketError(socket, error);
     }
 }
+
+export { DELIVERY_TEST_SECRET, DeliveryAuthorizationTestDO };

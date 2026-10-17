@@ -2907,16 +2907,16 @@ interface ShardSocketLike {
 
 ```ts
 interface SocketAttachment {
-    deliveryPermits?: Record<string, {
-        scope: string;
-        epoch: number;
-    }>;
     admin?: boolean;
     adminBinding?: string;
     clientId?: string;
     connected?: boolean;
     connectionId?: string;
     context?: Record<string, unknown>;
+    deliveryPermits?: Record<string, {
+        epoch: number;
+        scope: string;
+    }>;
     expiresAt?: number;
     identity?: Record<string, unknown>;
     ip?: string;
