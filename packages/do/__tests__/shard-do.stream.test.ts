@@ -36,6 +36,15 @@ const createFakeWebSocket = (): FakeWebSocket => {
 
 const parseFrames = (ws: FakeWebSocket) => ws.sent.map((raw) => JSON.parse(raw) as Record<string, unknown>);
 
+const createDeferred = (): { promise: Promise<void>; resolve: () => void } => {
+    let settle!: () => void;
+    const promise = new Promise<void>((resolve) => {
+        settle = resolve;
+    });
+
+    return { promise, resolve: settle };
+};
+
 /**
  * Drive the runtime forward until either a terminating frame (`complete` /
  * `error`) lands on the socket or the deadline fires. The DO handler is
@@ -311,6 +320,155 @@ describe("shardDO streaming queries", () => {
         // Cancel acked, no "complete" frame for the aborted stream.
         expect(types).toContain("ack");
         expect(types).not.toContain("complete");
+    });
+
+    it("does not send a drained chunk or its cancellation error to a reused stream id", async () => {
+        expect.assertions(3);
+
+        vi.useFakeTimers();
+
+        try {
+            const shard = new StreamShard(state, {});
+            const firstDrainRead = createDeferred();
+            const secondDrainRead = createDeferred();
+            const completed = createDeferred();
+            let bufferedAmount = 1_048_576;
+            let drainReads = 0;
+            const ws = createFakeWebSocket();
+            const send = ws.send.bind(ws);
+
+            Object.defineProperty(ws, "bufferedAmount", {
+                get() {
+                    drainReads += 1;
+
+                    if (drainReads === 1) {
+                        firstDrainRead.resolve();
+                    } else if (drainReads === 2) {
+                        secondDrainRead.resolve();
+                    }
+
+                    return bufferedAmount;
+                },
+            });
+            ws.send = (raw) => {
+                send(raw);
+
+                if ((JSON.parse(raw) as { type?: string }).type === "complete") {
+                    completed.resolve();
+                }
+            };
+
+            shard.registered.set("metrics:reuse", async function* reuseGen(args, signal) {
+                if (args.phase === "old") {
+                    yield "old-chunk";
+
+                    await new Promise<void>((_resolve, reject) => {
+                        const fail = (): void => {
+                            reject(new Error("old iterator failed after unsubscribe"));
+                        };
+
+                        if (signal.aborted) {
+                            fail();
+                        } else {
+                            signal.addEventListener("abort", fail, { once: true });
+                        }
+                    });
+                }
+
+                yield "new-chunk";
+            });
+
+            shard.registerSocket(ws, { subs: {} });
+            await shard.driveMessage(ws, { id: "reused", query: { args: { phase: "old" }, functionPath: "metrics:reuse" }, type: "stream" });
+            await firstDrainRead.promise;
+
+            // Unsubscribe removes the id reservation while the old pump still waits on the socket drain.
+            await shard.driveMessage(ws, { id: "reused", type: "unsubscribe" });
+            await shard.driveMessage(ws, { id: "reused", query: { args: { phase: "new" }, functionPath: "metrics:reuse" }, type: "stream" });
+            await secondDrainRead.promise;
+
+            bufferedAmount = 0;
+            await vi.advanceTimersByTimeAsync(20);
+            await completed.promise;
+
+            const frames = parseFrames(ws);
+
+            expect(frames.filter((frame) => frame.type === "chunk" && frame.data === "old-chunk")).toHaveLength(0);
+            expect(frames.filter((frame) => frame.type === "error" && frame.id === "reused")).toHaveLength(0);
+            expect(frames.filter((frame) => frame.type === "chunk" && frame.data === "new-chunk")).toHaveLength(1);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("does not report a cancelled iterator throw against a reused stream id", async () => {
+        expect.assertions(2);
+
+        const oldNextStarted = createDeferred();
+        const oldCancellationObserved = createDeferred();
+        const releaseOldFailure = createDeferred();
+        const oldThrowing = createDeferred();
+        const newChunkSent = createDeferred();
+        const releaseNewCompletion = createDeferred();
+        const newCompleted = createDeferred();
+        const shard = new StreamShard(state, {});
+        const ws = createFakeWebSocket();
+        const send = ws.send.bind(ws);
+
+        ws.send = (raw) => {
+            send(raw);
+            const frame = JSON.parse(raw) as { data?: unknown; type?: string };
+
+            if (frame.type === "chunk" && frame.data === "new-chunk") {
+                newChunkSent.resolve();
+            } else if (frame.type === "complete") {
+                newCompleted.resolve();
+            }
+        };
+
+        shard.registered.set("metrics:reuse", async function* reuseGen(args, signal) {
+            if (args.phase === "old") {
+                oldNextStarted.resolve();
+                await new Promise<void>((resolve) => {
+                    if (signal.aborted) {
+                        resolve();
+                    } else {
+                        signal.addEventListener(
+                            "abort",
+                            () => {
+                                resolve();
+                            },
+                            { once: true },
+                        );
+                    }
+                });
+                oldCancellationObserved.resolve();
+                await releaseOldFailure.promise;
+                oldThrowing.resolve();
+                throw new Error("old iterator failed after unsubscribe");
+            }
+
+            yield "new-chunk";
+            await releaseNewCompletion.promise;
+        });
+
+        shard.registerSocket(ws, { subs: {} });
+        await shard.driveMessage(ws, { id: "reused", query: { args: { phase: "old" }, functionPath: "metrics:reuse" }, type: "stream" });
+        await oldNextStarted.promise;
+        await shard.driveMessage(ws, { id: "reused", type: "unsubscribe" });
+        await oldCancellationObserved.promise;
+
+        await shard.driveMessage(ws, { id: "reused", query: { args: { phase: "new" }, functionPath: "metrics:reuse" }, type: "stream" });
+        await newChunkSent.promise;
+
+        releaseOldFailure.resolve();
+        // The old iterator signals immediately before rejecting its pending next(). The new stream stays live until that rejection has propagated.
+        await oldThrowing.promise;
+        releaseNewCompletion.resolve();
+        await newCompleted.promise;
+
+        expect(parseFrames(ws).filter((frame) => frame.type === "error" && frame.id === "reused")).toHaveLength(0);
+        expect(parseFrames(ws).filter((frame) => frame.type === "chunk" && frame.data === "new-chunk")).toHaveLength(1);
     });
 
     it("does not start a stream unsubscribed while its lazy module is loading", async () => {

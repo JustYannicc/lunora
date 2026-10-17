@@ -11421,7 +11421,9 @@ abstract class ShardDO {
         try {
             durableAttached = await this.startStream(ws, id, functionPath, args, attachment, reservation.controller, sinceSeq, generation);
         } catch (error: unknown) {
-            reportStreamError(ws, id, error, "unhandled stream error");
+            if (!isStreamCancelled(reservation.controller)) {
+                reportStreamError(ws, id, error, "unhandled stream error");
+            }
         } finally {
             this.releaseStream(ws, id, reservation.cancellers, reservation.controller, durableAttached);
         }
@@ -11561,6 +11563,13 @@ abstract class ShardDO {
             // make the runtime's outbound buffer grow without bound
             // while we keep pumping `ws.send` calls.
             await awaitWsDrain(ws);
+
+            // Unsubscribe can release this id while this pump is waiting for
+            // backpressure. Do not let its pending chunk land on a new stream
+            // that has since reused the same id.
+            if (isStreamCancelled(controller)) {
+                break;
+            }
 
             ws.send(JSON.stringify({ data: encodeWire(chunk), id, type: "chunk" }));
         }
