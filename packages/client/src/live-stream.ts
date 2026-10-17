@@ -348,6 +348,14 @@ const connectLiveStream = (url: string, options: ConnectLiveStreamOptions = {}):
             idCounter += 1;
 
             const subscriptionId = id ?? `live-${String(idCounter)}`;
+            const active = subscriptions.get(subscriptionId);
+
+            // The shard keeps one topic per subscription id. Re-using an active id for another topic
+            // would leave the old registration in place and drop the new topic's events, so refuse it.
+            if (active !== undefined && active.topic !== topic) {
+                throw new Error(`connectLiveStream: subscription id "${subscriptionId}" already follows "${active.topic}"; unsubscribe it first`);
+            }
+
             const handlers = new Set<(payload: unknown) => void>();
             const entry = { handlers, topic };
 

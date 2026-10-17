@@ -215,6 +215,24 @@ describe("connectLiveStream", () => {
         live.close();
     });
 
+    it("refuses to re-use an active subscription id for a different topic", async () => {
+        expect.assertions(2);
+
+        const { fetchImpl } = setup();
+        const live = connectLiveStream("https://x/live/posts/connect", { fetch: fetchImpl });
+
+        await live.ready;
+
+        live.subscribe({ id: "s1", topic: "feed" });
+
+        expect(() => live.subscribe({ id: "s1", topic: "other" })).toThrow(/already follows "feed"/u);
+
+        // The same id for the same topic is a re-subscribe, not a conflict.
+        expect(() => live.subscribe({ id: "s1", topic: "feed" })).not.toThrow();
+
+        live.close();
+    });
+
     it("rejects a url that is not a connect route", () => {
         expect.assertions(1);
 
