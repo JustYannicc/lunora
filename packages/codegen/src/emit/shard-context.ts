@@ -19,6 +19,7 @@ interface BuildContextParts {
     everyContextField: string;
     facadeBlock: string;
     globalDatabaseLine: string;
+    lazyFunctions?: boolean;
     notifyBuild: string;
     ormContextField: string;
     paymentsBuild: string;
@@ -46,6 +47,7 @@ const renderBuildContext = ({
     everyContextField,
     facadeBlock,
     globalDatabaseLine,
+    lazyFunctions = false,
     notifyBuild,
     ormContextField,
     paymentsBuild,
@@ -275,8 +277,17 @@ ${notifyBuild}
                 trace,${vectorsContextField}${everyContextField}${paymentsContextField}${containersContextField}${workflowsContextField}${queuesContextField}${topicsContextField}${agentsContextField}
             };
 ${isActionLine}${actionOnlyBlock}
-            const installRun = (target: Record<string, unknown>, kind: typeof contextKind): void => {
-                target.runAction = (reference: FunctionReference, fnArgs: Record<string, unknown>) => dispatchRun("action", reference.__lunoraRef, fnArgs, target, kind);
+${
+    lazyFunctions
+        ? `            const captureScope = (): (() => void) => {
+                const requestScope = this.captureRequestScope();
+                return () => this.restoreRequestScope(requestScope);
+            };
+
+`
+        : ""
+}            const installRun = (target: Record<string, unknown>, kind: typeof contextKind): void => {
+                target.runAction = (reference: FunctionReference, fnArgs: Record<string, unknown>) => dispatchRun("action", reference.__lunoraRef, fnArgs, target, kind${lazyFunctions ? ", undefined, captureScope" : ""});
                 // The composed mutation runs under the SAME wrapper the top-level RPC
                 // uses, so "do the transactional work in a mutation and call it from the
                 // action" — the recipe the docs give for atomicity — actually is atomic.
@@ -296,7 +307,7 @@ ${isActionLine}${actionOnlyBlock}
                         installRun(mutationCtx, kind);
                     }
 
-                    return dispatchRun("mutation", reference.__lunoraRef, fnArgs, mutationCtx, kind, async (work) => this.runMutationTransaction(mutationCtx, work));
+                    return dispatchRun("mutation", reference.__lunoraRef, fnArgs, mutationCtx, kind, async (work) => this.runMutationTransaction(mutationCtx, work)${lazyFunctions ? ", captureScope" : ""});
                 };
                 // \`ctx.runQuery(ref, args, { untracked: true })\` runs the sub-query on
                 // its OWN query context, built without the subscription's read-footprint
@@ -319,7 +330,7 @@ ${isActionLine}${actionOnlyBlock}
                         runOptions?.untracked === true
                             ? this.buildCtx({ bookmarks: options.bookmarks, functionPath: options.functionPath, headroom: options.headroom, identity: caller, kind: "query", scope: options.scope })
                             : queryContext(),
-                        kind,
+                        kind,${lazyFunctions ? "\n                        undefined,\n                        captureScope," : ""}
                     );
             };
 

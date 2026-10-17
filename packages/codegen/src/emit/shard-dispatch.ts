@@ -80,16 +80,31 @@ const dispatchRunSource = (lazyFunctions: boolean): string => {
     }
 
     return DISPATCH_RUN_SOURCE.replace(
-        "    try {\n        // A mutation composed from an action",
-        `    try {
-        const loaded = getLoadedFunction(functionPath) ?? await loadFunction(functionPath);
+        "    runTransactional?: (work: () => Promise<unknown>) => Promise<unknown>,",
+        "    runTransactional?: (work: () => Promise<unknown>) => Promise<unknown>,\n    captureScope?: () => () => void,",
+    )
+        .replace(
+            "    try {\n        // A mutation composed from an action",
+            `    try {
+        let loaded = getLoadedFunction(functionPath);
+
+        if (loaded === undefined) {
+            const restoreScope = captureScope?.();
+
+            try {
+                loaded = await loadFunction(functionPath);
+            } finally {
+                restoreScope?.();
+            }
+        }
 
         if (!loaded) {
             throw new Error(\`unknown function: \${functionPath}\`);
         }
 
         // A mutation composed from an action`,
-    ).replaceAll("registered.handler", "loaded.handler");
+        )
+        .replaceAll("registered.handler", "loaded.handler");
 };
 
 const DISPATCH_METHODS_TEMPLATE = `        public override async handleRpc(functionPath: string, args: Record<string, unknown>, headroom?: TransactionHeadroomTracker, scope?: QueryReadScope, bookmarks?: DispatchBookmark): Promise<unknown> {
@@ -180,13 +195,13 @@ __PREPARE_FUNCTION__            const registered = LUNORA_FUNCTIONS[functionPath
          * must discard its own failed delete and schedule intents even when the
          * outer handler catches the error and commits.
          */
-        private async runMutationTransaction<T>(ctx: object, work: () => Promise<T>): Promise<T> {
+        private async runMutationTransaction<T>(ctx: unknown, work: () => Promise<T>): Promise<T> {
             const settleSchedules = beginDeferredSchedules(ctx as { scheduler?: unknown });
             // Synchronous and non-throwing (it only moves queue entries), so it can
             // settle first on every path and cannot mask the outcome.
             const settleDeletes = beginDeferredDeletes(ctx);
 
-            if (this.mutationContexts.has(ctx)) {
+            if (this.mutationContexts.has(ctx as object)) {
                 try {
                     const nested = await work();
 
@@ -206,12 +221,12 @@ __PREPARE_FUNCTION__            const registered = LUNORA_FUNCTIONS[functionPath
 
             try {
                 result = await this.runInTransaction(async () => {
-                    this.mutationContexts.add(ctx);
+                    this.mutationContexts.add(ctx as object);
 
                     try {
                         return await work();
                     } finally {
-                        this.mutationContexts.delete(ctx);
+                        this.mutationContexts.delete(ctx as object);
                     }
                 }, { independent: true });
             } catch (error) {

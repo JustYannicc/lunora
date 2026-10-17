@@ -26,12 +26,13 @@ const makeGeneratedShard = async (
     lazyFunctions: boolean,
     config: Record<string, unknown> = {},
     entryKind: "action" | "mutation" = "action",
+    coldKind: "action" | "mutation" | "query" = "mutation",
 ): Promise<new (state: unknown, env: unknown) => GeneratedShard> => {
     const generated = join(root, "lunora", "_generated");
     mkdirSync(join(generated, "fn"), { recursive: true });
     const functions: FunctionIR[] = [
         { args: {}, exportName: "run", filePath: "action", kind: entryKind, returnType: "unknown" },
-        { args: {}, exportName: "write", filePath: "cold", kind: "mutation", returnType: "unknown" },
+        { args: {}, exportName: "write", filePath: "cold", kind: coldKind, returnType: "unknown" },
         { args: {}, exportName: "block", filePath: "blocker", kind: "mutation", returnType: "unknown" },
     ];
     const options = { functions, lazyFunctions };

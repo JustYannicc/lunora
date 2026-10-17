@@ -77,8 +77,8 @@ describe("emitShard — transactional ctx.runMutation", () => {
 
         // A `ctx.runMutation` from inside a mutation is NESTED: SQLite-in-DO has no
         // savepoints, so it rides the enclosing span rather than opening a second.
-        expect(helper).toContain("if (this.mutationContexts.has(ctx)) {");
-        expect(helper.indexOf("if (this.mutationContexts.has(ctx)) {")).toBeLessThan(helper.indexOf("await this.runInTransaction(async () => {"));
+        expect(helper).toContain("if (this.mutationContexts.has(ctx as object)) {");
+        expect(helper.indexOf("if (this.mutationContexts.has(ctx as object)) {")).toBeLessThan(helper.indexOf("await this.runInTransaction(async () => {"));
     });
 
     it("dispatches the handler under the caller's wrapper when one is supplied", () => {

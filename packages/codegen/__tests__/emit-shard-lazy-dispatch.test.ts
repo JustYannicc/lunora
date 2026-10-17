@@ -62,7 +62,7 @@ describe("emitted lazy function dispatch", () => {
         expect(shard).toContain('const allowsInternal = reason === "reactor" || (reason === "rpc" && this.isSystemDispatch());');
         expect(shard).toContain("if (getLoadedFunction(functionPath) !== undefined) {");
         expect(shard).toContain("return loadFunction(functionPath).then(() => undefined);");
-        expect(shard).toContain("const loaded = getLoadedFunction(functionPath) ?? await loadFunction(functionPath);");
+        expect(shard).toContain("let loaded = getLoadedFunction(functionPath);");
         expect(shard).toContain("const requestScope = this.captureRequestScope();");
         expect(shard).toContain('const preparation = this.prepareFunction(functionPath, "rpc");');
         expect(shard).toContain('this.prepareFunction(functionPath, "subscription");');
@@ -77,7 +77,7 @@ describe("emitted lazy function dispatch", () => {
         expect(subscriptionMethods.indexOf('this.prepareFunction(functionPath, "subscription")')).toBeGreaterThan(internalGate);
         expect(shard).toContain("await preparation;");
         expect(shard).toContain("this.restoreRequestScope(requestScope);");
-        expect(shard.match(/const requestScope = this\.captureRequestScope\(\);/gu)).toHaveLength(2);
+        expect(shard.match(/const requestScope = this\.captureRequestScope\(\);/gu)).toHaveLength(3);
         expect(shard).not.toContain("prepareFunctionInRequestScope");
         expect(shard).not.toContain("protected override async prepareFunction(");
     });
