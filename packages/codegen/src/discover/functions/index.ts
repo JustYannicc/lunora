@@ -12,7 +12,7 @@ import type { LifecycleMoment, ProcedureClassification } from "./classify-proced
 import { classifyProcedureCall } from "./classify-procedure-call";
 import { argsFromBuilderChain, outputFromBuilderChain, returnTypeFromBuilderCall, returnTypeFromCall } from "./internal/builder-chain";
 import { argsFromCall, exposeFromBuilderChain, x402FromBuilderChain } from "./internal/expose";
-import { lazyMetadataFromBuilderChain } from "./internal/lazy-metadata";
+import lazyMetadataFromBuilderChain from "./internal/lazy-metadata";
 import { exportCallsOfDeclaration, resolveExpressionToCall } from "./internal/resolve-call";
 
 interface DiscoveredFunction {

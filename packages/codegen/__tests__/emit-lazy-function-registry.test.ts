@@ -8,7 +8,7 @@ import { build, transform } from "esbuild";
 import { describe, expect, it } from "vitest";
 
 import { emitFunctions, emitLazyFunctionModules } from "../src/emit";
-import type { FunctionIR } from "../src/ir";
+import type { FunctionIR, MutatorIR } from "../src/ir";
 
 const makeFunction = (exportName: string, overrides: Partial<FunctionIR> = {}): FunctionIR => {
     return {
@@ -78,7 +78,7 @@ describe("lazy function registry", () => {
     });
 
     it("loads real handlers once, installs compiled validators, and retries a failed module import", async () => {
-        expect.assertions(11);
+        expect.assertions(22);
 
         const projectRoot = mkdtempSync(join(tmpdir(), "lunora-lazy-registry-"));
         const generatedDirectory = join(projectRoot, "_generated");
@@ -86,9 +86,12 @@ describe("lazy function registry", () => {
         const packageDirectory = join(projectRoot, "node_modules", "@lunora");
         const stateName = `__lunoraLazyRegistry${randomUUID()}`;
         const definition = makeFunction("premium", { args: { name: { kind: "string" } } });
-        const options = { functions: [definition, makeFunction("sibling", { args: {} })], lazyFunctions: true };
+        const sameModule = makeFunction("sameModule", { args: {}, filePath: "mutators" });
+        const mutator: MutatorIR = { args: {}, exportName: "default", filePath: "mutators", line: 1, returnType: "string" };
+        const options = { functions: [definition, makeFunction("sibling", { args: {} }), sameModule], lazyFunctions: true, mutators: [mutator] };
         const registrySource = emitFunctions(options);
-        const shimSource = emitLazyFunctionModules(options)["fn/lunora_posts_0.ts"];
+        const lazyModules = emitLazyFunctionModules(options);
+        const shimSource = lazyModules["fn/lunora_posts_0.ts"];
 
         try {
             if (shimSource === undefined) {
@@ -126,6 +129,17 @@ export const premium = {
 };
 export const sibling = { args: {}, kind: "query", handler() { return "sibling"; } };\n`,
             );
+            writeFileSync(
+                join(projectRoot, "mutators.js"),
+                `const state = globalThis[${JSON.stringify(stateName)}];
+state.mutatorModuleEvaluations += 1;
+export default {
+  args: {},
+  kind: "mutation",
+  handler(_context, args) { state.mutatorCalls += 1; return "mutator:" + args.id; }
+};
+export const sameModule = { args: {}, kind: "query", handler() { return "same module"; } };\n`,
+            );
 
             const registryFile = join(generatedDirectory, "functions.mjs");
             const shimFile = join(shimDirectory, "lunora_posts_0.js");
@@ -144,7 +158,7 @@ import { pathToFileURL } from "node:url";
 
 const [configText] = process.argv.slice(2);
 const config = JSON.parse(configText);
-const state = { evaluations: 0, handlerCalls: 0, parseCalls: 0, release: undefined, onStart: undefined };
+const state = { evaluations: 0, handlerCalls: 0, parseCalls: 0, mutatorCalls: 0, mutatorModuleEvaluations: 0, release: undefined, onStart: undefined };
 let signalStart;
 const moduleStarted = new Promise((resolve) => { signalStart = resolve; });
 state.onStart = signalStart;
@@ -162,6 +176,9 @@ state.release();
 await Promise.all([first, second]);
 const { LUNORA_FUNCTIONS: handlers } = registry;
 const loaded = handlers["posts:premium"];
+const mutator = registry.getLoadedFunction("mutators:default");
+const mutatorResult = await mutator.handler({}, { id: "m1" });
+const sameModule = registry.getLoadedFunction("mutators:sameModule");
 const values = await import(pathToFileURL(config.valuesFile));
 const parsed = values.parseValidatorMap(loaded.args, { extra: true, name: "Ada" }, "args");
 const handlerResult = await loaded.handler({}, { name: "Ada" });
@@ -179,6 +196,13 @@ process.stdout.write(JSON.stringify({
   failedLoadsRejected: failed.every((result) => result.status === "rejected"),
   handlerCalls: state.handlerCalls,
   handlerResult,
+  mutatorCalls: state.mutatorCalls,
+  mutatorDirect: mutator === handlers["mutators:default"],
+  mutatorInManifest: Object.hasOwn(registry[["LUNORA", "FUNCTION", "MANIFEST"].join("_")], ["mutators", "default"].join(":")),
+  mutatorModuleEvaluations: state.mutatorModuleEvaluations,
+  mutatorPathRegistered: registry[["LUNORA", "MUTATOR", "PATHS"].join("_")].has(["mutators", "default"].join(":")),
+  mutatorResult,
+  sameModuleResult: sameModule.handler(),
   parseCalls: state.parseCalls,
   parsed,
 }));
@@ -207,8 +231,15 @@ Reflect.deleteProperty(globalThis, config.stateName);
                 finalEvaluations: number;
                 handlerCalls: number;
                 handlerResult: string;
+                mutatorCalls: number;
+                mutatorDirect: boolean;
+                mutatorInManifest: boolean;
+                mutatorModuleEvaluations: number;
+                mutatorPathRegistered: boolean;
+                mutatorResult: string;
                 parseCalls: number;
                 parsed: Record<string, unknown>;
+                sameModuleResult: string;
                 siblingResult: string;
                 synchronousEntry: boolean;
             };
@@ -224,6 +255,17 @@ Reflect.deleteProperty(globalThis, config.stateName);
             expect(result.handlerResult).toBe("Ada");
             expect(result.parsed).toEqual({ name: "Ada" });
             expect(result.parseCalls).toBe(0);
+            expect(Object.keys(lazyModules)).toEqual(["fn/lunora_posts_0.ts"]);
+            expect(registrySource).toContain('import * as lunora_mutators_1 from "../mutators.js";');
+            expect(registrySource).toContain('"mutators:default": lunora_mutators_1.default as unknown as RegisteredLunoraFunction');
+            expect(registrySource).toContain('"mutators:sameModule": lunora_mutators_1.sameModule as unknown as RegisteredLunoraFunction');
+            expect(result.mutatorDirect).toBe(true);
+            expect(result.mutatorInManifest).toBe(false);
+            expect(result.mutatorPathRegistered).toBe(true);
+            expect(result.mutatorModuleEvaluations).toBe(1);
+            expect(result.mutatorResult).toBe("mutator:m1");
+            expect(result.mutatorCalls).toBe(1);
+            expect(result.sameModuleResult).toBe("same module");
         } finally {
             Reflect.deleteProperty(globalThis, stateName);
             rmSync(projectRoot, { force: true, recursive: true });

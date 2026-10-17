@@ -6,7 +6,7 @@ import { ModuleKind, ModuleResolutionKind, Project, SyntaxKind } from "ts-morph"
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import discoverFunctions from "../../../src/discover/functions";
-import { lazyMetadataFromBuilderChain } from "../../../src/discover/functions/internal/lazy-metadata";
+import lazyMetadataFromBuilderChain from "../../../src/discover/functions/internal/lazy-metadata";
 import { emitApi } from "../../../src/emit/api";
 import emitFunctions from "../../../src/emit/functions";
 

@@ -1,14 +1,14 @@
 import { LunoraError } from "@lunora/errors";
-import type { Node as AstNode, ObjectLiteralExpression } from "ts-morph";
+import type { CallExpression, Node as AstNode, ObjectLiteralExpression } from "ts-morph";
 import { Node } from "ts-morph";
 
 import type { ExposeCacheIR, FunctionIR } from "../../../ir";
-import { staticBuilderChain } from "./static-builder-chain";
+import staticBuilderChain from "./static-builder-chain";
 
 const unreadable = (node: AstNode, detail: string): never => {
     throw new LunoraError(
         "INTERNAL",
-        `@lunora/codegen: lazy function registry needs literal ${detail} in ${node.getSourceFile().getFilePath()}:${node.getStartLineNumber()}`,
+        `@lunora/codegen: lazy function registry needs literal ${detail} in ${node.getSourceFile().getFilePath()}:${String(node.getStartLineNumber())}`,
     );
 };
 
@@ -102,6 +102,29 @@ const cacheLiteral = (node: AstNode): ExposeCacheIR => {
     return cache;
 };
 
+const exposeLiteral = (call: CallExpression): NonNullable<FunctionIR["expose"]> => {
+    const object = literalObject(call.getArguments()[0], call, ["rest", "cache"]);
+    const rest = valueOf(object, "rest");
+    const cache = valueOf(object, "cache");
+
+    if (rest !== undefined && !Node.isTrueLiteral(rest) && !Node.isFalseLiteral(rest)) {
+        return unreadable(rest, ".expose({ rest })");
+    }
+
+    return { ...(rest ? { rest: Node.isTrueLiteral(rest) } : {}), ...(cache ? { cache: cacheLiteral(cache) } : {}) };
+};
+
+const x402Literal = (call: CallExpression): NonNullable<FunctionIR["x402"]> => {
+    const object = literalObject(call.getArguments()[0], call, ["price"]);
+    const price = valueOf(object, "price");
+
+    if (!price || (!Node.isStringLiteral(price) && !Node.isNumericLiteral(price))) {
+        return unreadable(call, "`.x402({ price })` value");
+    }
+
+    return { price: price.getLiteralValue() };
+};
+
 /** These facts gate requests before the module loads, so partial extraction is unsafe. */
 const lazyMetadataFromBuilderChain = (receiver: AstNode): Pick<FunctionIR, "expose" | "x402" | "visibility"> => {
     const { factory, steps } = staticBuilderChain(receiver);
@@ -113,35 +136,20 @@ const lazyMetadataFromBuilderChain = (receiver: AstNode): Pick<FunctionIR, "expo
     const metadata: Pick<FunctionIR, "expose" | "x402" | "visibility"> = { visibility: factory.startsWith("internal") ? "internal" : "public" };
 
     for (const { call, name } of steps) {
-        if (!["input", "output", "meta", "use", "expose", "x402"].includes(name)) {
+        if (!["expose", "input", "meta", "output", "use", "x402"].includes(name)) {
             return unreadable(call, `known builder modifiers, got .${name}()`);
         }
 
         if (name === "expose" && metadata.expose === undefined) {
-            const object = literalObject(call.getArguments()[0], call, ["rest", "cache"]);
-            const rest = valueOf(object, "rest");
-            const cache = valueOf(object, "cache");
-
-            if (rest !== undefined && !Node.isTrueLiteral(rest) && !Node.isFalseLiteral(rest)) {
-                return unreadable(rest, ".expose({ rest })");
-            }
-
-            metadata.expose = { ...(rest ? { rest: Node.isTrueLiteral(rest) } : {}), ...(cache ? { cache: cacheLiteral(cache) } : {}) };
+            metadata.expose = exposeLiteral(call);
         }
 
         if (name === "x402" && metadata.x402 === undefined) {
-            const object = literalObject(call.getArguments()[0], call, ["price"]);
-            const price = valueOf(object, "price");
-
-            if (!price || (!Node.isStringLiteral(price) && !Node.isNumericLiteral(price))) {
-                return unreadable(call, "`.x402({ price })` value");
-            }
-
-            metadata.x402 = { price: price.getLiteralValue() };
+            metadata.x402 = x402Literal(call);
         }
     }
 
     return metadata;
 };
 
-export { lazyMetadataFromBuilderChain };
+export default lazyMetadataFromBuilderChain;

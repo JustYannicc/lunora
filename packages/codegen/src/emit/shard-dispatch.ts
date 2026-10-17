@@ -329,12 +329,18 @@ const COMMITTED_CATCH = `            } catch (error) {
 `;
 
 /** The dispatch methods for a shard: the committed-marker in the post-commit step only for a rooms app. */
-const dispatchMethods = (hasRooms: boolean, lazyFunctions = false): string =>
-    DISPATCH_METHODS_TEMPLATE.replace("__COMMITTED_CATCH__", hasRooms ? COMMITTED_CATCH : "").replace(
+const dispatchMethods = (hasRooms: boolean, lazyFunctions = false): string => {
+    const preflightVisibility = lazyFunctions
+        ? '            const registeredBeforeLoad = LUNORA_FUNCTIONS[functionPath];\n\n            if (registeredBeforeLoad?.visibility === "internal" && !this.isSystemDispatch()) {\n                throw new LunoraError("FUNCTION_NOT_FOUND", "function not registered: " + functionPath);\n            }\n\n'
+        : "";
+    const preparation = lazyFunctions
+        ? "            const requestScope = this.captureRequestScope();\n            const preparation = this.prepareFunction(functionPath);\n\n            if (preparation !== undefined) {\n                try {\n                    await preparation;\n                } finally {\n                    this.restoreRequestScope(requestScope);\n                }\n            }\n\n"
+        : "";
+
+    return DISPATCH_METHODS_TEMPLATE.replace("__COMMITTED_CATCH__", hasRooms ? COMMITTED_CATCH : "").replace(
         "__PREPARE_FUNCTION__",
-        lazyFunctions
-            ? "            const requestScope = this.captureRequestScope();\n            const preparation = this.prepareFunction(functionPath);\n\n            if (preparation !== undefined) {\n                try {\n                    await preparation;\n                } finally {\n                    this.restoreRequestScope(requestScope);\n                }\n            }\n\n"
-            : "",
+        `${preflightVisibility}${preparation}`,
     );
+};
 
 export { DISPATCH_RUN_SOURCE, dispatchMethods, dispatchRunSource, SUBSCRIPTION_METHODS };

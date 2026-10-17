@@ -5,7 +5,7 @@ import { isServerSurfaceModule } from "../../module-specifiers";
 import { unwrapExpression } from "../ast";
 import { walkBuilderChain, wrappedCallsWhere } from "../builder-chain";
 import { isServerImport, resolveCalleeKind } from "../callee";
-import { staticBuilderChain } from "./internal/static-builder-chain";
+import staticBuilderChain from "./internal/static-builder-chain";
 
 const FUNCTION_KINDS = new Set(["action", "mutation", "query", "stream"]);
 
@@ -243,7 +243,8 @@ const classifyBuilderTerminal = (callee: PropertyAccessExpression, lazyFunctions
     // types aren't installed (e.g. a freshly-scaffolded project before
     // `pnpm install`, where the `__lunoraProcedure` brand can't resolve).
     const staticFactory = lazyFunctions ? staticBuilderChain(receiver).factory : undefined;
-    const rootKind = staticFactory ? (staticFactory.startsWith("internal") ? "internal" : "public") : resolveBuilderRootKind(receiver);
+    const staticVisibility = staticFactory?.startsWith("internal") ? "internal" : "public";
+    const rootKind = staticFactory ? staticVisibility : resolveBuilderRootKind(receiver);
 
     if (rootKind) {
         return { kind: method, receiver, visibility: rootKind, ...adminMarkerOf(receiver) };
