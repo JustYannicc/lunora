@@ -1700,6 +1700,46 @@ const readLiveControl = async (request: Request): Promise<LiveControlRead> => {
 };
 
 /**
+ * Why a live subscribe is refused, or `undefined` when it may be granted. Checks the
+ * connection's credential and the caller's own, the id/topic binding, and the topic cap.
+ */
+const refuseLiveSubscribe = (
+    subscriber: LiveSubscriber,
+    subscriptionId: string,
+    key: string,
+    callerExpiry: number | undefined,
+    maxTopics: number,
+): Response | undefined => {
+    const now = Date.now();
+
+    if ((subscriber.expiresAt !== undefined && subscriber.expiresAt <= now) || (callerExpiry !== undefined && callerExpiry <= now)) {
+        return jsonResponse({ error: { code: "TOKEN_EXPIRED", message: "the credential for this live connection has expired" } }, 401);
+    }
+
+    // A subscription id names one (stream, topic) on this connection. Re-using it for a
+    // different one would silently replace another stream's grant, so refuse it.
+    const existingKey = subscriber.subscriptions.get(subscriptionId);
+
+    if (existingKey !== undefined && existingKey !== key) {
+        return jsonResponse({ error: { code: "CONFLICT", message: "subscriptionId is already in use for another topic" } }, 409);
+    }
+
+    if (!subscriber.subscriptions.has(subscriptionId) && subscriber.subscriptions.size >= maxTopics) {
+        return jsonResponse(
+            {
+                error: {
+                    code: "TOO_MANY_LIVE_TOPICS",
+                    message: `a live connection may follow at most ${String(maxTopics)} topics`,
+                },
+            },
+            429,
+        );
+    }
+
+    return undefined;
+};
+
+/**
  * Base class for shard Durable Objects.
  *
  * Concrete subclasses implement `handleRpc` and may emit deltas via
@@ -15728,33 +15768,25 @@ abstract class ShardDO {
         const { action, connectionId, key, subscriptionId } = parsed;
         const subscriber = this.liveSubscribers.get(connectionId);
 
-        if (subscriber === undefined) {
+        // A connection answers only to the caller that opened it: a control call naming another
+        // caller's connection id is refused as if the connection did not exist.
+        const callerId = decodeUserIdHeader(request.headers.get("x-lunora-userid")) ?? "";
+
+        if (subscriber?.userId !== callerId) {
             return jsonResponse({ error: { code: "LIVE_CONNECTION_NOT_FOUND", message: "no such live connection" } }, 404);
         }
 
         if (action === "subscribe") {
-            if (subscriber.expiresAt !== undefined && subscriber.expiresAt <= Date.now()) {
-                return jsonResponse({ error: { code: "TOKEN_EXPIRED", message: "the credential for this live connection has expired" } }, 401);
-            }
+            const refusal = refuseLiveSubscribe(
+                subscriber,
+                subscriptionId,
+                key,
+                decodeIdentityExpiryHeader(request.headers.get("x-lunora-identity-exp")),
+                ShardDO.MAX_LIVE_TOPICS_PER_CONNECTION,
+            );
 
-            // A subscription id names one (stream, topic) on this connection. Re-using it for a
-            // different one would silently replace another stream's grant, so refuse it.
-            const existingKey = subscriber.subscriptions.get(subscriptionId);
-
-            if (existingKey !== undefined && existingKey !== key) {
-                return jsonResponse({ error: { code: "CONFLICT", message: "subscriptionId is already in use for another topic" } }, 409);
-            }
-
-            if (!subscriber.subscriptions.has(subscriptionId) && subscriber.subscriptions.size >= ShardDO.MAX_LIVE_TOPICS_PER_CONNECTION) {
-                return jsonResponse(
-                    {
-                        error: {
-                            code: "TOO_MANY_LIVE_TOPICS",
-                            message: `a live connection may follow at most ${String(ShardDO.MAX_LIVE_TOPICS_PER_CONNECTION)} topics`,
-                        },
-                    },
-                    429,
-                );
+            if (refusal !== undefined) {
+                return refusal;
             }
 
             subscriber.subscriptions.set(subscriptionId, key);

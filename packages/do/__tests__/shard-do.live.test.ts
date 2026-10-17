@@ -299,6 +299,31 @@ describe("shardDO live streams", () => {
         expect(alerts.status).toBe(200);
     });
 
+    it("refuses a control call from a caller other than the connection's owner", async () => {
+        expect.assertions(2);
+
+        const shard = makeShard([]);
+        const owned = await shard.fetch(new Request("https://x/_lunora/live/connect", { headers: { "x-lunora-userid": "user-a" }, method: "GET" }));
+        const connectionId = owned.headers.get("x-lunora-live-connection") ?? "";
+        const intruder = await shard.fetch(
+            new Request("https://x/_lunora/live/control", {
+                body: JSON.stringify({ action: "subscribe", stream: "s", connectionId, subscriptionId: "s1", topic: "t" }),
+                headers: { "x-lunora-userid": "user-b" },
+                method: "POST",
+            }),
+        );
+        const owner = await shard.fetch(
+            new Request("https://x/_lunora/live/control", {
+                body: JSON.stringify({ action: "subscribe", stream: "s", connectionId, subscriptionId: "s1", topic: "t" }),
+                headers: { "x-lunora-userid": "user-a" },
+                method: "POST",
+            }),
+        );
+
+        expect(intruder.status).toBe(404);
+        expect(owner.status).toBe(200);
+    });
+
     it("rejects a control call naming an unknown connection", async () => {
         expect.assertions(1);
 
