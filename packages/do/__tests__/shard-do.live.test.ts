@@ -275,6 +275,16 @@ describe("shardDO live streams", () => {
         expect(response.status).toBe(413);
     });
 
+    it("measures the publish cap in UTF-8 bytes, not UTF-16 units", async () => {
+        expect.assertions(1);
+
+        // 1500 three-byte characters: 1502 UTF-16 units under the cap, but over 4500 bytes.
+        const shard = makeShard([]);
+        const response = await publish(shard, { data: "€".repeat(1500), stream: "s", topic: "feed" });
+
+        expect(response.status).toBe(413);
+    });
+
     it("refuses publish as a control action; publish has its own endpoint", async () => {
         expect.assertions(1);
 

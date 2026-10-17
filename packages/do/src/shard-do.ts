@@ -15835,7 +15835,11 @@ abstract class ShardDO {
         // eslint-disable-next-line unicorn/no-null -- JSON payload: an undefined publish body serializes to null so the frame carries an explicit value
         const dataJson = JSON.stringify(body.data ?? null);
 
-        if (dataJson.length > ShardDO.MAX_WHISPER_BYTES) {
+        // Measured in UTF-8 bytes like the room broadcast: `.length` counts UTF-16 units, so
+        // multibyte text would pass the cap at several times its byte size.
+        const { byteLength } = new TextEncoder().encode(dataJson);
+
+        if (byteLength > ShardDO.MAX_WHISPER_BYTES) {
             return jsonResponse({ error: { code: "PAYLOAD_TOO_LARGE", message: `a publish may be at most ${String(ShardDO.MAX_WHISPER_BYTES)} bytes` } }, 413);
         }
 
