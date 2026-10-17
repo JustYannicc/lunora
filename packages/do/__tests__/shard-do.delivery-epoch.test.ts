@@ -68,6 +68,32 @@ class UnrelatedWriteShard extends TestShard {
 }
 
 describe("delivery authority epoch", () => {
+    it("keeps the delivered generation while a new epoch resets its diff baseline", async () => {
+        const test = setup();
+        const releaseOld = gate();
+        test.shard.queryGate = releaseOld.promise;
+        const oldSeed = test.send();
+        await test.shard.queryStarted.promise;
+        test.shard.queryGate = undefined;
+        test.shard.rows = ["middle"];
+        await test.write();
+        expect(dataFrames(test.socket).map((frame) => frame.data)).toEqual([["middle"]]);
+        test.regrant();
+        const releaseNew = gate();
+        test.shard.queryStarted = gate();
+        test.shard.queryGate = releaseNew.promise;
+        test.shard.rows = ["latest"];
+        const newRefresh = test.write();
+        await test.shard.queryStarted.promise;
+        releaseOld.resolve();
+        await oldSeed;
+        expect(dataFrames(test.socket).map((frame) => frame.data)).toEqual([["middle"]]);
+        releaseNew.resolve();
+        await newRefresh;
+        expect(dataFrames(test.socket).map((frame) => frame.data)).toEqual([["middle"], ["latest"]]);
+        expect(dataFrames(test.socket).map((frame) => frame.type)).toEqual(["data", "data"]);
+    });
+
     it("reauthorizes and replaces the memo even when the write misses the old read set", async () => {
         const test = setup();
         const shard = new UnrelatedWriteShard(test.state, {}, { deliveryAuthorization: test.authority });

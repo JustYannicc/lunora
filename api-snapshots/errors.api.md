@@ -52,7 +52,7 @@ const ERROR_CATALOG: {
     readonly DELIVERY_FENCED: {
         readonly status: 409;
         readonly title: "Delivery authorization changed";
-        readonly hint: "The operation may have committed. Recover with the same idempotency key after authorization is restored; do not retry with a new key.";
+        readonly hint: "The operation may have committed. Retry with the same transport key; a committed result from an older authority epoch returns DELIVERY_RECEIPT_FENCED. Do not automatically retry with a new transport key.";
     };
     readonly DELIVERY_RECEIPT_FENCED: {
         readonly status: 409;

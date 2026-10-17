@@ -279,12 +279,15 @@ describe("durable replay under an expired bearer", () => {
 });
 
 describe("durable replay after a delivery fence", () => {
-    it("settles an epoch-fenced committed receipt without retrying its native mutation", async () => {
+    it.each([1, 2])("settles %s epoch-fenced committed receipts without retrying their native mutations", async (writeCount) => {
         vi.useFakeTimers();
         sockets.length = 0;
-        const fetchImpl = vi.fn<typeof fetch>(async () =>
-            Response.json({ error: { code: "DELIVERY_RECEIPT_FENCED", message: "committed under old authority" } }, { status: 409 }),
-        );
+        const fetchImpl = vi.fn<typeof fetch>(async () => {
+            const error = { code: "DELIVERY_RECEIPT_FENCED", message: "committed under old authority" };
+            return writeCount === 1
+                ? Response.json({ error }, { status: 409 })
+                : Response.json({ results: Array.from({ length: writeCount }, (_, id) => ({ id, status: 409, body: { error } })) });
+        });
         const persistence = createInMemoryPersistence();
         const client = new LunoraClient({
             fetch: fetchImpl,
@@ -297,11 +300,13 @@ describe("durable replay after a delivery fence", () => {
         try {
             client.setAuthToken("jwt", "user-1");
             client.subscribe(fnRef("todos.list"), {}, () => {});
-            const outcome = client.mutation(fnRef("todos.add"), {}).catch((error: unknown) => error);
+            const outcomes = Array.from({ length: writeCount }, () => client.mutation(fnRef("todos.add"), {}).catch((error: unknown) => error));
             await vi.advanceTimersByTimeAsync(0);
             sockets.at(-1)?.open();
             await vi.advanceTimersByTimeAsync(0);
-            await expect(outcome).resolves.toMatchObject({ code: "DELIVERY_RECEIPT_FENCED" });
+            await expect(Promise.all(outcomes)).resolves.toEqual(
+                Array.from({ length: writeCount }, () => expect.objectContaining({ code: "DELIVERY_RECEIPT_FENCED" })),
+            );
             await expect(persistence.load()).resolves.toHaveLength(0);
             await vi.advanceTimersByTimeAsync(60_000);
             expect(fetchImpl).toHaveBeenCalledTimes(1);

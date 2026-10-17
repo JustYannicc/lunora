@@ -2984,7 +2984,10 @@ abstract class ShardDO {
             try {
                 // The host's structured-clone budget includes the permit and decoded query arguments.
                 (ws as HibernatableWebSocket).serializeAttachment?.(next);
-                this.subMemos.get(ws)?.delete(subId);
+                const memo = this.subMemos.get(ws)?.get(subId);
+                if (memo !== undefined) {
+                    memo.lastJson = UNDELIVERED_BASELINE;
+                }
             } catch {
                 throw new LunoraError("SUBSCRIPTION_PERSIST_FAILED", `subscription attachment exceeds the ${String(ShardDO.MAX_ATTACHMENT_BYTES)}-byte limit`);
             }
@@ -5164,9 +5167,13 @@ abstract class ShardDO {
                 // and getting more expensive each time. Both siblings
                 // (`durable-stream-runner.trim`, `cdc-retention`) stamp first.
                 this.lastIdempotencyTrimAt = now;
-                trimIdempotent(this.sql as SqlExec, now - IDEMPOTENCY_RETENTION_MS);
-                if (this.deliveryAuthorization) {
-                    this.deliveryFence.trimReceipts(now - IDEMPOTENCY_RETENTION_MS);
+                try {
+                    trimIdempotent(this.sql as SqlExec, now - IDEMPOTENCY_RETENTION_MS);
+                    if (this.deliveryAuthorization) {
+                        this.deliveryFence.trimReceipts(now - IDEMPOTENCY_RETENTION_MS);
+                    }
+                } catch {
+                    // Retention is best-effort; receipt writes above still fail the mutation atomically.
                 }
             }
         } catch (error) {

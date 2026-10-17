@@ -87,7 +87,7 @@ export class DeliveryFence {
             throw new LunoraError("DELIVERY_RECEIPT_FENCED", "Receipt has no delivery authority");
         }
         this.storage().exec(
-            "INSERT OR REPLACE INTO __lunora_delivery_receipt(identity, mutation_id, scope, epoch, ts) VALUES (?, ?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO __lunora_delivery_receipt(identity, mutation_id, scope, epoch, ts) VALUES (?, ?, ?, ?, ?)",
             identity,
             mutationId,
             permit.scope,

@@ -61,7 +61,7 @@ export const ERROR_CATALOG = {
     DELIVERY_FENCED: {
         status: 409,
         title: "Delivery authorization changed",
-        hint: "The operation may have committed. Recover with the same idempotency key after authorization is restored; do not retry with a new key.",
+        hint: "The operation may have committed. Retry with the same transport key; a committed result from an older authority epoch returns DELIVERY_RECEIPT_FENCED. Do not automatically retry with a new transport key.",
     },
 
     DELIVERY_RECEIPT_FENCED: {
