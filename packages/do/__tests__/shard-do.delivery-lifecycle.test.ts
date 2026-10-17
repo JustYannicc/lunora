@@ -141,9 +141,24 @@ describe("delivery authorization lifecycle", () => {
         const saves = test.socket.saves;
         const clone = test.socket.deserializeAttachment();
         delete clone.deliveryPermits?.view;
+        expect(test.socket.deserializeAttachment().deliveryPermits).toEqual({ view: permit(0) });
         await test.write();
         expect(test.socket.attachment.deliveryPermits).toEqual({ view: permit(0) });
         expect(test.socket.saves).toBe(saves);
+    });
+
+    it("unsubscribes and reports a refresh permit that no longer fits the attachment", async () => {
+        const test = setup();
+        await test.send();
+        test.socket.attachmentLimit = serialize(test.socket.attachment).byteLength;
+        test.authority.mockResolvedValue({ scope: "larger-authority-scope".repeat(8), epoch: 1 });
+        await test.write();
+        expect(errors(test).at(-1)).toMatchObject({ error: { code: "SUBSCRIPTION_PERSIST_FAILED" } });
+        expect(test.socket.attachment.subs).toEqual({});
+        const attempts = test.authority.mock.calls.length;
+        await test.write();
+        expect(test.authority).toHaveBeenCalledTimes(attempts + 1);
+        expect(errors(test)).toHaveLength(1);
     });
 
     it("rolls back a permit that exceeds the complete structured-clone attachment budget", async () => {

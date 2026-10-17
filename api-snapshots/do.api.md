@@ -29,6 +29,33 @@ Re-exported from `@lunora/shard-engine` — signature tracked at its source.
 
 Re-exported from `@lunora/shard-engine` — signature tracked at its source.
 
+### `DeliveryAuthorization` (type)
+
+```ts
+type DeliveryAuthorization = (request: DeliveryAuthorizationRequest) => Promise<DeliveryPermit | undefined>;
+```
+
+### `DeliveryAuthorizationRequest` (interface)
+
+```ts
+interface DeliveryAuthorizationRequest {
+    readonly identity: SubscriptionIdentity;
+    readonly shardKey: string | undefined;
+    readonly functionPath: string;
+    readonly args: Record<string, unknown>;
+    readonly transport: "subscription" | "rpc";
+}
+```
+
+### `DeliveryPermit` (interface)
+
+```ts
+interface DeliveryPermit {
+    readonly scope: string;
+    readonly epoch: number;
+}
+```
+
 ### `DispatchBookmark` (interface)
 
 ```ts
@@ -568,6 +595,7 @@ abstract class ShardDO {
 
 ```ts
 interface ShardDOOptions {
+    deliveryAuthorization?: DeliveryAuthorization;
     ctxDbCacheWired?: boolean;
     maxRelationKeys?: number;
     reactiveCache?: ReactiveCacheOptions;
@@ -796,6 +824,18 @@ Re-exported from `@lunora/shard-engine` — signature tracked at its source.
 ### `importShardRows` (const)
 
 Re-exported from `@lunora/shard-engine` — signature tracked at its source.
+
+### `installDeliveryFence` (const)
+
+```ts
+const installDeliveryFence: (target: {
+    fetch: (url: string, init?: RequestInit) => Promise<Response>;
+}, options: {
+    env: unknown;
+    shardKey: string | undefined;
+    fence: DeliveryPermit;
+}) => Promise<void>;
+```
 
 ### `isSourceDue` (const)
 

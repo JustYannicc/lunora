@@ -226,6 +226,7 @@ import {
     recordScheduleOutbox,
     recordShapeProbePass,
     RELATION_FUNCTION_PREFIX,
+    RELAY_SIGNATURE_HEADER,
     RelayMember,
     runSocketPool,
     SCAN_DEP,
@@ -233,6 +234,7 @@ import {
     selectMatchingIds,
     selectShapeRows,
     ShardRunner,
+    siblingSecretOf,
     stableStringify,
     stableWireKey,
     stubByName,
@@ -245,15 +247,13 @@ import {
     trySendFrame,
     UNVOUCHABLE_DEP,
     VECTOR_BACKFILL_MAX_PAGES,
+    verifySiblingBody,
     writeGlobalShapeSnapshot,
     writeIdempotent,
     writeReactorState,
     writeShapePokeCursor,
     writeShapePokeCursors,
     writeTouchesMemo,
-    RELAY_SIGNATURE_HEADER,
-    siblingSecretOf,
-    verifySiblingBody,
 } from "@lunora/shard-engine";
 import { decodeWire, encodeWire } from "@lunora/wire";
 import type { DrizzleSqliteDODatabase } from "drizzle-orm/durable-sqlite";
@@ -2922,22 +2922,18 @@ abstract class ShardDO {
         this.sendSubscriptionError(ws, subId, "FORBIDDEN", "AccessDenied");
     }
 
-    private sendFrame(ws: ShardSocketLike, frame: string, permit?: SubscriptionDeliveryPermit): boolean {
-        if (this.deliveryAuthorization) {
-            const envelope = JSON.parse(frame) as { type?: string; id?: string };
-            if (envelope.type !== "ack" && envelope.type !== "error" && envelope.type !== "identity") {
-                if (permit !== undefined && this.deliveryRegistrations.get(ws)?.get(envelope.id ?? "") !== permit.registration) {
-                    return false;
-                }
-                if (!this.deliveryRoleSupported() || !this.deliveryFence.allows(permit)) {
-                    if (permit !== undefined) {
-                        this.revokeSubscription(ws, envelope.id ?? "");
-                    }
-                    return false;
-                }
-                if (!Object.hasOwn(this.readAttachment(ws).subs, envelope.id ?? "")) {
-                    return false;
-                }
+    private sendFrame(ws: ShardSocketLike, frame: string, delivery?: "control" | { subId: string; permit: SubscriptionDeliveryPermit | undefined }): boolean {
+        if (this.deliveryAuthorization && delivery !== "control") {
+            if (delivery === undefined) {
+                return false;
+            }
+            const { permit, subId } = delivery;
+            if (permit === undefined || this.deliveryRegistrations.get(ws)?.get(subId) !== permit.registration) {
+                return false;
+            }
+            if (!this.deliveryRoleSupported() || !this.deliveryFence.allows(permit)) {
+                this.revokeSubscription(ws, subId);
+                return false;
             }
         }
         return trySendFrame(ws, frame);
@@ -3052,7 +3048,7 @@ abstract class ShardDO {
 
         const url = new URL(request.url);
         if (url.pathname === "/_lunora/delivery-fence") {
-            return this.installDeliveryFence(request);
+            return this.deliveryAuthorization ? this.installDeliveryFence(request) : new Response("Not found", { status: 404 });
         }
         if (!this.deliveryAuthorization) {
             return this.runner.handleFetch(request);
@@ -7198,7 +7194,7 @@ abstract class ShardDO {
         const rawSize = typeof message === "string" ? message.length : message.byteLength;
 
         if (rawSize > MAX_WS_FRAME_UNITS) {
-            this.sendFrame(ws, JSON.stringify({ message: "frame too large", type: "error" }));
+            this.sendFrame(ws, JSON.stringify({ message: "frame too large", type: "error" }), "control");
 
             return;
         }
@@ -7209,7 +7205,7 @@ abstract class ShardDO {
         try {
             envelope = JSON.parse(text) as SubscriptionEnvelope;
         } catch {
-            this.sendFrame(ws, JSON.stringify({ message: "invalid envelope", type: "error" }));
+            this.sendFrame(ws, JSON.stringify({ message: "invalid envelope", type: "error" }), "control");
 
             return;
         }
@@ -7242,7 +7238,7 @@ abstract class ShardDO {
             // on every `connect`, including a re-sent one: the answer is the
             // socket's, and repeating it costs one small frame.
             // eslint-disable-next-line unicorn/no-null -- `null` is the wire's "no user" value
-            this.sendFrame(ws, JSON.stringify({ subject: attachment.userId ?? null, type: "identity" }));
+            this.sendFrame(ws, JSON.stringify({ subject: attachment.userId ?? null, type: "identity" }), "control");
 
             // Idempotent: a socket announces `connect` exactly once. A re-sent
             // (or duplicate) frame must not re-fire `onConnect`, or it would
@@ -7338,7 +7334,7 @@ abstract class ShardDO {
             // user-subscription gate must never be able to read admin data by
             // naming a reserved functionPath.
             if (isAdmin && !(await this.attachmentAdminAuthorized(this.readAttachment(ws)))) {
-                this.sendFrame(ws, JSON.stringify({ id: envelope.id, message: "admin subscription requires admin authorization", type: "error" }));
+                this.sendFrame(ws, JSON.stringify({ id: envelope.id, message: "admin subscription requires admin authorization", type: "error" }), "control");
 
                 return;
             }
@@ -7368,6 +7364,7 @@ abstract class ShardDO {
                         id: envelope.id,
                         type: "error",
                     }),
+                    "control",
                 );
 
                 return;
@@ -7391,12 +7388,12 @@ abstract class ShardDO {
                     },
                 }[status];
 
-                this.sendFrame(ws, JSON.stringify({ code, error: { code, message: errorMessage }, id: envelope.id, type: "error" }));
+                this.sendFrame(ws, JSON.stringify({ code, error: { code, message: errorMessage }, id: envelope.id, type: "error" }), "control");
 
                 return;
             }
 
-            this.sendFrame(ws, JSON.stringify({ id: envelope.id, type: "ack" }));
+            this.sendFrame(ws, JSON.stringify({ id: envelope.id, type: "ack" }), "control");
 
             // Seed the subscriber with the query's current result so the first
             // value arrives over the same channel as later updates. When the
@@ -7434,7 +7431,7 @@ abstract class ShardDO {
 
         if (envelope.type === "shape_unsubscribe") {
             this.shapeUnsubscribe(ws, envelope.id);
-            this.sendFrame(ws, JSON.stringify({ id: envelope.id, type: "ack" }));
+            this.sendFrame(ws, JSON.stringify({ id: envelope.id, type: "ack" }), "control");
 
             return;
         }
@@ -7444,7 +7441,7 @@ abstract class ShardDO {
             // anything matching the admin prefix is rejected up front rather
             // than allowed to slip through executeStream().
             if (envelope.query.functionPath.startsWith(ADMIN_FUNCTION_PREFIX)) {
-                this.sendFrame(ws, JSON.stringify({ id: envelope.id, message: "streams must be public", type: "error" }));
+                this.sendFrame(ws, JSON.stringify({ id: envelope.id, message: "streams must be public", type: "error" }), "control");
 
                 return;
             }
@@ -7483,6 +7480,7 @@ abstract class ShardDO {
                         id: envelope.id,
                         type: "error",
                     }),
+                    "control",
                 );
 
                 return;
@@ -7615,7 +7613,7 @@ abstract class ShardDO {
             }
 
             this.unsubscribe(ws, envelope.id);
-            this.sendFrame(ws, JSON.stringify({ id: envelope.id, type: "ack" }));
+            this.sendFrame(ws, JSON.stringify({ id: envelope.id, type: "ack" }), "control");
         }
     }
 
@@ -11642,7 +11640,11 @@ abstract class ShardDO {
         const iterable = this.executeStream(functionPath, args, socketIdentity(attachment));
 
         if (!iterable) {
-            this.sendFrame(ws, JSON.stringify({ error: { code: "NOT_FOUND", message: `stream not registered: ${functionPath}` }, id, type: "error" }));
+            this.sendFrame(
+                ws,
+                JSON.stringify({ error: { code: "NOT_FOUND", message: `stream not registered: ${functionPath}` }, id, type: "error" }),
+                "control",
+            );
 
             return;
         }
@@ -11664,6 +11666,7 @@ abstract class ShardDO {
                     id,
                     type: "error",
                 }),
+                "control",
             );
 
             return;
@@ -11681,6 +11684,7 @@ abstract class ShardDO {
                     id,
                     type: "error",
                 }),
+                "control",
             );
 
             return;
@@ -11695,7 +11699,7 @@ abstract class ShardDO {
         const controller = new AbortController();
 
         cancellers.set(id, controller);
-        this.sendFrame(ws, JSON.stringify({ id, type: "ack" }));
+        this.sendFrame(ws, JSON.stringify({ id, type: "ack" }), "control");
 
         try {
             for await (const chunk of iterable.iterator(controller.signal)) {
@@ -11746,6 +11750,7 @@ abstract class ShardDO {
                     id,
                     type: "error",
                 }),
+                "control",
             );
         } finally {
             cancellers.delete(id);
@@ -12360,13 +12365,15 @@ abstract class ShardDO {
                     // per-request identity fields. Without it an `rls()` / `ctx.auth`
                     // scoped live query would evaluate anonymous and return zero rows.
                     // (Admin + reserved flag reads ignore the identity payload.)
-                    // eslint-disable-next-line no-await-in-loop -- subscriptions on a socket re-run sequentially; each shares the single SQLite handle
-                    const permit = this.deliveryAuthorization
-                        ? await this.authorizeSubscription(ws, subId, socketIdentity(attachment), functionPath, query.args ?? {})
-                        : undefined;
+                    let permit: SubscriptionDeliveryPermit | undefined;
+                    if (this.deliveryAuthorization) {
+                        // eslint-disable-next-line no-await-in-loop -- authority must resolve before this subscription runs
+                        permit = await this.authorizeSubscription(ws, subId, socketIdentity(attachment), functionPath, query.args ?? {});
+                    }
                     if (this.deliveryAuthorization && permit === undefined) {
                         continue;
                     }
+                    // eslint-disable-next-line no-await-in-loop -- subscriptions on one socket share its SQLite connection
                     const outcome = await this.resolveReactiveOutcomeDeduped(
                         functionPath,
                         query.args ?? {},
@@ -12400,6 +12407,9 @@ abstract class ShardDO {
                     // operator could see anywhere. See `recordSubscriptionRefreshError`.
                     if (isDeliveryAccessDenied(error)) {
                         this.revokeSubscription(ws, subId);
+                    } else if (isLunoraError(error) && error.code === "SUBSCRIPTION_PERSIST_FAILED") {
+                        this.unsubscribe(ws, subId);
+                        this.sendSubscriptionError(ws, subId, error.code, error.message);
                     }
                     this.recordSubscriptionRefreshError(functionPath, error, { subId });
 
@@ -12518,7 +12528,10 @@ abstract class ShardDO {
                 this.seedSubscriptionMemo(ws, subId, outcome, generation);
             }
             try {
-                const delivered = this.sendFrame(ws, `{"type":"resume","id":${JSON.stringify(subId)}${cdcSuffix(resume.cursor ?? 0, epoch)}}`, permit);
+                const delivered = this.sendFrame(ws, `{"type":"resume","id":${JSON.stringify(subId)}${cdcSuffix(resume.cursor ?? 0, epoch)}}`, {
+                    subId,
+                    permit,
+                });
                 if (this.deliveryAuthorization && delivered) {
                     this.seedSubscriptionMemo(ws, subId, outcome, generation);
                 }
@@ -12591,7 +12604,7 @@ abstract class ShardDO {
         // Both persistence and seeding succeeded — ack last (the client keys pokes
         // by shape id, not the ack, so the seed poke arriving first is fine).
         try {
-            this.sendFrame(ws, JSON.stringify({ id: subId, type: "ack" }));
+            this.sendFrame(ws, JSON.stringify({ id: subId, type: "ack" }), "control");
         } catch {
             /* socket may already be closed; never throw out of webSocketMessage */
         }
@@ -12601,7 +12614,7 @@ abstract class ShardDO {
     // eslint-disable-next-line class-methods-use-this -- groups with the subscribe flows; uses only its args + the socket
     private sendSubscriptionError(ws: ShardSocketLike, subId: string, code: string, message: string): void {
         try {
-            this.sendFrame(ws, JSON.stringify({ code, error: { code, message }, id: subId, type: "error" }));
+            this.sendFrame(ws, JSON.stringify({ code, error: { code, message }, id: subId, type: "error" }), "control");
         } catch {
             /* socket may already be closed; never throw out of webSocketMessage */
         }
@@ -14594,7 +14607,7 @@ abstract class ShardDO {
             // Keep its baseline intact when the control frame cannot be delivered.
             const watermarkField = clientWatermark === undefined ? "" : `,"lastMutationId":${String(clientWatermark)}`;
             const frame = `{"type":"settled","id":${JSON.stringify(subId)}${watermarkField}${cursorSuffix}}`;
-            if (this.deliveryAuthorization && !this.sendFrame(ws, frame, permit)) {
+            if (this.deliveryAuthorization && !this.sendFrame(ws, frame, { subId, permit })) {
                 return;
             }
             existing.generation = generation;
@@ -14654,7 +14667,7 @@ abstract class ShardDO {
         // every frame is attempted, and only then is the verdict taken. `tables`
         // normally advances so dependency tracking stays accurate even on failure.
         // An authorization-gated delivery leaves the entire memo unchanged on failure.
-        const delivered = frames.map((frame) => this.sendFrame(ws, frame, permit)).every(Boolean);
+        const delivered = frames.map((frame) => this.sendFrame(ws, frame, { subId, permit })).every(Boolean);
 
         if (this.deliveryAuthorization && !delivered) {
             return;
@@ -15099,7 +15112,11 @@ abstract class ShardDO {
             // the topic or about what the authorizer would have answered.
             const message = `whisper authorization cap of ${String(ShardDO.MAX_WHISPER_VERDICTS_PER_SOCKET)} distinct topics reached on this socket; reconnect to reset it`;
 
-            this.sendFrame(ws, JSON.stringify({ code: "TOO_MANY_WHISPER_TOPICS", error: { code: "TOO_MANY_WHISPER_TOPICS", message }, type: "error" }));
+            this.sendFrame(
+                ws,
+                JSON.stringify({ code: "TOO_MANY_WHISPER_TOPICS", error: { code: "TOO_MANY_WHISPER_TOPICS", message }, type: "error" }),
+                "control",
+            );
 
             return false;
         }

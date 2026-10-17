@@ -49,6 +49,11 @@ const ERROR_CATALOG: {
         readonly status: 404;
         readonly title: "Not found";
     };
+    readonly DELIVERY_FENCED: {
+        readonly status: 409;
+        readonly title: "Delivery authorization changed";
+        readonly hint: "The operation may have committed. Recover with the same idempotency key after authorization is restored; do not retry with a new key.";
+    };
     readonly CONFLICT: {
         readonly hint: readonly [
             "Another write changed this row while your mutation was running (optimistic concurrency conflict).",

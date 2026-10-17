@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { installDeliveryFence } from "../src/delivery-authorization";
 import { ROOT_SHARD_NAME } from "../src/shard-do";
-import { gate, permit, secret, setup } from "./_helpers/delivery-authorization";
+import { gate, permit, secret, setup, TestShard } from "./_helpers/delivery-authorization";
 
 const batch = (paths: string[]) =>
     new Request("https://shard.internal/rpc-batch", {
@@ -65,6 +65,12 @@ describe("delivery-authorized transports", () => {
             }),
         );
         expect(test.authority.mock.calls.map(([request]) => request.args)).toEqual([args, args]);
+    });
+
+    it("keeps the private fence route absent when authorization is disabled", async () => {
+        const test = setup();
+        const unguarded = new TestShard(test.state, {});
+        expect((await unguarded.fetch(new Request("https://shard.internal/_lunora/delivery-fence", { method: "POST", body: "{}" }))).status).toBe(404);
     });
 
     it("reports an authority outage as retryable instead of access denial", async () => {

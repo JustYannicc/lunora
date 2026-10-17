@@ -1784,6 +1784,12 @@ const RELATION_EXISTS_KEY = "__relationExists";
 const RELATION_FUNCTION_PREFIX = "__lunora_relation__:";
 ```
 
+### `RELAY_SIGNATURE_HEADER` (const)
+
+```ts
+const RELAY_SIGNATURE_HEADER = "x-lunora-relay-sig";
+```
+
 ### `REPROJECTION_MIGRATION_PREFIX` (const)
 
 ```ts
@@ -2901,6 +2907,10 @@ interface ShardSocketLike {
 
 ```ts
 interface SocketAttachment {
+    deliveryPermits?: Record<string, {
+        scope: string;
+        epoch: number;
+    }>;
     admin?: boolean;
     adminBinding?: string;
     clientId?: string;
@@ -5233,6 +5243,18 @@ const serverInList: (engine: "mysql" | "postgres") => (reference: SQL, items: Re
 const shapeRoutingKey: (name: string, args?: Record<string, unknown>) => string;
 ```
 
+### `siblingSecretOf` (const)
+
+```ts
+const siblingSecretOf: (env: unknown) => string | undefined;
+```
+
+### `signSiblingBody` (const)
+
+```ts
+const signSiblingBody: (secret: string, body: string) => Promise<string>;
+```
+
 ### `softDeleteScope` (const)
 
 ```ts
@@ -5385,6 +5407,12 @@ const uniqueIndexFields: (indexes: ReadonlyArray<{
 
 ```ts
 const validateImportRow: (schema: SchemaLike, table: string, record: Record<string, unknown>) => string | undefined;
+```
+
+### `verifySiblingBody` (const)
+
+```ts
+const verifySiblingBody: (env: unknown, supplied: null | string, raw: string) => Promise<boolean>;
 ```
 
 ### `whereFilter` (const)
