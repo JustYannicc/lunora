@@ -204,6 +204,34 @@ describe("shardDO live streams", () => {
         expect(socket.frames).toEqual([]);
     });
 
+    it("delivers a live publish to SSE readers without a relay hop that could fail it", async () => {
+        expect.assertions(3);
+
+        const shard = makeShard([]);
+        const relayed: string[] = [];
+
+        // A relay whose forward always rejects: a live publish must neither call it nor fail on it.
+        Reflect.set(shard, "relay", {
+            forwardWhisper: (topic: string) => {
+                relayed.push(topic);
+
+                return Promise.reject(new Error("relay down"));
+            },
+        });
+
+        const sse = await connect(shard);
+        const reader = new SseReader(sse.response);
+
+        await reader.next();
+        await control(shard, { action: "subscribe", stream: "s", connectionId: sse.connectionId, subscriptionId: "s1", topic: "feed" });
+
+        const response = await publish(shard, { stream: "s", data: { event: "new_post" }, topic: "feed" });
+
+        expect(response.status).toBe(200);
+        await expect(reader.next()).resolves.toEqual({ data: { data: { event: "new_post" }, topic: "feed" }, event: "live" });
+        expect(relayed).toEqual([]);
+    });
+
     it("stops delivering to a connection after its unsubscribe", async () => {
         expect.assertions(1);
 
