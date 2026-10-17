@@ -4036,7 +4036,9 @@ export const ping = query({ args: { id: v.string() }, handler: async (_context, 
             expect(output).toContain('const isGlobal = (schema as unknown as SchemaLike).tables[shape.table]?.shardMode?.kind === "global"');
             // The DO reads the global membership by draining the global backend's findMany.
             expect(output).toContain("protected override async readGlobalShapeRows");
-            expect(output).toContain("await globalDb.findMany(resolved.table, { cursor, where: resolved.effectiveWhere })");
+            expect(output).toContain(
+                "await globalDb.findMany(resolved.table, { cursor, ...(resolved.effectiveWhere === undefined ? {} : { where: resolved.effectiveWhere }) })",
+            );
         });
 
         it("does not emit readGlobalShapeRows when the project has shapes but no `.global()` table", () => {
