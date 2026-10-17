@@ -1041,7 +1041,7 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
                 // own `ReadFootprint` pair instead, and a dispatch with neither
                 // gets an unbound hook that stamps no deps.
                 onRead: options.onRead ?? this.getCtxDbReadHook(options.scope),
-                // Left `undefined` when there is no scope so `createShardCtxDb`
+                // Omitted when there is no scope so `createShardCtxDb`
                 // keeps its own "degrade a provable slice to a whole-table dep"
                 // fallback rather than reporting into a no-op.
                 ...(options.onReadRange !== undefined

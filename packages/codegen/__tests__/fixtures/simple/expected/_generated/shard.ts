@@ -1078,7 +1078,14 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
             // so both write to the same trace.
             const span = this.makeDispatchSpan(traceAnchor, observability);
 
-            const globalRequest = { ...this.globalCdcOptions(config.cdc ?? false), bookmark: this.getInboundBookmark(), identity, onBookmark: (bookmarkValue: string | undefined) => { if (options.bookmarks !== undefined) { options.bookmarks.value = bookmarkValue; } }, userId };
+            const bookmark = this.getInboundBookmark();
+            const globalRequest = {
+                ...this.globalCdcOptions(config.cdc ?? false),
+                ...(bookmark === undefined ? {} : { bookmark }),
+                ...(identity === undefined ? {} : { identity }),
+                onBookmark: (bookmarkValue: string | undefined) => { if (options.bookmarks !== undefined) { options.bookmarks.value = bookmarkValue; } },
+                ...(userId === undefined ? {} : { userId }),
+            };
             const globalDb: DatabaseWriterLike = config.d1?.(env, globalRequest) ?? globalDbStub;
             // `ctx.db`, wrapped in automatic instrumentation: by default this
             // adds aggregate counters (call count, total time, per-operation
@@ -1120,7 +1127,7 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
                 // own `ReadFootprint` pair instead, and a dispatch with neither
                 // gets an unbound hook that stamps no deps.
                 onRead: options.onRead ?? this.getCtxDbReadHook(options.scope),
-                // Left `undefined` when there is no scope so `createShardCtxDb`
+                // Omitted when there is no scope so `createShardCtxDb`
                 // keeps its own "degrade a provable slice to a whole-table dep"
                 // fallback rather than reporting into a no-op.
                 ...(options.onReadRange !== undefined

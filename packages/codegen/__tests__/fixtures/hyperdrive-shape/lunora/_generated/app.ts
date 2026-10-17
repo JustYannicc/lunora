@@ -190,7 +190,11 @@ class AppBuilder<Env extends object> {
 
                           const origin = declaration.origin?.(env);
                           const crossShard = origin
-                              ? createCrossShardRelationCapabilities({ identity: request?.identity, origin, userId: request?.userId ?? undefined })
+                              ? createCrossShardRelationCapabilities({
+                                    ...(request?.identity === undefined ? {} : { identity: request.identity }),
+                                    origin,
+                                    ...(request?.userId == null ? {} : { userId: request.userId }),
+                                })
                               : undefined;
 
                           return createHyperdriveGlobalCtxDb({

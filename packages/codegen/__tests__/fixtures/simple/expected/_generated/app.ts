@@ -211,7 +211,11 @@ class AppBuilder<Env extends object> {
 
                           const origin = this.globalDeclaration?.origin?.(env);
                           const crossShard = origin
-                              ? createCrossShardRelationCapabilities({ identity: request?.identity, origin, userId: request?.userId ?? undefined })
+                              ? createCrossShardRelationCapabilities({
+                                    ...(request?.identity === undefined ? {} : { identity: request.identity }),
+                                    origin,
+                                    ...(request?.userId == null ? {} : { userId: request.userId }),
+                                })
                               : undefined;
 
                           return createD1CtxDb({
@@ -286,12 +290,16 @@ class AppBuilder<Env extends object> {
      * declared.
      */
     private makeStorage(env: Env, declaration: StorageDeclaration<Env>, bucket: R2BucketLike, bucketName: string, origin?: string): Storage {
+        const publicBaseUrl = declaration.publicBaseUrl?.(env) ?? origin;
+        const s3 = declaration.s3?.(env);
+        const signingSecret = declaration.signingSecret?.(env);
+
         return createStorage({
             bucket,
             bucketName,
-            publicBaseUrl: declaration.publicBaseUrl?.(env) ?? origin,
-            s3: declaration.s3?.(env),
-            signingSecret: declaration.signingSecret?.(env),
+            ...(publicBaseUrl === undefined ? {} : { publicBaseUrl }),
+            ...(s3 === undefined ? {} : { s3 }),
+            ...(signingSecret === undefined ? {} : { signingSecret }),
         });
     }
 
@@ -370,10 +378,10 @@ class AppBuilder<Env extends object> {
             storageDelete: (key: string, opts?: { bucket?: string }) => pick(opts?.bucket).delete(key),
             storageDownload: (key: string, opts?: { bucket?: string }) => pick(opts?.bucket).download(key),
             storageList: (prefix?: string, opts?: { bucket?: string; cursor?: string; limit?: number }) => pick(opts?.bucket).list(prefix, opts),
-            storageSignedUrl: hasSigning
-                ? (key: string, opts?: { bucket?: string; contentType?: string; expiresInSeconds?: number; method?: "GET" | "PUT"; origin?: string }) =>
-                      pick(opts?.bucket, opts?.origin).getSignedUrl(key, { contentType: opts?.contentType, expiresInSeconds: opts?.expiresInSeconds, method: opts?.method })
-                : undefined,
+            ...(hasSigning ? {
+                storageSignedUrl: (key: string, opts?: { bucket?: string; contentType?: string; expiresInSeconds?: number; method?: "GET" | "PUT"; origin?: string }) =>
+                    pick(opts?.bucket, opts?.origin).getSignedUrl(key, opts),
+            } : {}),
             storageUpload: (key: string, body: ArrayBuffer, opts?: { bucket?: string; contentType?: string; sha256?: string }) => pick(opts?.bucket).upload(key, body, opts),
         };
     }
@@ -440,7 +448,9 @@ class AppBuilder<Env extends object> {
             options.storage = (rawEnv: unknown, origin?: string) => this.resolveStorage(rawEnv as Env, origin);
         }
 
-        options.notifySubscriptionStore = notifyConfig.store ? notifyConfig.store(env as Record<string, unknown>) : undefined;
+        if (notifyConfig.store) {
+            options.notifySubscriptionStore = notifyConfig.store(env as Record<string, unknown>);
+        }
 
         const logArchive = resolveLogArchiveFromEnv(env);
 
@@ -531,29 +541,29 @@ const buildExec = (database: D1DatabaseLike, bookmark?: string, onBookmark?: (bo
         // `target`, so the real workerd `D1Database`/session doesn't throw
         // `TypeError: Illegal invocation` the way a detached
         // `const fn = target.batch; fn(...)` capture would.
-        batch: batchFn
-            ? async (statements) => {
-                  const results = await batchFn.call(
-                      target,
-                      statements.map(({ params, sql }) => target.prepare(sql).bind(...params)),
-                  );
+        ...(batchFn ? {
+            batch: async (statements) => {
+                const results = await batchFn.call(
+                    target,
+                    statements.map(({ params, sql }) => target.prepare(sql).bind(...params)),
+                );
 
-                  // Meter each leg. D1 returns one result per statement, in
-                  // order, each with its own `meta` — and a batch is where the
-                  // expensive writes live (`@lunora/sql-store` runs its
-                  // backfills through here), so discarding it left exactly the
-                  // statements worth costing unaccounted. Guarded on the array
-                  // because `batch` is optional in the structural type and a
-                  // test double may resolve to anything.
-                  if (Array.isArray(results)) {
-                      for (const [index, statement] of statements.entries()) {
-                          meter(statement.sql, (results[index] as { meta?: Record<string, unknown> } | undefined)?.meta);
-                      }
-                  }
+                // Meter each leg. D1 returns one result per statement, in
+                // order, each with its own `meta` — and a batch is where the
+                // expensive writes live (`@lunora/sql-store` runs its
+                // backfills through here), so discarding it left exactly the
+                // statements worth costing unaccounted. Guarded on the array
+                // because `batch` is optional in the structural type and a
+                // test double may resolve to anything.
+                if (Array.isArray(results)) {
+                    for (const [index, statement] of statements.entries()) {
+                        meter(statement.sql, (results[index] as { meta?: Record<string, unknown> } | undefined)?.meta);
+                    }
+                }
 
-                  onBookmark?.(session?.getBookmark() ?? undefined);
-              }
-            : undefined,
+                onBookmark?.(session?.getBookmark() ?? undefined);
+            },
+        } : {}),
         run: async (sql, parameters) => {
             const result = await target
                 .prepare(sql)
@@ -603,7 +613,7 @@ const buildGlobalImporter =
         return importGlobalRows(writer, schema as unknown as D1CtxDbOptions["schema"], {
             exec,
             rows: request.rows.map((row) => ({ doc: row.doc, line: row.line, table: row.table })),
-            startLine: request.startLine,
+            ...(request.startLine === undefined ? {} : { startLine: request.startLine }),
         });
     };
 
@@ -644,7 +654,7 @@ const buildGlobalCdcSync =
             return { changes: [], cursor: request.sinceSeq };
         }
 
-        const page = await readD1CdcChanges(exec, { limit: request.limit, sinceSeq: request.sinceSeq });
+        const page = await readD1CdcChanges(exec, request);
 
         // `as unknown as`, because `CdcChange` is an interface and interfaces carry
         // no implicit index signature — the shapes are otherwise identical.

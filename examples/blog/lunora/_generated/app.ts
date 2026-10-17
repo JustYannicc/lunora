@@ -365,12 +365,16 @@ class AppBuilder<Env extends object> {
      * declared.
      */
     private makeStorage(env: Env, declaration: StorageDeclaration<Env>, bucket: R2BucketLike, bucketName: string, origin?: string): Storage {
+        const publicBaseUrl = declaration.publicBaseUrl?.(env) ?? origin;
+        const s3 = declaration.s3?.(env);
+        const signingSecret = declaration.signingSecret?.(env);
+
         return createStorage({
             bucket,
             bucketName,
-            publicBaseUrl: declaration.publicBaseUrl?.(env) ?? origin,
-            s3: declaration.s3?.(env),
-            signingSecret: declaration.signingSecret?.(env),
+            ...(publicBaseUrl === undefined ? {} : { publicBaseUrl }),
+            ...(s3 === undefined ? {} : { s3 }),
+            ...(signingSecret === undefined ? {} : { signingSecret }),
         });
     }
 
@@ -449,10 +453,10 @@ class AppBuilder<Env extends object> {
             storageDelete: (key: string, opts?: { bucket?: string }) => pick(opts?.bucket).delete(key),
             storageDownload: (key: string, opts?: { bucket?: string }) => pick(opts?.bucket).download(key),
             storageList: (prefix?: string, opts?: { bucket?: string; cursor?: string; limit?: number }) => pick(opts?.bucket).list(prefix, opts),
-            storageSignedUrl: hasSigning
-                ? (key: string, opts?: { bucket?: string; contentType?: string; expiresInSeconds?: number; method?: "GET" | "PUT"; origin?: string }) =>
-                      pick(opts?.bucket, opts?.origin).getSignedUrl(key, { contentType: opts?.contentType, expiresInSeconds: opts?.expiresInSeconds, method: opts?.method })
-                : undefined,
+            ...(hasSigning ? {
+                storageSignedUrl: (key: string, opts?: { bucket?: string; contentType?: string; expiresInSeconds?: number; method?: "GET" | "PUT"; origin?: string }) =>
+                    pick(opts?.bucket, opts?.origin).getSignedUrl(key, opts),
+            } : {}),
             storageUpload: (key: string, body: ArrayBuffer, opts?: { bucket?: string; contentType?: string; sha256?: string }) => pick(opts?.bucket).upload(key, body, opts),
         };
     }
@@ -468,8 +472,10 @@ class AppBuilder<Env extends object> {
             shardDO: this.shardSelector?.(env) ?? (undefined as unknown as ShardNamespaceLike),
         };
 
-        if (this.adminToken) {
-            options.adminToken = this.adminToken(env);
+        const adminToken = this.adminToken?.(env);
+
+        if (adminToken !== undefined) {
+            options.adminToken = adminToken;
         }
 
         const tableSharding = new Map<string, ShardingInfo>([
@@ -509,7 +515,11 @@ class AppBuilder<Env extends object> {
             );
         }
 
-        options.logArchive = resolveLogArchiveFromEnv(env);
+        const logArchive = resolveLogArchiveFromEnv(env);
+
+        if (logArchive !== undefined) {
+            options.logArchive = logArchive;
+        }
 
         // Captured before the branch so the narrowing survives — reading
         // `this.authDeclaration.namespace` again below would be optional all over again.
@@ -523,16 +533,20 @@ class AppBuilder<Env extends object> {
             // to it. `createDoAuthWiring` is a tested function in `@lunora/auth` rather
             // than more emitted code: request-path logic in generated output can only be
             // typechecked, never unit-tested.
+            const discoveryPaths = authDiscoveryPathsFor(authDeclaration, env);
+            const internalSecret = authDeclaration.internalSecret?.(env);
+            const namespace = authNamespace(env);
+            const objectName = authDeclaration.objectName?.(env);
             const authWiring = createDoAuthWiring({
                 // The OAuth discovery documents (an `mcp()` resource's metadata, the
                 // issuer's) are derived here from the declared options, so the worker
                 // forwards only those exact paths and no other probe reaches the object.
                 // Memoised on the declaration: a framework-hosted worker rebuilds these
                 // options per request, and `options(env)` rebuilds every plugin.
-                discoveryPaths: authDiscoveryPathsFor(authDeclaration, env),
-                internalSecret: authDeclaration.internalSecret?.(env),
-                namespace: authNamespace(env),
-                objectName: authDeclaration.objectName?.(env),
+                discoveryPaths,
+                internalSecret,
+                namespace,
+                ...(objectName === undefined ? {} : { objectName }),
             });
 
             options.authHandler = authWiring.authHandler;
@@ -604,7 +618,9 @@ class AppBuilder<Env extends object> {
             };
             const authInstance = getAuth();
 
-            options.authAdmin = authInstance ? createAuthAdmin(authInstance) : undefined;
+            if (authInstance) {
+                options.authAdmin = createAuthAdmin(authInstance);
+            }
             options.authAuditReader = createAuthAuditReader(d1Executor(authD1(env) as never));
         }
 

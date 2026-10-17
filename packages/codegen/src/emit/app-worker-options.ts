@@ -170,7 +170,11 @@ const buildWorkerOptionLines = (options: ResolvedAppOptions): string[] => [
     // factory takes `NotifyEnv` — an index signature an interface does not satisfy.
     // Without it every app with a `lunora/notify.ts` emits an app.ts that fails tsc.
     ...(options.hasNotify
-        ? [`        options.notifySubscriptionStore = notifyConfig.store ? notifyConfig.store(env as Record<string, unknown>) : undefined;`]
+        ? [
+              `        if (notifyConfig.store) {
+            options.notifySubscriptionStore = notifyConfig.store(env as Record<string, unknown>);
+        }`,
+          ]
         : []),
     // The studio's Logs → Archive feed is wired zero-config: when the operator sets
     // `LUNORA_LOG_ARCHIVE_TABLE` (the R2 Data Catalog table `pipelineLogSink` writes
@@ -195,16 +199,20 @@ const buildWorkerOptionLines = (options: ResolvedAppOptions): string[] => [
             // to it. \`createDoAuthWiring\` is a tested function in \`@lunora/auth\` rather
             // than more emitted code: request-path logic in generated output can only be
             // typechecked, never unit-tested.
+            const discoveryPaths = authDiscoveryPathsFor(authDeclaration, env);
+            const internalSecret = authDeclaration.internalSecret?.(env);
+            const namespace = authNamespace(env);
+            const objectName = authDeclaration.objectName?.(env);
             const authWiring = createDoAuthWiring({
                 // The OAuth discovery documents (an \`mcp()\` resource's metadata, the
                 // issuer's) are derived here from the declared options, so the worker
                 // forwards only those exact paths and no other probe reaches the object.
                 // Memoised on the declaration: a framework-hosted worker rebuilds these
                 // options per request, and \`options(env)\` rebuilds every plugin.
-                discoveryPaths: authDiscoveryPathsFor(authDeclaration, env),
-                internalSecret: authDeclaration.internalSecret?.(env),${doAuthJurisdictionLine(options)}
-                namespace: authNamespace(env),
-                objectName: authDeclaration.objectName?.(env),
+                discoveryPaths,
+                internalSecret,${doAuthJurisdictionLine(options)}
+                namespace,
+                ...(objectName === undefined ? {} : { objectName }),
             });
 
             options.authHandler = authWiring.authHandler;
@@ -276,7 +284,9 @@ const buildWorkerOptionLines = (options: ResolvedAppOptions): string[] => [
             };
             const authInstance = getAuth();
 
-            options.authAdmin = authInstance ? createAuthAdmin(authInstance) : undefined;
+            if (authInstance) {
+                options.authAdmin = createAuthAdmin(authInstance);
+            }
             options.authAuditReader = createAuthAuditReader(d1Executor(authD1(env) as never));
         }
 

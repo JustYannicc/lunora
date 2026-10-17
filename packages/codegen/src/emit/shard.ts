@@ -495,7 +495,7 @@ const LUNORA_SCHEMA_SNAPSHOT: { hash: string; json: string } = { hash: ${JSON.st
                 // own \`ReadFootprint\` pair instead, and a dispatch with neither
                 // gets an unbound hook that stamps no deps.
                 onRead: options.onRead ?? this.getCtxDbReadHook(options.scope),
-                // Left \`undefined\` when there is no scope so \`createShardCtxDb\`
+                // Omitted when there is no scope so \`createShardCtxDb\`
                 // keeps its own "degrade a provable slice to a whole-table dep"
                 // fallback rather than reporting into a no-op.
                 ...(options.onReadRange !== undefined
@@ -510,7 +510,7 @@ const LUNORA_SCHEMA_SNAPSHOT: { hash: string; json: string } = { hash: ${JSON.st
                 // exist — which a search then surfaces — and a rolled-back delete
                 // left the row with its vector already purged. Outside a
                 // transaction (an action) nothing is open and it runs at once.
-                onWrite: onWrite === undefined ? undefined : (event) => this.deferAfterCommit(() => onWrite(event)),`
+                ...(onWrite === undefined ? {} : { onWrite: (event) => this.deferAfterCommit(() => onWrite(event)) }),`
                             : ""
                     }
                 scheduler,
@@ -558,7 +558,14 @@ const LUNORA_SCHEMA_SNAPSHOT: { hash: string; json: string } = { hash: ${JSON.st
     // which does not declare these fields — doesn't trip an excess-property
     // error; the Hyperdrive factory simply never reads the extra properties.
     const globalDatabaseLine = hasGlobalTables
-        ? `            const globalRequest = { ...this.globalCdcOptions(config.cdc ?? false), bookmark: this.getInboundBookmark(), identity, onBookmark: (bookmarkValue: string | undefined) => { if (options.bookmarks !== undefined) { options.bookmarks.value = bookmarkValue; } }, userId };\n            const globalDb: DatabaseWriterLike = ${globalDatabaseThunk}?.(env, globalRequest) ?? globalDbStub;\n`
+        ? `            const bookmark = this.getInboundBookmark();
+            const globalRequest = {
+                ...this.globalCdcOptions(config.cdc ?? false),
+                ...(bookmark === undefined ? {} : { bookmark }),
+                ...(identity === undefined ? {} : { identity }),
+                onBookmark: (bookmarkValue: string | undefined) => { if (options.bookmarks !== undefined) { options.bookmarks.value = bookmarkValue; } },
+                ...(userId === undefined ? {} : { userId }),
+            };\n            const globalDb: DatabaseWriterLike = ${globalDatabaseThunk}?.(env, globalRequest) ?? globalDbStub;\n`
         : "";
 
     const globalShapeReaderOverride = emitGlobalShapeReaderOverride(hasShapes && hasGlobalTables, globalDatabaseThunk);

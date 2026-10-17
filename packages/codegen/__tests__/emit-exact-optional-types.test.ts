@@ -6,8 +6,27 @@ import { ModuleKind, ModuleResolutionKind, Project, ScriptTarget } from "ts-morp
 import { describe, expect, it } from "vitest";
 
 import { runCodegen } from "../src/index";
+import { makeFixtureWorkdir } from "./golden-fixtures";
 
 const here = dirname(fileURLToPath(import.meta.url));
+
+const compileShard = (app: string): string => {
+    const project = new Project({
+        compilerOptions: {
+            exactOptionalPropertyTypes: true,
+            module: ModuleKind.ESNext,
+            moduleResolution: ModuleResolutionKind.Bundler,
+            noEmit: true,
+            skipLibCheck: true,
+            strict: true,
+            target: ScriptTarget.ES2022,
+        },
+    });
+
+    project.addSourceFileAtPath(join(app, "_generated", "shard.ts"));
+
+    return project.formatDiagnosticsWithColorAndContext(project.getPreEmitDiagnostics());
+};
 
 describe("generated strict optional properties", () => {
     it("compiles the complete shard for a counter app with identity", () => {
@@ -42,20 +61,21 @@ describe("generated strict optional properties", () => {
             );
             runCodegen({ lint: false, projectRoot: workdir, wranglerQueueProducers: [] });
 
-            const project = new Project({
-                compilerOptions: {
-                    exactOptionalPropertyTypes: true,
-                    module: ModuleKind.ESNext,
-                    moduleResolution: ModuleResolutionKind.Bundler,
-                    noEmit: true,
-                    skipLibCheck: true,
-                    strict: true,
-                    target: ScriptTarget.ES2022,
-                },
-            });
+            expect(compileShard(app)).toBe("");
+        } finally {
+            rmSync(workdir, { force: true, recursive: true });
+        }
+    });
 
-            project.addSourceFileAtPath(join(app, "_generated", "shard.ts"));
-            expect(project.formatDiagnosticsWithColorAndContext(project.getPreEmitDiagnostics())).toBe("");
+    it("compiles shape subscriptions and global-table requests", () => {
+        expect.assertions(1);
+
+        const workdir = makeFixtureWorkdir(join(here, "fixtures", "delta-sync"));
+
+        try {
+            runCodegen({ lint: false, projectRoot: workdir, wranglerQueueProducers: [] });
+
+            expect(compileShard(join(workdir, "lunora"))).toBe("");
         } finally {
             rmSync(workdir, { force: true, recursive: true });
         }
