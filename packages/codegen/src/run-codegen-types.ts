@@ -26,17 +26,17 @@ export interface CodegenOptions {
     apiSpec?: "both" | "none" | "openapi" | "openrpc";
 
     /**
-     * Emit a per-module lazy function registry when explicitly set to `true`.
-     * Omitted or `false` keeps the eager registry.
-     */
-    lazyFunctions?: boolean;
-
-    /**
      * When true, run discovery + emit (so any schema/function parse error
      * surfaces) but skip writing files to `_generated/`. The returned
      * `outputDirectory` is still the path that *would* have been written.
      */
     dryRun?: boolean;
+
+    /**
+     * Emit a per-module lazy function registry when explicitly set to `true`.
+     * Omitted or `false` keeps the eager registry.
+     */
+    lazyFunctions?: boolean;
 
     /**
      * Run the static schema advisor (unindexed FKs, …) during codegen.
@@ -169,9 +169,9 @@ export interface CodegenResult {
         dataModel: string;
         drizzleGlobal: string;
         drizzleShard: string;
-        functions: string;
         /** Per-module `_generated/fn/*.ts` lazy import shims; empty when the eager registry is selected. */
         functionModules: Record<string, string>;
+        functions: string;
         /** `internal.*` references to the internal functions (`_generated/internal.ts`), kept out of `api.ts` so a client bundle never carries them. */
         internal: string;
         /** OpenAPI 3.1.0 document (`_generated/openapi.json`), pretty-printed JSON. */

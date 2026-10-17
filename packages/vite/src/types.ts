@@ -79,10 +79,10 @@ export interface LunoraPluginOptions {
      */
     apiSpec?: CodegenOptions["apiSpec"];
 
-    /** Emit a per-module lazy function registry; omitted keeps the eager registry. */
-    lazyFunctions?: CodegenOptions["lazyFunctions"];
     /** Pass through to `@cloudflare/vite-plugin`. Pass `false` to opt out. Defaults to `true`. */
     cloudflare?: boolean | CloudflarePluginOptions;
+    /** Emit a per-module lazy function registry; omitted keeps the eager registry. */
+    lazyFunctions?: CodegenOptions["lazyFunctions"];
 
     /**
      * Inject `@visulima/vite-overlay` for runtime errors (dev only). Pass
@@ -124,7 +124,6 @@ export interface LunoraPluginOptions {
 export interface ResolvedLunoraPluginOptions {
     allowUnauthenticatedShardAccess: boolean;
     apiSpec: NonNullable<CodegenOptions["apiSpec"]>;
-    lazyFunctions: boolean;
     cloudflare: false | CloudflarePluginOptions;
 
     /**
@@ -138,6 +137,8 @@ export interface ResolvedLunoraPluginOptions {
      * build. Derived, so the import base cannot disagree with the emitter.
      */
     generatedDir: string;
+
+    lazyFunctions: boolean;
     overlay: false | OverlayPluginOptions;
     projectRoot: string;
     schemaDir: string;

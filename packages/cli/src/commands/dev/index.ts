@@ -114,7 +114,6 @@ export type DevOptions = CreateOptions<{
     "allow-mail": string[] | undefined;
     "api-spec": string | undefined;
     background: boolean | undefined;
-    "lazy-functions": boolean | undefined;
     // Each of `codegen` / `studio` / `worker` is declared TWICE in `options` (the
     // positive form and its `no-*` counterpart, each with its own description);
     // cerebro exposes both under this one positive camelCase key. Neither form
@@ -124,6 +123,7 @@ export type DevOptions = CreateOptions<{
     "emit-bindings": string | undefined;
     "inspector-port": number | undefined;
     json: boolean | undefined;
+    "lazy-functions": boolean | undefined;
     lines: number | undefined;
     local: boolean | undefined;
     port: number | undefined;

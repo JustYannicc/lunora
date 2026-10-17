@@ -659,7 +659,9 @@ export default defineSchema({
 
             expect(response.statusCode).toBe(200);
             expect(existsSync(join(projectRoot, "lunora", "_generated", "openrpc.json"))).toBe(true);
+
             const registry = readFileSync(join(projectRoot, "lunora", "_generated", "functions.ts"), "utf8");
+
             expect(registry).toContain("export const LUNORA_FUNCTION_MANIFEST");
             expect(registry).toContain("todos:list");
             expect(existsSync(join(projectRoot, "lunora", "_generated", "fn", "lunora_todos_0.ts"))).toBe(true);

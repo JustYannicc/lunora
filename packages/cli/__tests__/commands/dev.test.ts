@@ -526,6 +526,7 @@ describe("lunora dev", () => {
             expect(eager.wrangler.env).toBeUndefined();
 
             const disabled = planDevCommand({ codegen: false, cwd: workdir, flavor: "vite", lazyFunctions: true, logger: silentLogger() });
+
             expect(disabled.wrangler.env).toStrictEqual({ LUNORA_CODEGEN: "0", LUNORA_LAZY_FUNCTIONS: "1" });
             expect(disabled.runsCodegenWatch).toBe(false);
         });

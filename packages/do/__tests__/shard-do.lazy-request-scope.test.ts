@@ -1,13 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { ShardDOState } from "../src/shard-do";
 import { ShardDO } from "../src/shard-do";
 
-const createFakeState = (): ShardDOState => ({
-    acceptWebSocket() {},
-    getWebSockets: () => [],
-    storage: { sql: { exec: () => undefined } },
-});
+const createFakeState = (): ShardDOState => {
+    return {
+        acceptWebSocket() {},
+        getWebSockets: () => [],
+        storage: { sql: { exec: () => undefined } },
+    };
+};
 
 class ScopePreservingLazyShard extends ShardDO {
     public readonly observed = new Map<
@@ -15,11 +17,14 @@ class ScopePreservingLazyShard extends ShardDO {
         { identity: Record<string, unknown> | undefined; room: Record<string, unknown> | undefined; system: boolean; userId: string | undefined }
     >();
 
-    private signalColdPreparationsStarted: (() => void) | undefined;
-
     public readonly coldPreparationsStarted = new Promise<void>((resolve) => {
         this.signalColdPreparationsStarted = resolve;
     });
+
+    // Queries may suspend at the same cold import without serializing requests.
+    protected override isMutationFunction = vi.fn<() => boolean>().mockReturnValue(false);
+
+    declare private signalColdPreparationsStarted: (() => void) | undefined;
 
     private preparationReady = false;
 
@@ -65,7 +70,7 @@ class ScopePreservingLazyShard extends ShardDO {
         this.preparationCalls += 1;
 
         if (this.preparationCalls <= 2) {
-            return;
+            return undefined;
         }
 
         if (!this.preparationReady) {
@@ -73,12 +78,8 @@ class ScopePreservingLazyShard extends ShardDO {
 
             return this.pendingPreparation;
         }
-    }
 
-    protected override isMutationFunction(): boolean {
-        // Run both requests concurrently so each can be suspended at the
-        // shared cold import, just as query dispatch does.
-        return false;
+        return undefined;
     }
 }
 

@@ -441,12 +441,12 @@ export interface StudioServerOptions {
      * `openrpc.json`.
      */
     apiSpec?: CodegenOptions["apiSpec"];
-    /** Lazy function mode the host runs codegen with, forwarded to local source-edit endpoints. */
-    lazyFunctions?: CodegenOptions["lazyFunctions"];
     /** Project root — `.dev.vars` is read from here for the admin token. */
     cwd: string;
     /** Loopback host to bind. Defaults to `127.0.0.1` (admin tooling stays local). */
     host?: string;
+    /** Lazy function mode the host runs codegen with, forwarded to local source-edit endpoints. */
+    lazyFunctions?: CodegenOptions["lazyFunctions"];
     /** One-time warning sink for a missing/unbuilt `@lunora/studio`. */
     logger?: { warnOnce?: (message: string) => void };
     /** Port to listen on. */

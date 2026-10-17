@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 
 import { cloudflare } from "@cloudflare/vite-plugin";
-import { isLazyFunctionsEnabled, isRunnableTarget, resolveTargetOrThrow, runnableTargetIds, targetRunsOwnDevServer, LAZY_FUNCTIONS_ENV } from "@lunora/config";
+import { isLazyFunctionsEnabled, isRunnableTarget, LAZY_FUNCTIONS_ENV, resolveTargetOrThrow, runnableTargetIds, targetRunsOwnDevServer } from "@lunora/config";
 import errorOverlayPlugin from "@visulima/vite-overlay";
 import type { Plugin } from "vite";
 

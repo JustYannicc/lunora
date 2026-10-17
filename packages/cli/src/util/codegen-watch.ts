@@ -354,8 +354,6 @@ export interface CodegenWatcherOptions {
     apiSpec?: CodegenOptions["apiSpec"];
     /** Debounce window for coalescing rapid edits. Defaults to 100ms. */
     debounceMs?: number;
-    /** Opt into per-module lazy function loading; omitted keeps the eager registry. */
-    lazyFunctions?: CodegenOptions["lazyFunctions"];
 
     /**
      * The caller's logs are NDJSON on stdout, so the `postcodegen` hook's own
@@ -363,6 +361,9 @@ export interface CodegenWatcherOptions {
      * turns this on for `--json` AND for a detected AI agent.
      */
     jsonLogs?: boolean;
+
+    /** Opt into per-module lazy function loading; omitted keeps the eager registry. */
+    lazyFunctions?: CodegenOptions["lazyFunctions"];
     logger: Logger;
     /** Override the lunora subdirectory name. Defaults to `"lunora"`. */
     lunoraDirectory?: string;

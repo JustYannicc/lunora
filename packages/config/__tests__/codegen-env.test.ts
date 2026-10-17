@@ -12,6 +12,8 @@ describe("isLazyFunctionsEnabled", () => {
         ["true", true],
         [" TRUE ", true],
     ])("reads %j as %s", (value, expected) => {
+        expect.assertions(1);
+
         expect(isLazyFunctionsEnabled(value)).toBe(expected);
     });
 });

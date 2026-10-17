@@ -50,10 +50,10 @@ type PolicyScaffoldBody = DestructivePolicyEdit | ScaffoldPolicyEdit | WirePolic
 interface PolicyScaffoldRequest {
     /** API-spec mode the host runs codegen with; forwarded to the regeneration. */
     readonly apiSpec?: CodegenOptions["apiSpec"];
-    /** Lazy function mode the host runs codegen with; forwarded to the regeneration. */
-    readonly lazyFunctions?: CodegenOptions["lazyFunctions"];
     /** Parsed JSON body of the `POST`. */
     readonly body?: unknown;
+    /** Lazy function mode the host runs codegen with; forwarded to the regeneration. */
+    readonly lazyFunctions?: CodegenOptions["lazyFunctions"];
     /** HTTP method — only `POST` is handled. */
     readonly method: string;
     /** Project root containing the `lunora/` directory. */

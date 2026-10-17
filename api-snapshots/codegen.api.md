@@ -97,8 +97,8 @@ class CodegenDiagnosticError extends LunoraError {
 ```ts
 interface CodegenOptions {
     apiSpec?: "both" | "none" | "openapi" | "openrpc";
-    lazyFunctions?: boolean;
     dryRun?: boolean;
+    lazyFunctions?: boolean;
     lint?: boolean;
     lunoraDirectory?: string;
     project?: Project;
@@ -130,8 +130,8 @@ interface CodegenResult {
         dataModel: string;
         drizzleGlobal: string;
         drizzleShard: string;
-        functions: string;
         functionModules: Record<string, string>;
+        functions: string;
         internal: string;
         openApi: string;
         openApiModule: string;

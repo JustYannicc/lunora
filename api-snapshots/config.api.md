@@ -2984,8 +2984,8 @@ type PolicyScaffoldBody = DestructivePolicyEdit | ScaffoldPolicyEdit | WirePolic
 ```ts
 interface PolicyScaffoldRequest {
     readonly apiSpec?: CodegenOptions["apiSpec"];
-    readonly lazyFunctions?: CodegenOptions["lazyFunctions"];
     readonly body?: unknown;
+    readonly lazyFunctions?: CodegenOptions["lazyFunctions"];
     readonly method: string;
     readonly projectRoot: string;
     readonly schemaDirectory?: string;
@@ -3036,8 +3036,8 @@ const STUDIO_STYLE_PATH: string;
 ```ts
 interface SchemaEditRequest {
     readonly apiSpec?: CodegenOptions["apiSpec"];
-    readonly lazyFunctions?: CodegenOptions["lazyFunctions"];
     readonly body?: unknown;
+    readonly lazyFunctions?: CodegenOptions["lazyFunctions"];
     readonly method: string;
     readonly projectRoot: string;
     readonly schemaDirectory?: string;

@@ -78,6 +78,7 @@ describe("index", () => {
             (plugin?.configResolved as (this: unknown) => void).call(undefined);
 
             const functions = readFileSync(join(workdir, "lunora", "_generated", "functions.ts"), "utf8");
+
             expect(functions.includes("export const LUNORA_FUNCTION_MANIFEST")).toBe(expected);
             expect(functions.includes('import * as lunora_messages_0 from "../messages.js"')).toBe(!expected);
         });

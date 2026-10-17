@@ -188,7 +188,6 @@ interface DeployedIdentity {
 interface DevCommandOptions {
     apiSpec?: ApiSpec;
     codegen?: boolean;
-    lazyFunctions?: boolean;
     cwd?: string;
     emitBindings?: string;
     ensureEnv?: typeof ensureDevVariables;
@@ -199,6 +198,7 @@ interface DevCommandOptions {
     hasIpv6Loopback?: () => boolean;
     inspectorPort?: number;
     jsonLogs?: boolean;
+    lazyFunctions?: boolean;
     local?: boolean;
     logger: Logger;
     materializeDev?: typeof materializeDevWranglerConfig;
@@ -975,8 +975,8 @@ interface CodegenWatcherHandle {
 interface CodegenWatcherOptions {
     apiSpec?: CodegenOptions["apiSpec"];
     debounceMs?: number;
-    lazyFunctions?: CodegenOptions["lazyFunctions"];
     jsonLogs?: boolean;
+    lazyFunctions?: CodegenOptions["lazyFunctions"];
     logger: Logger;
     lunoraDirectory?: string;
     projectRoot: string;
@@ -1374,9 +1374,9 @@ interface StudioServerHandle {
 ```ts
 interface StudioServerOptions {
     apiSpec?: CodegenOptions["apiSpec"];
-    lazyFunctions?: CodegenOptions["lazyFunctions"];
     cwd: string;
     host?: string;
+    lazyFunctions?: CodegenOptions["lazyFunctions"];
     logger?: {
         warnOnce?: (message: string) => void;
     };
