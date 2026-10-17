@@ -96,7 +96,7 @@ describe("emitShard — reactive cache wiring", () => {
     });
 
     it("threads the per-dispatch read scope from handleRpc into the ctx-db read hooks", () => {
-        expect.assertions(3);
+        expect.assertions(5);
 
         // The scope is what makes the dep tracker per-dispatch instead of
         // per-instance. If `handleRpc` drops it, the hooks fall back to unbound
@@ -106,7 +106,9 @@ describe("emitShard — reactive cache wiring", () => {
 
         expect(emitted).toContain("headroom?: TransactionHeadroomTracker, scope?: QueryReadScope, bookmarks?: DispatchBookmark): Promise<unknown>");
         expect(emitted).toContain("onRead: options.onRead ?? this.getCtxDbReadHook(options.scope),");
-        expect(emitted).toContain("onReadRange: options.onReadRange ?? (options.scope === undefined ? undefined : this.getCtxDbReadRangeHook(options.scope)),");
+        expect(emitted).toContain("...(options.onReadRange !== undefined");
+        expect(emitted).toContain("? { onReadRange: options.onReadRange }");
+        expect(emitted).toContain(": options.scope === undefined ? {} : { onReadRange: this.getCtxDbReadRangeHook(options.scope) }),");
     });
 
     it("spreads ctxDbTuning() first into the ctx-db options so writes invalidate at row + index-range precision", () => {

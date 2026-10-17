@@ -353,7 +353,11 @@ const buildShardFactoryBody = (options: ResolvedAppOptions): string => {
 
                           const origin = this.globalDeclaration?.origin?.(env);
                           const crossShard = origin
-                              ? createCrossShardRelationCapabilities({ identity: request?.identity, origin, userId: request?.userId ?? undefined })
+                              ? createCrossShardRelationCapabilities({
+                                    ...(request?.identity === undefined ? {} : { identity: request.identity }),
+                                    origin,
+                                    ...(request?.userId == null ? {} : { userId: request.userId }),
+                                })
                               : undefined;
 
                           return createD1CtxDb({
@@ -392,7 +396,11 @@ const buildShardFactoryBody = (options: ResolvedAppOptions): string => {
 
                           const origin = declaration.origin?.(env);
                           const crossShard = origin
-                              ? createCrossShardRelationCapabilities({ identity: request?.identity, origin, userId: request?.userId ?? undefined })
+                              ? createCrossShardRelationCapabilities({
+                                    ...(request?.identity === undefined ? {} : { identity: request.identity }),
+                                    origin,
+                                    ...(request?.userId == null ? {} : { userId: request.userId }),
+                                })
                               : undefined;
 
                           return createHyperdriveGlobalCtxDb({

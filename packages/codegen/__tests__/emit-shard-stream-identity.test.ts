@@ -67,6 +67,6 @@ describe("emitted executeStream identity", () => {
         expect(literal.slice(0, literal.indexOf("\n            };"))).not.toContain("getCurrentIp");
         // One expression on one discriminant, resolving all three members
         // together — parallel per-field ternaries are how `ip` was forgotten.
-        expect(shard).toContain("const caller: SubscriptionIdentity = options.identity ?? {");
+        expect(shard).toContain("const caller: SubscriptionIdentity = options.identity ?? (() => {");
     });
 });

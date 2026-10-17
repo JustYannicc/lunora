@@ -45,9 +45,8 @@ const emitShapeFragments = ({
             // \`ownerField\` resolves an \`owner: true\` shape: only here is the table's
             // \`.ownedBy(field)\` column in scope, so the DO hands it to the shape
             // rather than every shape restating the ownership check in its \`where\`.
-            const shapeWhere = shape.compileWhere(ctx, args, {
-                ownerField: (schema as unknown as { tables: Record<string, { ownerField?: string }> }).tables[shape.table]?.ownerField,
-            }) as unknown as WhereInput;
+            const ownerField = (schema as unknown as { tables: Record<string, { ownerField?: string }> }).tables[shape.table]?.ownerField;
+            const shapeWhere = shape.compileWhere(ctx, args, ownerField === undefined ? {} : { ownerField }) as unknown as WhereInput;
 
             // AND-compose with the read policies this SHAPE declares
             // (\`defineShape({ use: [guard] })\`, pre-indexed into
@@ -89,7 +88,7 @@ const emitShapeFragments = ({
             // instead of the CDC poke path.
             const isGlobal = (schema as unknown as SchemaLike).tables[shape.table]?.shardMode?.kind === "global";
 
-            return { columns: shape.columns, effectiveWhere, global: isGlobal, table: shape.table };
+            return { ...(shape.columns === undefined ? {} : { columns: shape.columns }), effectiveWhere, global: isGlobal, table: shape.table };
         }
 `
         : "";
@@ -158,7 +157,13 @@ const emitGlobalShapeReaderOverride = (enabled: boolean, globalDatabaseThunk: st
             // cache in front of this read — keys on identity + userId only. Equal
             // keys must mean equal rows, so a field the writer can scope by has to
             // be either in the key or out of the request; it is out.
-            const globalRequest = { ...this.globalCdcOptions(config.cdc ?? false), bookmark: this.getInboundBookmark(), identity: identity?.identity, userId: identity?.userId };
+            const bookmark = this.getInboundBookmark();
+            const globalRequest = {
+                ...this.globalCdcOptions(config.cdc ?? false),
+                ...(bookmark === undefined ? {} : { bookmark }),
+                ...(identity?.identity === undefined ? {} : { identity: identity.identity }),
+                ...(identity?.userId === undefined ? {} : { userId: identity.userId }),
+            };
             const globalDb: DatabaseWriterLike = ${globalDatabaseThunk}?.(env, globalRequest) ?? globalDbStub;
             const rows: Array<{ doc: Record<string, unknown>; id: string }> = [];
 
@@ -171,7 +176,7 @@ const emitGlobalShapeReaderOverride = (enabled: boolean, globalDatabaseThunk: st
             // so bail early and let the caller fail it closed.
             do {
                 // eslint-disable-next-line no-await-in-loop -- sequential page drain to assemble the full membership
-                const page = await globalDb.findMany(resolved.table, { cursor, where: resolved.effectiveWhere });
+                const page = await globalDb.findMany(resolved.table, { cursor, ...(resolved.effectiveWhere === undefined ? {} : { where: resolved.effectiveWhere }) });
 
                 for (const doc of page.page) {
                     rows.push({ doc, id: String((doc as { _id?: unknown })._id) });
@@ -199,10 +204,11 @@ const emitGlobalShapeReaderOverride = (enabled: boolean, globalDatabaseThunk: st
             // literal trips an excess-property error (TS2353) that makes the
             // emitted \`shard.ts\` uncompilable for every Hyperdrive-global app with
             // a \`defineShape\`. The Hyperdrive factory simply never reads it.
-            const globalRequest = { ...this.globalCdcOptions(config.cdc ?? false), bookmark: this.getInboundBookmark() };
+            const bookmark = this.getInboundBookmark();
+            const globalRequest = { ...this.globalCdcOptions(config.cdc ?? false), ...(bookmark === undefined ? {} : { bookmark }) };
             const globalDb: DatabaseWriterLike = ${globalDatabaseThunk}?.(env, globalRequest) ?? globalDbStub;
 
-            return globalDb.cdcChangedTables?.(sinceSeq, { cursorOnly });
+            return globalDb.cdcChangedTables?.(sinceSeq, cursorOnly === undefined ? {} : { cursorOnly });
         }
 `
         : "";
