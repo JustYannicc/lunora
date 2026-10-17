@@ -1,3 +1,10 @@
+## @lunora/bindings [1.0.0-alpha.116](https://github.com/anolilab/lunora/compare/@lunora/bindings@1.0.0-alpha.115...@lunora/bindings@1.0.0-alpha.116) (2026-10-17)
+
+
+### Dependencies
+
+* **@lunora/platform:** upgraded to 1.0.0-alpha.66
+
 ## @lunora/bindings [1.0.0-alpha.115](https://github.com/anolilab/lunora/compare/@lunora/bindings@1.0.0-alpha.114...@lunora/bindings@1.0.0-alpha.115) (2026-10-16)
 
 
