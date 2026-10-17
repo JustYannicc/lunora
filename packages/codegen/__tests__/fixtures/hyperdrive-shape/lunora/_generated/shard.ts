@@ -557,7 +557,9 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
 
             // Ranges come from THIS run's reads, never a shared field on the DO:
             // a deferred re-run interleaves with unrelated dispatches.
-            return { ranges: footprint.ranges(), result, tables: footprint.tables };
+            const ranges = footprint.ranges();
+
+            return { ...(ranges === undefined ? {} : { ranges }), result, tables: footprint.tables };
         }
 
         protected override executeStream(functionPath: string, args: Record<string, unknown>, identity?: SubscriptionIdentity): null | { durable?: { ttlMs?: number }; iterator: (signal: AbortSignal) => AsyncIterable<unknown> } {
@@ -597,9 +599,8 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
             // `ownerField` resolves an `owner: true` shape: only here is the table's
             // `.ownedBy(field)` column in scope, so the DO hands it to the shape
             // rather than every shape restating the ownership check in its `where`.
-            const shapeWhere = shape.compileWhere(ctx, args, {
-                ownerField: (schema as unknown as { tables: Record<string, { ownerField?: string }> }).tables[shape.table]?.ownerField,
-            }) as unknown as WhereInput;
+            const ownerField = (schema as unknown as { tables: Record<string, { ownerField?: string }> }).tables[shape.table]?.ownerField;
+            const shapeWhere = shape.compileWhere(ctx, args, ownerField === undefined ? {} : { ownerField }) as unknown as WhereInput;
 
             // AND-compose with the read policies this SHAPE declares
             // (`defineShape({ use: [guard] })`, pre-indexed into
@@ -641,7 +642,7 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
             // instead of the CDC poke path.
             const isGlobal = (schema as unknown as SchemaLike).tables[shape.table]?.shardMode?.kind === "global";
 
-            return { columns: shape.columns, effectiveWhere, global: isGlobal, table: shape.table };
+            return { ...(shape.columns === undefined ? {} : { columns: shape.columns }), effectiveWhere, global: isGlobal, table: shape.table };
         }
 
         protected override async readGlobalShapeRows(resolved: { columns?: readonly string[]; effectiveWhere?: WhereInput; global?: boolean; table: string }, identity?: SubscriptionIdentity): Promise<Array<{ doc: Record<string, unknown>; id: string }>> {
@@ -656,7 +657,13 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
             // cache in front of this read — keys on identity + userId only. Equal
             // keys must mean equal rows, so a field the writer can scope by has to
             // be either in the key or out of the request; it is out.
-            const globalRequest = { ...this.globalCdcOptions(config.cdc ?? false), bookmark: this.getInboundBookmark(), identity: identity?.identity, userId: identity?.userId };
+            const bookmark = this.getInboundBookmark();
+            const globalRequest = {
+                ...this.globalCdcOptions(config.cdc ?? false),
+                ...(bookmark === undefined ? {} : { bookmark }),
+                ...(identity?.identity === undefined ? {} : { identity: identity.identity }),
+                ...(identity?.userId === undefined ? {} : { userId: identity.userId }),
+            };
             const globalDb: DatabaseWriterLike = config.hyperdriveGlobal?.(env, globalRequest) ?? globalDbStub;
             const rows: Array<{ doc: Record<string, unknown>; id: string }> = [];
 
@@ -669,7 +676,7 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
             // so bail early and let the caller fail it closed.
             do {
                 // eslint-disable-next-line no-await-in-loop -- sequential page drain to assemble the full membership
-                const page = await globalDb.findMany(resolved.table, { cursor, where: resolved.effectiveWhere });
+                const page = await globalDb.findMany(resolved.table, { cursor, ...(resolved.effectiveWhere === undefined ? {} : { where: resolved.effectiveWhere }) });
 
                 for (const doc of page.page) {
                     rows.push({ doc, id: String((doc as { _id?: unknown })._id) });
@@ -697,10 +704,11 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
             // literal trips an excess-property error (TS2353) that makes the
             // emitted `shard.ts` uncompilable for every Hyperdrive-global app with
             // a `defineShape`. The Hyperdrive factory simply never reads it.
-            const globalRequest = { ...this.globalCdcOptions(config.cdc ?? false), bookmark: this.getInboundBookmark() };
+            const bookmark = this.getInboundBookmark();
+            const globalRequest = { ...this.globalCdcOptions(config.cdc ?? false), ...(bookmark === undefined ? {} : { bookmark }) };
             const globalDb: DatabaseWriterLike = config.hyperdriveGlobal?.(env, globalRequest) ?? globalDbStub;
 
-            return globalDb.cdcChangedTables?.(sinceSeq, { cursorOnly });
+            return globalDb.cdcChangedTables?.(sinceSeq, cursorOnly === undefined ? {} : { cursorOnly });
         }
 
         protected override lifecycleHookPaths(event: "connect" | "disconnect" | "init" | "reactor" | "whisper"): readonly string[] {
@@ -840,7 +848,7 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
                     this.recordChangedTable(delta.table, delta.indexKeys);
                 },
                 cdc: config.cdc ?? false,
-                headroom,
+                ...(headroom === undefined ? {} : { headroom }),
                 // Live predicate, same as the user-facing ctx — see `databaseOptions`.
                 inTransaction: () => this.isInTransaction(),
                 scheduler,
@@ -867,10 +875,10 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
             const writer = this.adminWriter();
 
             return runDataMigration({
-                batchSize: args.batchSize,
-                direction: args.direction,
-                dryRun: args.dryRun,
-                maxBatches: args.maxBatches,
+                ...(args.batchSize === undefined ? {} : { batchSize: args.batchSize }),
+                ...(args.direction === undefined ? {} : { direction: args.direction }),
+                ...(args.dryRun === undefined ? {} : { dryRun: args.dryRun }),
+                ...(args.maxBatches === undefined ? {} : { maxBatches: args.maxBatches }),
                 migration: migration as unknown as DataMigrationLike,
                 // Flush after each batch so live migrationStatus subscribers see
                 // progress mid-run (the base method records the reserved state
@@ -959,7 +967,7 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
             // `exportShardRows` walks in keyset batches so a large table does not
             // materialize at once inside the generator; the admin RPC's response
             // is a single array, so it is collected here rather than streamed.
-            for await (const row of exportShardRows(writer, schema as unknown as SchemaLike, { batchSize: args.batchSize, tables: args.tables })) {
+            for await (const row of exportShardRows(writer, schema as unknown as SchemaLike, args)) {
                 rows.push(row);
             }
 
@@ -974,7 +982,7 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
             // `importShardRows` inserts with `allowExplicitId`, so a source
             // database's `_id`s carry across verbatim and every foreign key
             // referencing them stays valid without a second remapping pass.
-            return importShardRows(writer, schema as unknown as SchemaLike, { rows: args.rows, startLine: args.startLine });
+            return importShardRows(writer, schema as unknown as SchemaLike, args);
         }
 
         protected override async runShardRankBefore(args: RunShardRankBeforeArgs): Promise<{ before: number; total: number }> {
@@ -1009,7 +1017,7 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
 
             return writer.related(
                 { id: args.id, table: args.table },
-                { cursor: args.cursor, depth: args.depth, direction: args.direction, edges: args.edges, limit: args.limit },
+                args,
             );
         }
 
@@ -1027,10 +1035,10 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
             }
 
             return writer.rankPageRows(args.table, args.index, {
-                after: args.after,
-                cursor: args.cursor,
-                partitionKey: args.partitionKey,
-                take: args.take,
+                ...(args.after === undefined ? {} : { after: args.after }),
+                ...(args.cursor === undefined ? {} : { cursor: args.cursor }),
+                ...(args.partitionKey === undefined ? {} : { partitionKey: args.partitionKey }),
+                ...(args.take === undefined ? {} : { take: args.take }),
             });
         }
 
@@ -1053,7 +1061,7 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
             this.migrated = true;
         }
 
-        private buildCtx(options: { bookmarks?: DispatchBookmark; functionPath?: string; headroom?: TransactionHeadroomTracker; identity?: SubscriptionIdentity; kind?: "query"; onRead?: (table: string, idOrScan?: string) => void; onReadRange?: (range: KeyRange) => void; scope?: QueryReadScope; trusted?: boolean } = {}): unknown {
+        private buildCtx(options: { bookmarks?: DispatchBookmark | undefined; functionPath?: string | undefined; headroom?: TransactionHeadroomTracker | undefined; identity?: SubscriptionIdentity | undefined; kind?: "query" | undefined; onRead?: ((table: string, idOrScan?: string) => void) | undefined; onReadRange?: ((range: KeyRange) => void) | undefined; scope?: QueryReadScope | undefined; trusted?: boolean | undefined } = {}): unknown {
             const env = (this.env ?? {}) as Record<string, unknown>;
             // The caller context this ctx runs under, resolved ONCE on one
             // discriminant. When the caller threads an explicit identity
@@ -1068,11 +1076,17 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
             // One expression, not one per field: three parallel ternaries on the
             // same discriminant is how `ip` came to be the only one still reading
             // the shared field.
-            const caller: SubscriptionIdentity = options.identity ?? {
-                identity: this.getCurrentIdentity(),
-                ip: this.getCurrentIp(),
-                userId: this.getCurrentUserId(),
-            };
+            const caller: SubscriptionIdentity = options.identity ?? (() => {
+                const identity = this.getCurrentIdentity();
+                const ip = this.getCurrentIp();
+                const userId = this.getCurrentUserId();
+
+                return {
+                    ...(identity === undefined ? {} : { identity }),
+                    ...(ip === undefined ? {} : { ip }),
+                    ...(userId === undefined ? {} : { userId }),
+                };
+            })();
             const { identity, ip, userId } = caller;
 
             const secrets = createSecrets(env);
@@ -1183,7 +1197,14 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
             // so both write to the same trace.
             const span = this.makeDispatchSpan(traceAnchor, observability);
 
-            const globalRequest = { ...this.globalCdcOptions(config.cdc ?? false), bookmark: this.getInboundBookmark(), identity, onBookmark: (bookmarkValue: string | undefined) => { if (options.bookmarks !== undefined) { options.bookmarks.value = bookmarkValue; } }, userId };
+            const bookmark = this.getInboundBookmark();
+            const globalRequest = {
+                ...this.globalCdcOptions(config.cdc ?? false),
+                ...(bookmark === undefined ? {} : { bookmark }),
+                ...(identity === undefined ? {} : { identity }),
+                onBookmark: (bookmarkValue: string | undefined) => { if (options.bookmarks !== undefined) { options.bookmarks.value = bookmarkValue; } },
+                ...(userId === undefined ? {} : { userId }),
+            };
             const globalDb: DatabaseWriterLike = config.hyperdriveGlobal?.(env, globalRequest) ?? globalDbStub;
             // `ctx.db`, wrapped in automatic instrumentation: by default this
             // adds aggregate counters (call count, total time, per-operation
@@ -1225,10 +1246,12 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
                 // own `ReadFootprint` pair instead, and a dispatch with neither
                 // gets an unbound hook that stamps no deps.
                 onRead: options.onRead ?? this.getCtxDbReadHook(options.scope),
-                // Left `undefined` when there is no scope so `createShardCtxDb`
+                // Omitted when there is no scope so `createShardCtxDb`
                 // keeps its own "degrade a provable slice to a whole-table dep"
                 // fallback rather than reporting into a no-op.
-                onReadRange: options.onReadRange ?? (options.scope === undefined ? undefined : this.getCtxDbReadRangeHook(options.scope)),
+                ...(options.onReadRange !== undefined
+                    ? { onReadRange: options.onReadRange }
+                    : options.scope === undefined ? {} : { onReadRange: this.getCtxDbReadRangeHook(options.scope) }),
                 scheduler,
                 schema: schema as unknown as SchemaLike,
                 sql: this.sql as SqlExec,

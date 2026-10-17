@@ -1,3 +1,11 @@
+## @lunora/angular [1.0.0-alpha.205](https://github.com/anolilab/lunora/compare/@lunora/angular@1.0.0-alpha.204...@lunora/angular@1.0.0-alpha.205) (2026-10-17)
+
+
+### Dependencies
+
+* **@lunora/client:** upgraded to 1.0.0-alpha.217
+* **@lunora/ratelimit:** upgraded to 1.0.0-alpha.144
+
 ## @lunora/angular [1.0.0-alpha.204](https://github.com/anolilab/lunora/compare/@lunora/angular@1.0.0-alpha.203...@lunora/angular@1.0.0-alpha.204) (2026-10-17)
 
 

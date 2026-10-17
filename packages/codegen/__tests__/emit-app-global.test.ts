@@ -156,7 +156,7 @@ describe("emitApp — admin export/sync/apply wiring (.global())", () => {
 
         expect(output).toContain("const present = await exec.all(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`, [\"__cdc_log\"]);");
         expect(output).toContain("return { changes: [], cursor: request.sinceSeq };");
-        expect(output).toContain("const page = await readD1CdcChanges(exec, { limit: request.limit, sinceSeq: request.sinceSeq });");
+        expect(output).toContain("const page = await readD1CdcChanges(exec, request);");
     });
 
     it("applyGlobals replays through the same D1 writer and reports the count", () => {
