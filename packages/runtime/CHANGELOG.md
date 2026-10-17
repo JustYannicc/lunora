@@ -1,3 +1,18 @@
+## @lunora/runtime [1.0.0-alpha.209](https://github.com/anolilab/lunora/compare/@lunora/runtime@1.0.0-alpha.208...@lunora/runtime@1.0.0-alpha.209) (2026-10-17)
+
+### Features
+
+* **server:** typed rooms (defineRoom) over the whisper transport ([#1217](https://github.com/anolilab/lunora/issues/1217)) ([51f66b8](https://github.com/anolilab/lunora/commit/51f66b8d940ea4f876ff2380225d172a95265922))
+
+
+### Dependencies
+
+* **@lunora/bindings:** upgraded to 1.0.0-alpha.116
+* **@lunora/observability:** upgraded to 1.0.0-alpha.144
+* **@lunora/platform:** upgraded to 1.0.0-alpha.66
+* **@lunora/do:** upgraded to 1.0.0-alpha.219
+* **@lunora/shard-engine:** upgraded to 1.0.0-alpha.133
+
 ## @lunora/runtime [1.0.0-alpha.208](https://github.com/anolilab/lunora/compare/@lunora/runtime@1.0.0-alpha.207...@lunora/runtime@1.0.0-alpha.208) (2026-10-16)
 
 ### Features
