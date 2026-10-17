@@ -203,9 +203,10 @@ describe("defineLiveStream", () => {
         expect(JSON.parse(calls[0]?.init?.body ?? "{}") as unknown).toMatchObject({ stream: "posts" });
     });
 
-    it("denies when the onSubscribe handler throws", async () => {
-        expect.assertions(1);
+    it("denies when the onSubscribe handler throws, and logs the failure", async () => {
+        expect.assertions(2);
 
+        const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
         const stream = defineLiveStream({
             id: "posts",
             onSubscribe: () => {
@@ -222,6 +223,9 @@ describe("defineLiveStream", () => {
         });
 
         expect(response.status).toBe(403);
+        expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("live subscribe authorization threw"), expect.any(Error));
+
+        errorSpy.mockRestore();
     });
 
     it("rejects a control request with no topic", async () => {

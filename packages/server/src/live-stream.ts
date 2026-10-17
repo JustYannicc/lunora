@@ -154,7 +154,11 @@ const defineLiveStream = (config: LiveStreamConfig): LiveStream => {
             const verdict: unknown = await config.onSubscribe({ ctx: context, topic });
 
             return verdict === true;
-        } catch {
+        } catch (error) {
+            // Fail closed, but log it: a throw here is a dependency failure, not an intentional denial.
+            // eslint-disable-next-line no-console -- log the authorization failure server-side; the client gets only the 403
+            console.error("[lunora] live subscribe authorization threw; denying:", error);
+
             return false;
         }
     };
