@@ -46,7 +46,7 @@ class ScopePreservingLazyShard extends ShardDO {
         // below model the outer /rpc warm-up; this direct entry is still cold,
         // like lifecycle, room, and runAs dispatches that call handleRpc directly.
         const requestScope = this.captureRequestScope();
-        const preparation = this.prepareFunction("posts:list");
+        const preparation = this.prepareFunction("posts:list", "rpc");
 
         if (preparation !== undefined) {
             try {
@@ -66,7 +66,7 @@ class ScopePreservingLazyShard extends ShardDO {
         return {};
     }
 
-    protected override prepareFunction(_path: string): void | Promise<void> {
+    protected override prepareFunction(_path: string, _reason: "rpc" | "subscription" | "stream" | "reactor"): void | Promise<void> {
         this.preparationCalls += 1;
 
         if (this.preparationCalls <= 2) {

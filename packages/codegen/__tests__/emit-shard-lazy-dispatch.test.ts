@@ -57,7 +57,7 @@ describe("emitted lazy function dispatch", () => {
 
         expect(shard).toContain("import { LUNORA_FUNCTIONS, LUNORA_LIFECYCLE_HOOKS, LUNORA_MIGRATIONS, getLoadedFunction, loadFunction }");
         expect(shard).toContain(
-            'protected override prepareFunction(functionPath: string, reason: "rpc" | "subscription" | "stream" | "reactor" = "rpc"): Promise<void> | undefined {',
+            'protected override prepareFunction(functionPath: string, reason: "rpc" | "subscription" | "stream" | "reactor"): Promise<void> | undefined {',
         );
         expect(shard).toContain('const allowsInternal = reason === "reactor" || (reason === "rpc" && this.isSystemDispatch());');
         expect(shard).toContain("if (getLoadedFunction(functionPath) !== undefined) {");

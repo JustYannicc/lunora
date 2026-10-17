@@ -4981,7 +4981,7 @@ abstract class ShardDO {
 
     /** Prepare a codegen-lazy procedure only after the caller's purpose is known. */
     // eslint-disable-next-line class-methods-use-this -- the generated subclass overrides this for lazy function registries
-    protected prepareFunction(_functionPath: string, _reason: "rpc" | "subscription" | "stream" | "reactor" = "rpc"): void | Promise<void> {}
+    protected prepareFunction(_functionPath: string, _reason: "rpc" | "subscription" | "stream" | "reactor"): void | Promise<void> {}
 
     /**
      * Whether `functionPath` names a registered `mutation` — the only function
@@ -11524,7 +11524,7 @@ abstract class ShardDO {
             return true;
         }
 
-        await this.pumpStream(ws, id, iterable, controller);
+        await this.pumpStream(ws, id, iterable.iterator, controller);
 
         return false;
     }
@@ -11532,12 +11532,12 @@ abstract class ShardDO {
     private async pumpStream(
         ws: ShardSocketLike,
         id: string,
-        iterable: { durable?: { ttlMs?: number }; iterator: (signal: AbortSignal) => AsyncIterable<unknown> },
+        iterator: NonNullable<ReturnType<ShardDO["executeStream"]>>["iterator"],
         controller: AbortController,
     ): Promise<void> {
         trySendFrame(ws, JSON.stringify({ id, type: "ack" }));
 
-        for await (const chunk of iterable.iterator(controller.signal)) {
+        for await (const chunk of iterator(controller.signal)) {
             if (isStreamCancelled(controller)) {
                 break;
             }

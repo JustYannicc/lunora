@@ -676,7 +676,7 @@ ${sourceBootstrap}${ttlBootstrap}        }
     /* eslint-enable no-secrets/no-secrets */
     const prepareFunctionOverride = lazyFunctions
         ? `
-        protected override prepareFunction(functionPath: string, reason: "rpc" | "subscription" | "stream" | "reactor" = "rpc"): Promise<void> | undefined {
+        protected override prepareFunction(functionPath: string, reason: "rpc" | "subscription" | "stream" | "reactor"): Promise<void> | undefined {
             const registered = LUNORA_FUNCTIONS[functionPath];
             const allowsInternal = reason === "reactor" || (reason === "rpc" && this.isSystemDispatch());
 
