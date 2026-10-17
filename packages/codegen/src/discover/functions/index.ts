@@ -8,7 +8,7 @@ import { sanitizeNamespace } from "../../paths";
 import { listLunoraSourceFiles, lunoraRelativePath } from "../ast";
 import { exportNamesByLocalOf, isAddressableExportName } from "../attribution";
 import { collectErasures, reportErasures } from "../erased-returns";
-import type { LifecycleMoment } from "./classify-procedure-call";
+import type { LifecycleMoment, ProcedureClassification } from "./classify-procedure-call";
 import { classifyProcedureCall } from "./classify-procedure-call";
 import { argsFromBuilderChain, outputFromBuilderChain, returnTypeFromBuilderCall, returnTypeFromCall } from "./internal/builder-chain";
 import { argsFromCall, exposeFromBuilderChain, x402FromBuilderChain } from "./internal/expose";
@@ -23,13 +23,13 @@ interface DiscoveredFunction {
     channel?: { kind: "room"; name: string };
     /** Set when the builder chain includes `.expose({ rest: true })` (plan 167). */
     expose?: { cache?: ExposeCacheIR; rest?: boolean };
-    x402?: { price?: number | string };
     kind: string;
     lifecycle?: LifecycleMoment;
     /** The `.output(validator)` declaration, when the chain has one. */
     output?: ValidatorIR;
     returnType: string;
     visibility: "internal" | "public";
+    x402?: { price?: number | string };
 }
 
 /**
@@ -59,6 +59,32 @@ const roomNameOf = (call: CallExpression): string => {
     return initializer.getLiteralValue();
 };
 
+const discoverBuilderTerminal = (call: CallExpression, receiver: Node, classified: ProcedureClassification, lazyFunctions: boolean): DiscoveredFunction => {
+    const metadata = lazyFunctions ? lazyMetadataFromBuilderChain(receiver) : undefined;
+    const expose = lazyFunctions ? metadata?.expose : exposeFromBuilderChain(receiver);
+    const x402 = lazyFunctions ? metadata?.x402 : x402FromBuilderChain(receiver);
+    // Both types are computed, but `api.ts` carries only one of them — see
+    // `declaredOutputWins`. An erasure in the other reaches nothing, so it is
+    // not reported: the handler behind a declared output, or the inert
+    // `.output()` of a `stream`.
+    const output = collectErasures(() => outputFromBuilderChain(receiver));
+    const returnType = collectErasures(() => returnTypeFromBuilderCall(call));
+    const outputWins = declaredOutputWins({ kind: classified.kind, output: output.value });
+
+    reportErasures(outputWins ? output.erased : returnType.erased);
+
+    return {
+        args: argsFromBuilderChain(receiver),
+        ...(expose ? { expose } : {}),
+        ...(x402 ? { x402 } : {}),
+        ...(classified.adminOnly ? { adminOnly: true as const } : {}),
+        kind: classified.kind,
+        ...(output.value ? { output: output.value } : {}),
+        returnType: returnType.value,
+        visibility: metadata?.visibility === "internal" || classified.visibility === "internal" ? "internal" : "public",
+    };
+};
+
 const discoverFromCall = (call: CallExpression, lazyFunctions: boolean): DiscoveredFunction | undefined => {
     const classified = classifyProcedureCall(call, lazyFunctions);
 
@@ -80,29 +106,7 @@ const discoverFromCall = (call: CallExpression, lazyFunctions: boolean): Discove
     const { receiver } = classified;
 
     if (receiver) {
-        const metadata = lazyFunctions ? lazyMetadataFromBuilderChain(receiver) : undefined;
-        const expose = lazyFunctions ? metadata?.expose : exposeFromBuilderChain(receiver);
-        const x402 = lazyFunctions ? metadata?.x402 : x402FromBuilderChain(receiver);
-        // Both types are computed, but `api.ts` carries only one of them — see
-        // `declaredOutputWins`. An erasure in the other reaches nothing, so it is
-        // not reported: the handler behind a declared output, or the inert
-        // `.output()` of a `stream`.
-        const output = collectErasures(() => outputFromBuilderChain(receiver));
-        const returnType = collectErasures(() => returnTypeFromBuilderCall(call));
-        const outputWins = declaredOutputWins({ kind: classified.kind, output: output.value });
-
-        reportErasures(outputWins ? output.erased : returnType.erased);
-
-        return {
-            args: argsFromBuilderChain(receiver),
-            ...(expose ? { expose } : {}),
-            ...(x402 ? { x402 } : {}),
-            ...(classified.adminOnly ? { adminOnly: true as const } : {}),
-            kind: classified.kind,
-            ...(output.value ? { output: output.value } : {}),
-            returnType: returnType.value,
-            visibility: metadata?.visibility ?? classified.visibility,
-        };
+        return discoverBuilderTerminal(call, receiver, classified, lazyFunctions);
     }
 
     // Lifecycle hooks (`onConnect`/`onDisconnect`) take a bare handler, not the
