@@ -19,7 +19,7 @@
 /** Env var that turns codegen off when it spells `0` / `false`. Unset means on. */
 const CODEGEN_ENV = "LUNORA_CODEGEN";
 
-/** Env var that enables lazy function imports for dev codegen when it spells `1` / `true`. */
+/** Env var that enables lazy function imports for codegen when it spells `1` / `true`. */
 const LAZY_FUNCTIONS_ENV = "LUNORA_LAZY_FUNCTIONS";
 
 /**
