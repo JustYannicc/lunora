@@ -498,3 +498,5 @@ export type { RangeOperandType, WhereSqlStrategy } from "./where-sql";
 export { compileWhereSql, serverInList } from "./where-sql";
 export type { FieldOperators, WhereInput } from "./where-types";
 export { RELATION_EXISTS_KEY } from "./where-types";
+
+export { RELAY_SIGNATURE_HEADER, siblingSecretOf, signSiblingBody, verifySiblingBody } from "./sibling-channel";

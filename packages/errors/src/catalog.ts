@@ -58,6 +58,11 @@ export const ERROR_CATALOG = {
     UNAUTHORIZED: { status: 401, title: "Unauthorized" },
     FORBIDDEN: { status: 403, title: "Forbidden" },
     NOT_FOUND: { status: 404, title: "Not found" },
+    DELIVERY_FENCED: {
+        status: 409,
+        title: "Delivery authorization changed",
+        hint: "The operation may have committed. Recover with the same idempotency key after authorization is restored; do not retry with a new key.",
+    },
 
     CONFLICT: {
         hint: [

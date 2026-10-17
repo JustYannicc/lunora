@@ -206,6 +206,9 @@ export interface RpcRequest {
  * messages are derived on-demand from that map plus the runtime payload.
  */
 export interface SocketAttachment {
+    /** Server-stamped authority markers for invalidating subscriptions after hibernation; never access policy. */
+    deliveryPermits?: Record<string, { scope: string; epoch: number }>;
+
     /**
      * `true` when the upgrade presented a token matching `LUNORA_ADMIN_TOKEN`,
      * gating the reserved `__lunora_admin__:*` introspection subscriptions to
