@@ -12900,6 +12900,23 @@ abstract class ShardDO {
         return { baseCheckpoint: canResume ? shape.sinceSeq : undefined, cursor, epoch, reset: !canResume, rowsPatch };
     }
 
+    /** Attachments can retain unsupported shapes when a deployment enables delivery authorization. */
+    private rejectRetainedShapes(): number {
+        let remaining = 0;
+
+        for (const ws of this.runner.sockets()) {
+            for (const subId of Object.keys(this.readAttachment(ws).shapes ?? {})) {
+                this.sendSubscriptionError(ws, subId, "NOT_IMPLEMENTED", "delivery mode unsupported with delivery authorization");
+                this.shapeUnsubscribe(ws, subId);
+            }
+
+            // Failed attachment writes retain the registration; keep the alarm retry alive.
+            remaining += Object.keys(this.readAttachment(ws).shapes ?? {}).length;
+        }
+
+        return remaining;
+    }
+
     /**
      * Fan the membership diff of every shape affected by this flush to its
      * subscribers — the partial-replication parallel to
@@ -12913,6 +12930,7 @@ abstract class ShardDO {
      */
     private async pokeShapeSubscribers(changed: Set<string>, frameCursor: number | undefined, frameEpoch: string | undefined): Promise<void> {
         if (this.deliveryAuthorization) {
+            this.rejectRetainedShapes();
             return;
         }
         const sockets = [...this.runner.sockets()];
@@ -14307,7 +14325,7 @@ abstract class ShardDO {
      */
     private async pollGlobalShapes(trace?: TraceRefLike): Promise<number> {
         if (this.deliveryAuthorization) {
-            return 0;
+            return this.rejectRetainedShapes();
         }
         const sockets = [...this.runner.sockets()];
         let remaining = 0;
