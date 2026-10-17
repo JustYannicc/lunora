@@ -81,6 +81,46 @@ hibernation, so a cold shard simply re-runs the query. Only registered
 counters (`hits`, `misses`, `evictions`, `entries`, `bytes`) show up on the
 studio's metrics panel.
 
+## Delivery authorization
+
+Opt in with the generated app builder's `.deliveryAuthorization(env => callback)`.
+The async callback receives `{ identity, shardKey, functionPath, args, transport }`,
+with `transport: "rpc" | "subscription"`. Return `undefined` to deny or `{ scope, epoch }`
+from current authority. Queries still own row and field filtering.
+
+```ts
+import { installDeliveryFence, type DeliveryPermit } from "@lunora/do";
+import { defineApp } from "../../lunora/_generated/app";
+import { readCurrentPermit } from "./authority";
+
+const app = defineApp<Env>()
+    .shard((env) => env.SHARD)
+    .deliveryAuthorization((env) => async (request) => readCurrentPermit(env, request))
+    .build();
+export const ShardDO = app.ShardDO;
+
+export async function fenceShard(env: Env, shardKey: string, fence: DeliveryPermit) {
+    await installDeliveryFence(env.SHARD.getByName(shardKey), { env, shardKey, fence });
+}
+```
+
+Implement `readCurrentPermit` in your application. `scope` is opaque, nonempty and at most
+256 UTF-8 bytes; `epoch` is a nonnegative safe integer that increases with authority changes.
+Set the same nonempty `LUNORA_RELAY_SECRET` on the installer and shard; pass the target's
+exact shard key. The helper signs a private binding request and waits for acknowledgement.
+Commit policy and durable pending invalidations together, deny stale permits immediately,
+and retry every affected shard's fence before acknowledging revocation.
+
+This supports RPCs and ordinary subscriptions. Guarded shards refuse shapes, streams,
+raw subscriptions, whispers, rooms and relays; replicas must route to the owner.
+Query caches and shared subscription evaluations are bypassed. Every write flush
+reauthorizes and reevaluates guarded subscriptions; reconnects send fresh full snapshots.
+
+`DELIVERY_FENCED` means the operation may have committed; retry with the same native
+transport key. An older receipt returns terminal `DELIVERY_RECEIPT_FENCED` without
+its stored result or another execution. A fresh transport call requires your own durable
+operation key and current authorization; never blindly replace a possibly committed key.
+
 ## `SessionDO`
 
 A TTL'd session store in a Durable Object: records expire after

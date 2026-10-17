@@ -23,8 +23,10 @@ import type { ShardDOState } from "../../src/shard-do";
 import { ShardDO } from "../../src/shard-do";
 import { ShardRegistryDO } from "../../src/shard-registry-do";
 import messagesSchema from "../_helpers/messages-schema";
+import { DeliveryAuthorizationTestDO } from "./delivery-authorization-worker";
 
 interface Env {
+    AUTHORIZED: DurableObjectNamespace<DeliveryAuthorizationTestDO>;
     COUNTER: DurableObjectNamespace<TestCounterDO>;
     ECHO: DurableObjectNamespace<TestEchoDO>;
     LUNORA_ALLOWED_ORIGINS?: string;
@@ -577,5 +579,5 @@ const handler = {
 };
 
 export default handler;
-export { TestCounterDO, TestEchoDO, TestMergedDO, TestSessionDO, TestShardDO, TestSyncDO };
+export { DeliveryAuthorizationTestDO, TestCounterDO, TestEchoDO, TestMergedDO, TestSessionDO, TestShardDO, TestSyncDO };
 export type { Env };

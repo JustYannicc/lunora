@@ -61,49 +61,114 @@ const transactionalState = (test: ReturnType<typeof setup>): ShardDOState =>
 
 describe("delivery-authorized native receipts", () => {
     it.each([
-        { failure: "old marker", first: "old", table: "__lunora_delivery_receipt", condition: "NEW.epoch = 0" },
-        { failure: "old row", first: "old", table: "__idempotency", condition: `NEW.result_json = '\"old-policy\"'` },
-        { failure: "new marker", first: "new", table: "__lunora_delivery_receipt", condition: "NEW.epoch = 1" },
-        { failure: "new row", first: "new", table: "__idempotency", condition: `NEW.result_json = '\"new-policy\"'` },
-        { failure: "new marker", first: "old", table: "__lunora_delivery_receipt", condition: "NEW.epoch = 1" },
-        { failure: "new row", first: "old", table: "__idempotency", condition: `NEW.result_json = '\"new-policy\"'` },
-        { failure: "old marker", first: "new", table: "__lunora_delivery_receipt", condition: "NEW.epoch = 0" },
-        { failure: "old row", first: "new", table: "__idempotency", condition: `NEW.result_json = '\"old-policy\"'` },
-    ])("never leaks older bytes when $failure fails and $first completes first", async ({ first: firstCompletion, table, condition }) => {
-        const test = setup();
-        const shard = new TwoRunShard(test.state, {}, { deliveryAuthorization: test.authority });
-        let now = 1_000_000;
-        const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
-        try {
-            const first = shard.fetch(request());
-            await shard.first.entered.promise;
-            test.database.sql.exec(
-                `CREATE TRIGGER reject_insert BEFORE INSERT ON ${table} WHEN ${condition} BEGIN SELECT RAISE(FAIL, 'insert unavailable'); END`,
-            );
-            now += DISPATCH_CLAIM_CEILING_MS + 1;
-            test.regrant();
-            const second = shard.fetch(request());
-            await shard.second.entered.promise;
-            const earlier = firstCompletion === "old" ? { turn: shard.first, response: first } : { turn: shard.second, response: second };
-            const later = firstCompletion === "old" ? { turn: shard.second, response: second } : { turn: shard.first, response: first };
-            earlier.turn.release.resolve();
-            await earlier.response;
-            now += 1;
-            later.turn.release.resolve();
-            await later.response;
-            const replay = await shard.fetch(request());
-            const body = await replay.json();
-            expect([
-                { status: 200, body: expect.objectContaining({ result: "new-policy" }) },
-                { status: 409, body: expect.objectContaining({ error: expect.objectContaining({ code: "DELIVERY_RECEIPT_FENCED" }) }) },
-            ]).toContainEqual({ status: replay.status, body });
-            expect(shard.rpcRuns).toBe(2);
-        } finally {
-            shard.first.release.resolve();
-            shard.second.release.resolve();
-            clock.mockRestore();
-        }
-    });
+        {
+            failure: "old marker",
+            first: "old",
+            table: "__lunora_delivery_receipt",
+            condition: "NEW.epoch = 0",
+            expectedReplay: 409,
+            oldStatus: 500,
+            newStatus: 200,
+        },
+        {
+            failure: "old row",
+            first: "old",
+            table: "__idempotency",
+            condition: `NEW.result_json = '\"old-policy\"'`,
+            expectedReplay: 200,
+            oldStatus: 500,
+            newStatus: 200,
+        },
+        {
+            failure: "new marker",
+            first: "new",
+            table: "__lunora_delivery_receipt",
+            condition: "NEW.epoch = 1",
+            expectedReplay: 409,
+            oldStatus: 200,
+            newStatus: 500,
+        },
+        {
+            failure: "new row",
+            first: "new",
+            table: "__idempotency",
+            condition: `NEW.result_json = '\"new-policy\"'`,
+            expectedReplay: 409,
+            oldStatus: 200,
+            newStatus: 500,
+        },
+        {
+            failure: "new marker",
+            first: "old",
+            table: "__lunora_delivery_receipt",
+            condition: "NEW.epoch = 1",
+            expectedReplay: 409,
+            oldStatus: 200,
+            newStatus: 200,
+        },
+        {
+            failure: "new row",
+            first: "old",
+            table: "__idempotency",
+            condition: `NEW.result_json = '\"new-policy\"'`,
+            expectedReplay: 409,
+            oldStatus: 200,
+            newStatus: 500,
+        },
+        {
+            failure: "old marker",
+            first: "new",
+            table: "__lunora_delivery_receipt",
+            condition: "NEW.epoch = 0",
+            expectedReplay: 200,
+            oldStatus: 200,
+            newStatus: 200,
+        },
+        {
+            failure: "old row",
+            first: "new",
+            table: "__idempotency",
+            condition: `NEW.result_json = '\"old-policy\"'`,
+            expectedReplay: 200,
+            oldStatus: 500,
+            newStatus: 200,
+        },
+    ])(
+        "never leaks older bytes when $failure fails and $first completes first",
+        async ({ first: firstCompletion, table, condition, expectedReplay, oldStatus, newStatus }) => {
+            const test = setup();
+            const shard = new TwoRunShard(test.state, {}, { deliveryAuthorization: test.authority });
+            let now = 1_000_000;
+            const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+            try {
+                const first = shard.fetch(request());
+                await shard.first.entered.promise;
+                test.database.sql.exec(
+                    `CREATE TRIGGER reject_insert BEFORE INSERT ON ${table} WHEN ${condition} BEGIN SELECT RAISE(FAIL, 'insert unavailable'); END`,
+                );
+                now += DISPATCH_CLAIM_CEILING_MS + 1;
+                test.regrant();
+                const second = shard.fetch(request());
+                await shard.second.entered.promise;
+                const earlier = firstCompletion === "old" ? { turn: shard.first, response: first } : { turn: shard.second, response: second };
+                const later = firstCompletion === "old" ? { turn: shard.second, response: second } : { turn: shard.first, response: first };
+                earlier.turn.release.resolve();
+                expect((await earlier.response).status).toBe(firstCompletion === "old" ? oldStatus : newStatus);
+                now += 1;
+                later.turn.release.resolve();
+                expect((await later.response).status).toBe(firstCompletion === "old" ? newStatus : oldStatus);
+                const replay = await shard.fetch(request());
+                const body = await replay.json();
+                expect(replay.status).toBe(expectedReplay);
+                expect(body).toMatchObject(expectedReplay === 200 ? { result: "new-policy" } : { error: { code: "DELIVERY_RECEIPT_FENCED" } });
+                expect(shard.rpcRuns).toBe(2);
+            } finally {
+                shard.first.release.resolve();
+                shard.second.release.resolve();
+                clock.mockRestore();
+            }
+        },
+    );
 
     it("keeps the winning receipt epoch when an expired claim permits a second ungated run", async () => {
         const test = setup();
