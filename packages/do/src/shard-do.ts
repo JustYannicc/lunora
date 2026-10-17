@@ -1,6 +1,3 @@
-import type { DeliveryAuthorization, DeliveryPermit } from "./delivery-authorization";
-import { DeliveryFence, deliveryAccessDenied, validDeliveryPermit } from "./delivery-authorization";
-import { RELAY_SIGNATURE_HEADER, siblingSecretOf, verifySiblingBody } from "@lunora/shard-engine";
 import type { DurableObjectStorage } from "@cloudflare/workers-types";
 import { isLunoraError, LunoraError, toErrorBody } from "@lunora/errors";
 import type {
@@ -254,6 +251,9 @@ import {
     writeShapePokeCursor,
     writeShapePokeCursors,
     writeTouchesMemo,
+    RELAY_SIGNATURE_HEADER,
+    siblingSecretOf,
+    verifySiblingBody,
 } from "@lunora/shard-engine";
 import { decodeWire, encodeWire } from "@lunora/wire";
 import type { DrizzleSqliteDODatabase } from "drizzle-orm/durable-sqlite";
@@ -368,6 +368,8 @@ import {
 } from "./alarm-rearm-breaker";
 import { buildBatchEntryRequest } from "./batch";
 import { CdcRetentionRunner } from "./cdc-retention";
+import type { DeliveryAuthorization, DeliveryPermit } from "./delivery-authorization";
+import { DeliveryFence, deliveryAccessDenied, isDeliveryAccessDenied, validDeliveryPermit } from "./delivery-authorization";
 import type { InFlightClaim } from "./in-flight-claims";
 import { InFlightClaims } from "./in-flight-claims";
 import { ensureScheduleRateTable, readScheduleRateWindow, scheduleRateLimitFrom, writeScheduleRateWindow } from "./schedule-rate-breaker";
@@ -1117,6 +1119,8 @@ interface ShardDOOptions {
  * inside {@link ShardDO.pushSubscriptionData} would repeat a
  * `__client_watermark` SELECT and an attachment read per subscription.
  */
+type SubscriptionDeliveryPermit = DeliveryPermit & { readonly registration: symbol };
+
 interface SocketDelivery {
     /** This socket's custom-mutator watermark, stamped on every outgoing frame. */
     clientWatermark: number | undefined;
@@ -1638,6 +1642,8 @@ const takeToken = (ws: ShardSocketLike, buckets: WeakMap<ShardSocketLike, { last
 abstract class ShardDO {
     private readonly deliveryAuthorization: DeliveryAuthorization | undefined;
     private readonly deliveryFence = new DeliveryFence(() => this.shardHost.sql as unknown as SqlExec);
+    private readonly deliveryResponsePermits = new WeakMap<Response, DeliveryPermit>();
+    private readonly deliveryRegistrations = new WeakMap<ShardSocketLike, Map<string, symbol>>();
 
     /**
      * Per-socket cap on concurrent stream iterators. Each in-flight stream
@@ -2906,20 +2912,32 @@ abstract class ShardDO {
         return key === undefined || (parseRelayName(key) === undefined && parseReplicaName(key) === undefined);
     }
 
-    private sendFrame(ws: ShardSocketLike, frame: string, permit?: DeliveryPermit): boolean {
-        if (this.deliveryAuthorization && (!this.deliveryRoleSupported() || !this.deliveryFence.allows(permit))) {
-            const envelope = JSON.parse(frame) as { type?: string; id?: string; message?: string };
-            if (envelope.type === "error") {
-                return trySendFrame(
-                    ws,
-                    JSON.stringify({ id: envelope.id, type: "error", code: "FORBIDDEN", error: { code: "FORBIDDEN", message: "AccessDenied" } }),
-                );
-            }
-            if (envelope.type !== "ack" && envelope.type !== "identity") {
-                if (permit !== undefined) {
-                    this.sendSubscriptionError(ws, envelope.id ?? "", "FORBIDDEN", "AccessDenied");
+    private revokeSubscription(ws: ShardSocketLike, subId: string): void {
+        if (!Object.hasOwn(this.readAttachment(ws).subs, subId)) {
+            return;
+        }
+        this.unsubscribe(ws, subId);
+        this.subMemos.get(ws)?.delete(subId);
+        this.deliveryRegistrations.get(ws)?.delete(subId);
+        this.sendSubscriptionError(ws, subId, "FORBIDDEN", "AccessDenied");
+    }
+
+    private sendFrame(ws: ShardSocketLike, frame: string, permit?: SubscriptionDeliveryPermit): boolean {
+        if (this.deliveryAuthorization) {
+            const envelope = JSON.parse(frame) as { type?: string; id?: string };
+            if (envelope.type !== "ack" && envelope.type !== "error" && envelope.type !== "identity") {
+                if (permit !== undefined && this.deliveryRegistrations.get(ws)?.get(envelope.id ?? "") !== permit.registration) {
+                    return false;
                 }
-                return false;
+                if (!this.deliveryRoleSupported() || !this.deliveryFence.allows(permit)) {
+                    if (permit !== undefined) {
+                        this.revokeSubscription(ws, envelope.id ?? "");
+                    }
+                    return false;
+                }
+                if (!Object.hasOwn(this.readAttachment(ws).subs, envelope.id ?? "")) {
+                    return false;
+                }
             }
         }
         return trySendFrame(ws, frame);
@@ -2931,19 +2949,47 @@ abstract class ShardDO {
         identity: SubscriptionIdentity,
         functionPath: string,
         args: Record<string, unknown>,
-    ): Promise<DeliveryPermit | undefined> {
-        const permit = await this.authorizeDelivery(identity, functionPath, args, "subscription");
-        if (permit === undefined) {
+    ): Promise<SubscriptionDeliveryPermit | undefined> {
+        if (!this.deliveryAuthorization) {
+            return undefined;
+        }
+        const query = this.readAttachment(ws).subs[subId];
+        if (query?.functionPath !== functionPath || stableWireKey(query.args ?? {}) !== stableWireKey(args)) {
+            return undefined;
+        }
+        const registrations = socketMap(this.deliveryRegistrations, ws);
+        const registration = registrations.get(subId) ?? Symbol();
+        registrations.set(subId, registration);
+        let permit: DeliveryPermit | undefined;
+        try {
+            permit = await this.authorizeDelivery(identity, functionPath, args, "subscription");
+        } catch (error) {
+            if (registrations.get(subId) !== registration) {
+                return undefined;
+            }
+            throw error;
+        }
+        if (registrations.get(subId) !== registration || permit === undefined) {
             return undefined;
         }
         if (!this.deliveryRoleSupported() || !this.deliveryFence.allows(permit)) {
             throw deliveryAccessDenied();
         }
         const attachment = this.readAttachment(ws);
-        attachment.deliveryPermits ??= {};
-        attachment.deliveryPermits[subId] = permit;
-        (ws as HibernatableWebSocket).serializeAttachment?.(attachment);
-        return permit;
+        if (!Object.hasOwn(attachment.subs, subId)) {
+            return undefined;
+        }
+        const existing = attachment.deliveryPermits?.[subId];
+        if (existing?.scope !== permit.scope || existing.epoch !== permit.epoch) {
+            const next = { ...attachment, deliveryPermits: { ...attachment.deliveryPermits, [subId]: permit } };
+            try {
+                // The host's structured-clone budget includes the permit and decoded query arguments.
+                (ws as HibernatableWebSocket).serializeAttachment?.(next);
+            } catch {
+                throw new LunoraError("SUBSCRIPTION_PERSIST_FAILED", `subscription attachment exceeds the ${String(ShardDO.MAX_ATTACHMENT_BYTES)}-byte limit`);
+            }
+        }
+        return { ...permit, registration };
     }
 
     private async authorizeDelivery(
@@ -2956,10 +3002,16 @@ abstract class ShardDO {
             return undefined;
         }
         const permit = await this.deliveryAuthorization({ identity, functionPath, args, shardKey: this.runner.shardKey, transport });
+        if (permit === undefined) {
+            throw deliveryAccessDenied();
+        }
+        if (!validDeliveryPermit(permit)) {
+            throw new TypeError("delivery authority returned an invalid permit");
+        }
         if (!this.deliveryFence.allows(permit)) {
             throw deliveryAccessDenied();
         }
-        return permit === undefined ? undefined : { scope: permit.scope, epoch: permit.epoch };
+        return { scope: permit.scope, epoch: permit.epoch };
     }
 
     private async installDeliveryFence(request: Request): Promise<Response> {
@@ -2987,8 +3039,8 @@ abstract class ShardDO {
             const attachment = this.readAttachment(socket);
             for (const subId of Object.keys(attachment.subs)) {
                 const permit = attachment.deliveryPermits?.[subId];
-                if (permit === undefined || !this.deliveryFence.allows(permit)) {
-                    this.sendSubscriptionError(socket, subId, "FORBIDDEN", "AccessDenied");
+                if (permit !== undefined && !this.deliveryFence.allows(permit)) {
+                    this.revokeSubscription(socket, subId);
                 }
             }
         }
@@ -3009,16 +3061,19 @@ abstract class ShardDO {
             if (this.runner.shardKey !== undefined && parseReplicaName(this.runner.shardKey) !== undefined) {
                 return new Response("replica does not support delivery authorization; route to owner", { status: 421 });
             }
-            return jsonResponse({ error: { code: "FORBIDDEN", message: "delivery mode unsupported with delivery authorization" } }, 403);
+            return jsonResponse({ error: { code: "NOT_IMPLEMENTED", message: "delivery mode unsupported with delivery authorization" } }, 501);
         }
         if (request.headers.get("Upgrade") === "websocket") {
+            return this.runner.handleFetch(request);
+        }
+        if (url.pathname === "/rpc-batch" && request.method === "POST") {
             return this.runner.handleFetch(request);
         }
         if (url.pathname === "/_lunora/route") {
             return jsonResponse({ relayCount: 0 });
         }
         if (url.pathname !== "/rpc" || request.method !== "POST") {
-            return jsonResponse({ error: { code: "FORBIDDEN", message: "delivery mode unsupported with delivery authorization" } }, 403);
+            return jsonResponse({ error: { code: "NOT_IMPLEMENTED", message: "delivery mode unsupported with delivery authorization" } }, 501);
         }
         let payload: RpcRequest;
         try {
@@ -3031,11 +3086,19 @@ abstract class ShardDO {
             userId: decodeUserIdHeader(request.headers.get("x-lunora-userid")),
             ip: request.headers.get("x-lunora-client-ip") ?? undefined,
         };
+        let args: Record<string, unknown>;
+        try {
+            args = decodeWire(payload.args ?? {}) as Record<string, unknown>;
+        } catch {
+            return jsonResponse({ error: { code: "BAD_REQUEST", message: "invalid wire arguments" } }, 400);
+        }
         let permit: DeliveryPermit | undefined;
         try {
-            permit = await this.authorizeDelivery(identity, payload.functionPath, payload.args ?? {}, "rpc");
-        } catch {
-            return jsonResponse({ error: { code: "FORBIDDEN", message: "AccessDenied" } }, 403);
+            permit = await this.authorizeDelivery(identity, payload.functionPath, args, "rpc");
+        } catch (error) {
+            return isDeliveryAccessDenied(error)
+                ? jsonResponse({ error: { code: "FORBIDDEN", message: "AccessDenied" } }, 403)
+                : jsonResponse({ error: { code: "SHARD_UNAVAILABLE", message: "delivery authority unavailable" } }, 503);
         }
         const response = await this.runner.handleFetch(request);
         // Fully consume the body before checking: a deferred response stream must not outlive its permit.
@@ -3043,7 +3106,11 @@ abstract class ShardDO {
         if (!this.deliveryFence.allows(permit)) {
             return jsonResponse({ error: { code: "DELIVERY_FENCED", message: "Delivery fenced; operation may have committed" } }, 409);
         }
-        return new Response(body, response);
+        const delivered = new Response(body, response);
+        if (permit !== undefined) {
+            this.deliveryResponsePermits.set(delivered, permit);
+        }
+        return delivered;
     }
 
     /**
@@ -5466,6 +5533,10 @@ abstract class ShardDO {
         }
 
         attachment.subs[subId] = query;
+        const previousPermit = attachment.deliveryPermits?.[subId];
+        if (this.deliveryAuthorization && attachment.deliveryPermits !== undefined) {
+            delete attachment.deliveryPermits[subId];
+        }
 
         try {
             (ws as HibernatableWebSocket).serializeAttachment?.(attachment);
@@ -5481,9 +5552,15 @@ abstract class ShardDO {
                 attachment.subs[subId] = previous;
             }
 
+            if (previousPermit !== undefined && attachment.deliveryPermits !== undefined) {
+                attachment.deliveryPermits[subId] = previousPermit;
+            }
             return "serialize_failed";
         }
 
+        if (this.deliveryAuthorization) {
+            socketMap(this.deliveryRegistrations, ws).set(subId, Symbol());
+        }
         // Drop the diff baseline. A (re)subscribe asks for the current value, so
         // the seed must go out as a full snapshot; diffed against the old memo it
         // is answered `settled` (or a delta against a value the client just
@@ -5524,6 +5601,7 @@ abstract class ShardDO {
         }
 
         this.subMemos.get(ws)?.delete(subId);
+        this.deliveryRegistrations.get(ws)?.delete(subId);
     }
 
     /**
@@ -7103,7 +7181,7 @@ abstract class ShardDO {
         // keepalive pings auto-respond and never reach here — so inbound checks
         // alone would never fire for the common case).
         if (this.deliveryAuthorization && !this.deliveryRoleSupported()) {
-            this.sendSubscriptionError(ws, "", "FORBIDDEN", "AccessDenied");
+            this.sendSubscriptionError(ws, "", "NOT_IMPLEMENTED", "delivery mode unsupported with delivery authorization");
             return;
         }
         if (this.isSocketExpired(ws)) {
@@ -7146,7 +7224,7 @@ abstract class ShardDO {
                 (envelope.type === "subscribe" && typeof envelope.query?.functionPath === "string")
             )
         ) {
-            this.sendSubscriptionError(ws, envelope.id ?? "", "FORBIDDEN", "delivery mode unsupported with delivery authorization");
+            this.sendSubscriptionError(ws, envelope.id ?? "", "NOT_IMPLEMENTED", "delivery mode unsupported with delivery authorization");
             return;
         }
 
@@ -9328,12 +9406,14 @@ abstract class ShardDO {
         }
 
         const results: { body: unknown; errorDetail?: string; id: unknown; status: number }[] = [];
+        const permits: (DeliveryPermit | undefined)[] = [];
         let latestBookmark: string | undefined;
 
         for (const raw of payload.calls) {
             // eslint-disable-next-line no-await-in-loop -- sequential BY DESIGN: preserves per-client watermark ordering + idempotency across the batch
             const outcome = await this.dispatchBatchEntry(request, raw as BatchEntry);
 
+            permits.push(outcome.permit);
             if (outcome.bookmark !== undefined) {
                 latestBookmark = outcome.bookmark;
             }
@@ -9348,19 +9428,29 @@ abstract class ShardDO {
             });
         }
 
-        return jsonResponse({ results }, 200, bookmarkHeaders(latestBookmark));
+        // Earlier slots can be fenced while later slots await their handlers.
+        const delivered = results.map((result, index) => {
+            const permit = permits[index];
+            if (this.deliveryAuthorization && permit !== undefined && !this.deliveryFence.allows(permit)) {
+                latestBookmark = undefined;
+                return { id: result.id, status: 409, body: { error: { code: "DELIVERY_FENCED", message: "Delivery fenced; operation may have committed" } } };
+            }
+            return result;
+        });
+        return jsonResponse({ results: delivered }, 200, bookmarkHeaders(latestBookmark));
     }
 
     /** Dispatch one batch entry through the single-call `/rpc` path and capture its envelope (plan 088). */
     private async dispatchBatchEntry(
         batchRequest: Request,
         entry: BatchEntry,
-    ): Promise<{ body: unknown; bookmark: string | undefined; errorDetail?: string; id: unknown; status: number }> {
+    ): Promise<{ body: unknown; bookmark: string | undefined; errorDetail?: string; id: unknown; status: number; permit?: DeliveryPermit }> {
         try {
             const response = await this.fetch(buildBatchEntryRequest(batchRequest, entry));
 
             return {
                 body: await response.json(),
+                permit: this.deliveryResponsePermits.get(response),
                 bookmark: response.headers.get("x-d1-bookmark") ?? undefined,
                 errorDetail: response.headers.get(ERROR_DETAIL_HEADER) ?? undefined,
                 id: entry.id,
@@ -11546,7 +11636,7 @@ abstract class ShardDO {
         // iterator is pulled long after this frame was dispatched.
         const attachment = this.readAttachment(ws);
         if (this.deliveryAuthorization) {
-            this.sendSubscriptionError(ws, id, "FORBIDDEN", "delivery mode unsupported with delivery authorization");
+            this.sendSubscriptionError(ws, id, "NOT_IMPLEMENTED", "delivery mode unsupported with delivery authorization");
             return;
         }
         const iterable = this.executeStream(functionPath, args, socketIdentity(attachment));
@@ -11631,11 +11721,11 @@ abstract class ShardDO {
                 // while we keep pumping `ws.send` calls.
                 await awaitWsDrain(ws);
 
-                this.sendFrame(ws, JSON.stringify({ data: encodeWire(chunk), id, type: "chunk" }));
+                ws.send(JSON.stringify({ data: encodeWire(chunk), id, type: "chunk" }));
             }
 
             if (!controller.signal.aborted) {
-                this.sendFrame(ws, JSON.stringify({ id, type: "complete" }));
+                ws.send(JSON.stringify({ id, type: "complete" }));
             }
         } catch (error: unknown) {
             // Apply the shared redaction invariant: a non-internal `LunoraError`
@@ -12271,7 +12361,12 @@ abstract class ShardDO {
                     // scoped live query would evaluate anonymous and return zero rows.
                     // (Admin + reserved flag reads ignore the identity payload.)
                     // eslint-disable-next-line no-await-in-loop -- subscriptions on a socket re-run sequentially; each shares the single SQLite handle
-                    const permit = await this.authorizeSubscription(ws, subId, socketIdentity(attachment), functionPath, query.args ?? {});
+                    const permit = this.deliveryAuthorization
+                        ? await this.authorizeSubscription(ws, subId, socketIdentity(attachment), functionPath, query.args ?? {})
+                        : undefined;
+                    if (this.deliveryAuthorization && permit === undefined) {
+                        continue;
+                    }
                     const outcome = await this.resolveReactiveOutcomeDeduped(
                         functionPath,
                         query.args ?? {},
@@ -12303,8 +12398,8 @@ abstract class ShardDO {
                     // DETERMINISTICALLY (a bad handler cast, say) repeated
                     // unnoticed for the life of the socket with no signal an
                     // operator could see anywhere. See `recordSubscriptionRefreshError`.
-                    if (this.deliveryAuthorization) {
-                        this.sendSubscriptionError(ws, subId, "FORBIDDEN", "AccessDenied");
+                    if (isDeliveryAccessDenied(error)) {
+                        this.revokeSubscription(ws, subId);
                     }
                     this.recordSubscriptionRefreshError(functionPath, error, { subId });
 
@@ -12398,7 +12493,10 @@ abstract class ShardDO {
         const readCursor = this.currentCdcCursor();
         const readEpoch = isAdmin ? undefined : this.currentCdcEpoch();
         const generation = this.writeGeneration;
-        const permit = await this.authorizeSubscription(ws, subId, socketIdentity(attachment), functionPath, seedArgs);
+        const permit = this.deliveryAuthorization ? await this.authorizeSubscription(ws, subId, socketIdentity(attachment), functionPath, seedArgs) : undefined;
+        if (this.deliveryAuthorization && permit === undefined) {
+            return;
+        }
         const outcome = await this.resolveReactiveOutcome(functionPath, seedArgs, isAdmin, socketIdentity(attachment));
 
         if (!outcome) {
@@ -12416,8 +12514,12 @@ abstract class ShardDO {
             // Keep the per-socket baseline current (so the next change diffs
             // cleanly) but send only the cursor + epoch — the client already
             // holds an equivalent value at `sinceSeq`.
+            if (!this.deliveryAuthorization) {
+                this.seedSubscriptionMemo(ws, subId, outcome, generation);
+            }
             try {
-                if (this.sendFrame(ws, `{"type":"resume","id":${JSON.stringify(subId)}${cdcSuffix(resume.cursor ?? 0, epoch)}}`, permit)) {
+                const delivered = this.sendFrame(ws, `{"type":"resume","id":${JSON.stringify(subId)}${cdcSuffix(resume.cursor ?? 0, epoch)}}`, permit);
+                if (this.deliveryAuthorization && delivered) {
                     this.seedSubscriptionMemo(ws, subId, outcome, generation);
                 }
             } catch {
@@ -14450,10 +14552,13 @@ abstract class ShardDO {
         outcome: SubscriptionOutcome,
         stamp: { cursor: number | undefined; epoch: string | undefined; generation: number },
         delivery: SocketDelivery,
-        permit?: DeliveryPermit,
+        permit?: SubscriptionDeliveryPermit,
     ): void {
+        if (this.deliveryAuthorization && permit !== undefined && this.deliveryRegistrations.get(ws)?.get(subId) !== permit.registration) {
+            return;
+        }
         if (this.deliveryAuthorization && !this.deliveryFence.allows(permit)) {
-            this.sendSubscriptionError(ws, subId, "FORBIDDEN", "AccessDenied");
+            this.revokeSubscription(ws, subId);
             return;
         }
         const memos = socketMap(this.subMemos, ws);
@@ -14488,7 +14593,8 @@ abstract class ShardDO {
             // An unchanged result still settles optimistic overlays at this cursor.
             // Keep its baseline intact when the control frame cannot be delivered.
             const watermarkField = clientWatermark === undefined ? "" : `,"lastMutationId":${String(clientWatermark)}`;
-            if (!this.sendFrame(ws, `{"type":"settled","id":${JSON.stringify(subId)}${watermarkField}${cursorSuffix}}`, permit)) {
+            const frame = `{"type":"settled","id":${JSON.stringify(subId)}${watermarkField}${cursorSuffix}}`;
+            if (this.deliveryAuthorization && !this.sendFrame(ws, frame, permit)) {
                 return;
             }
             existing.generation = generation;
@@ -14503,6 +14609,9 @@ abstract class ShardDO {
             // suppressed or not — matches the non-suppressed branch below.
             existing.ranges = outcome.ranges;
 
+            if (!this.deliveryAuthorization) {
+                this.sendFrame(ws, frame);
+            }
             return;
         }
 

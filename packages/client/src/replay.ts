@@ -25,7 +25,10 @@ import { retryAfterHeaderMs, slotError } from "./wire-errors";
  * or its response was unusable/partial — for a single-shard outbox flush these
  * fail every entry uniformly. `RATE_LIMITED` / `TOO_MANY_REQUESTS` mean a limiter
  * refused to look at the write at all (both are 429 in the catalog; the runtime's
- * REST limiter mints the first). "Not now" is not "no": dropping a durable write
+ * REST limiter mints the first). `DELIVERY_FENCED` means the response lost its
+ * authority after the operation may have committed. Retry under the original
+ * idempotency key: the server can return its cached result or refuse the caller's
+ * now-stale authorization. "Not now" is not "no": dropping a durable write
  * because the client reconnected into a rate-limit window is exactly what the
  * outbox exists to prevent, and the retry hint rides back through
  * `replayRetryDelayMs`.
@@ -33,7 +36,7 @@ import { retryAfterHeaderMs, slotError } from "./wire-errors";
  * Every other coded error is a server verdict (terminal) — replaying it would
  * re-trigger the same failure (a poison-message loop).
  */
-const TRANSIENT_REPLAY_ERROR_CODES = new Set(["RATE_LIMITED", "SHARD_ERROR", "SHARD_UNAVAILABLE", "TOO_MANY_REQUESTS"]);
+const TRANSIENT_REPLAY_ERROR_CODES = new Set(["DELIVERY_FENCED", "RATE_LIMITED", "SHARD_ERROR", "SHARD_UNAVAILABLE", "TOO_MANY_REQUESTS"]);
 
 /**
  * Whether a single-call replay failure leaves the durable write eligible for

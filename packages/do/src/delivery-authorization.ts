@@ -1,9 +1,10 @@
-import { RELAY_SIGNATURE_HEADER, siblingSecretOf, signSiblingBody } from "@lunora/shard-engine";
 import { LunoraError } from "@lunora/errors";
 import type { SqlExec, SubscriptionIdentity } from "@lunora/shard-engine";
+import { RELAY_SIGNATURE_HEADER, siblingSecretOf, signSiblingBody } from "@lunora/shard-engine";
 
 /** Opaque authority scope and its monotonic revision. No access policy is stored on the shard. */
 export interface DeliveryPermit {
+    /** Opaque authority key, at most 256 UTF-8 bytes to bound persisted socket metadata. */
     readonly scope: string;
     readonly epoch: number;
 }
@@ -34,13 +35,20 @@ export const validDeliveryPermit = (value: unknown): value is DeliveryPermit => 
     return (
         typeof permit.scope === "string" &&
         permit.scope.length > 0 &&
-        permit.scope.length <= 1024 &&
+        new TextEncoder().encode(permit.scope).byteLength <= 256 &&
         Number.isSafeInteger(permit.epoch) &&
         (permit.epoch ?? -1) >= 0
     );
 };
 
-export const deliveryAccessDenied = (): LunoraError => new LunoraError("FORBIDDEN", "AccessDenied");
+class DeliveryAccessDenied extends LunoraError {
+    public constructor() {
+        super("FORBIDDEN", "AccessDenied");
+    }
+}
+
+export const deliveryAccessDenied = (): LunoraError => new DeliveryAccessDenied();
+export const isDeliveryAccessDenied = (error: unknown): boolean => error instanceof DeliveryAccessDenied;
 
 /** SQL uses the host's synchronous storage and output durability gate, including after hibernation. */
 export class DeliveryFence {
