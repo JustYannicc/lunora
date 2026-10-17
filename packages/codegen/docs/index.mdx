@@ -85,12 +85,13 @@ lunora codegen --lazy-functions # opt into per-module function imports
 
 Under `lunora dev`, codegen runs in watch mode: save a function or change the
 schema and the regenerated types are in the module graph before you switch
-windows. Pass `lunora dev --lazy-functions` to keep lazy imports enabled across
-startup, watch runs, and Studio edits.
+windows.
 
-Lazy function imports are opt-in; codegen keeps the eager registry by default.
-Pass `--lazy-functions` to `prepare`, `build`, and `deploy` whenever they
-regenerate the registry, and to `verify` to check the same metadata requirements.
+Pass `--lazy-functions` or set `LUNORA_LAZY_FUNCTIONS` to `1` or `true` in the
+shell to enable lazy imports for CLI `codegen`, `dev`, `prepare`, `build`,
+`deploy`, and `verify`, including dev watch runs and Studio edits. Either opt-in
+enables lazy imports; a false flag value does not override an enabled
+environment setting. With neither enabled, generation stays eager.
 `deploy --prebuilt` keeps the output from an earlier build without regenerating.
 
 ## Don't edit `_generated/`

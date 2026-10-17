@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
 
 import { emitFunctions, emitLazyFunctionModules, emitShard } from "../../src/emit";
-import type { FunctionIR } from "../../src/ir";
+import type { FunctionIR, SchemaIR } from "../../src/ir";
 
 const deferred = (): { promise: Promise<void>; resolve: () => void } => {
     let complete!: () => void;
@@ -27,7 +27,11 @@ const makeGeneratedShard = async (
     config: Record<string, unknown> = {},
     entryKind: "action" | "mutation" = "action",
     coldKind: "action" | "mutation" | "query" = "mutation",
+    schemaSource = "export default { tables: [], vectorIndexes: [] };\n",
+    schema?: SchemaIR,
+    capabilities: NonNullable<Parameters<typeof emitShard>[0]["capabilities"]> = new Set(),
 ): Promise<new (state: unknown, env: unknown) => GeneratedShard> => {
+    const shardSchema = schema ?? { tables: [], vectorIndexes: [] };
     const generated = join(root, "lunora", "_generated");
     mkdirSync(join(generated, "fn"), { recursive: true });
     const functions: FunctionIR[] = [
@@ -37,9 +41,9 @@ const makeGeneratedShard = async (
     ];
     const options = { functions, lazyFunctions };
     writeFileSync(join(root, "package.json"), JSON.stringify({ type: "module" }));
-    writeFileSync(join(root, "lunora", "schema.ts"), "export default { tables: [], vectorIndexes: [] };\n");
+    writeFileSync(join(root, "lunora", "schema.ts"), schemaSource);
     writeFileSync(join(generated, "functions.ts"), emitFunctions(options));
-    writeFileSync(join(generated, "shard.ts"), emitShard({ lazyFunctions, schema: { tables: [], vectorIndexes: [] } }));
+    writeFileSync(join(generated, "shard.ts"), emitShard({ capabilities, lazyFunctions, schema: shardSchema }));
     for (const [name, source] of Object.entries(emitLazyFunctionModules(options))) {
         writeFileSync(join(generated, name), source);
     }

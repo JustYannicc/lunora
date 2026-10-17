@@ -62,6 +62,9 @@ const renderBuildContext = ({
     workflowsContextField,
 }: BuildContextParts): string => {
     const actionOnlyHasAny = actionOnlyFields.length > 0;
+    const databaseContextReturn = ormContextField === "" ? "{ db }" : "{ db, orm: bindOrm(facade) }";
+    const databaseContextField = ormContextField === "" ? "" : "\n                orm: databaseContext.orm,";
+    const mutationOrmDescriptor = ormContextField === "" ? "" : "orm: { configurable: true, enumerable: true, value: mutationDatabase.orm, writable: true },";
     // The builds are written at `buildCtx` body depth (they are shared with the
     // every-context helpers' shape); here they sit one block deeper.
     const actionOnlyBlock = actionOnlyHasAny
@@ -175,12 +178,11 @@ ${vectorsBuild}${everyContextBuild}${containersBuild}${workflowsBuild}${queuesBu
                 ]);
             const storage = makeStorage(requestOrigin);
             // \`ctx.storage.deleteAfterCommit(key)\`, on every dispatch that can host
-            // a MUTATION handler — which is not only a mutation dispatch:
-            // \`ctx.runMutation\` hands the CALLER's ctx to the callee, so a mutation
-            // reached from an action runs on the action's ctx. Wrapping mutations
-            // alone made that composition throw a bare TypeError on a method the
-            // handler's own type promises. Queries stay unwrapped: they cannot host
-            // one, and their ctx is built on the hot subscription path.
+            // a MUTATION handler — which is not only a mutation dispatch. An
+            // action's composed mutation gets a child ctx with its own deferred
+            // delete queue, while mutations reuse the admitted ctx. Queries stay
+            // unwrapped: they cannot host one, and their ctx is built on the hot
+            // subscription path.
             //
             // Every dispatch wrapped here also flushes (see \`handleRpc\` and
             // \`runReactor\`) — a queue nothing drains leaks silently, which is worse
@@ -216,8 +218,15 @@ ${globalDatabaseLine}            // \`ctx.db\`, wrapped in automatic instrumenta
             // breakdown) to the wide event rather than a span per call, so a
             // handler making hundreds of queries stays readable. See
             // \`instrumentDatabase\` for the \`"spans"\` / \`"off"\` levels.
-            const db: DatabaseWriterLike = this.instrumentDb(createShardCtxDb(${databaseOptions}), logFunctionPath, traceAnchor, observability);
-${facadeBlock}${paymentsBuild}
+            // Schema triggers close over this DB's scheduler, so a composed
+            // mutation must rebuild its DB and table/ORM views with its own queue.
+            const makeDatabaseContext = (scheduler: SchedulerLike) => {
+                const db: DatabaseWriterLike = this.instrumentDb(createShardCtxDb(${databaseOptions}), logFunctionPath, traceAnchor, observability);
+${facadeBlock}                return ${databaseContextReturn};
+            };
+            const databaseContext = makeDatabaseContext(scheduler);
+            const db = databaseContext.db;
+${paymentsBuild}
 
             // \`ctx.trace\` / \`ctx.metrics\`: spans and measurements to the same sink.
             // The trace anchor is threaded explicitly for the same reason \`identity\`
@@ -276,7 +285,7 @@ ${notifyBuild}
                 // to the handler so code that signs its own URLs (a copy-in
                 // \`createStorage\`) can fall back to it too. \`undefined\` for a
                 // query and for a deferred dispatch, for the reasons given there.
-                origin: requestOrigin,${ormContextField}
+                origin: requestOrigin,${databaseContextField}
                 scheduler,
                 span,
                 storage: contextStorage,
@@ -303,11 +312,18 @@ ${
                     // inherit that mutation's transaction.
                     const mutationCtx: Record<string, unknown> = this.mutationContexts.has(target)
                         ? target
-                        : Object.defineProperties({}, {
-                            ...Object.getOwnPropertyDescriptors(target),
-                            scheduler: { configurable: true, enumerable: true, value: withDeferredSchedules(schedulerBase, this.scheduleOutbox()), writable: true },
-                            storage: { configurable: true, enumerable: true, value: withDeferredDeletes(storage), writable: true },
-                        });
+                        : (() => {
+                            const mutationScheduler = withDeferredSchedules(schedulerBase, this.scheduleOutbox());
+                            const mutationDatabase = makeDatabaseContext(mutationScheduler);
+
+                            return Object.defineProperties({}, {
+                                ...Object.getOwnPropertyDescriptors(target),
+                                db: { configurable: true, enumerable: true, value: mutationDatabase.db, writable: true },
+                                ${mutationOrmDescriptor}
+                                scheduler: { configurable: true, enumerable: true, value: mutationScheduler, writable: true },
+                                storage: { configurable: true, enumerable: true, value: withDeferredDeletes(storage), writable: true },
+                            });
+                        })();
 
                     if (mutationCtx !== target) {
                         installRun(mutationCtx, kind);
