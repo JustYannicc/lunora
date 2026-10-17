@@ -1668,7 +1668,7 @@ export default app.extend(() => ({ backupCron: "0 4 * * *" })).build();
         });
 
         it("emits the ctx.orm namespace bound to the shipped facade generics", () => {
-            expect.assertions(11);
+            expect.assertions(14);
 
             const result = runCodegen({ projectRoot: workdir, wranglerQueueProducers: [] });
 
@@ -1687,12 +1687,15 @@ export default app.extend(() => ({ backupCron: "0 4 * * *" })).build();
             expect(result.generated.server).toContain("readonly orm: OrmReader;");
             expect(result.generated.server).toContain("readonly orm: OrmWriter;");
 
-            // Runtime: the facade binding is the shared `@lunora/server` helper
-            // (one source of truth with the RLS middleware), and `ctx.orm` is
-            // built from it via `bindOrm`.
+            // Runtime: the database facade and ORM are built together for each
+            // scheduler context. The outer ctx carries the matching ORM when it
+            // gets a derived database context for a composed mutation.
             expect(result.generated.shard).toContain('import { bindOrm, bindTableFacade } from "@lunora/server";');
             expect(result.generated.shard).toContain("= bindTableFacade(");
-            expect(result.generated.shard).toContain("orm: bindOrm(facade),");
+            expect(result.generated.shard).toContain("return { db, orm: bindOrm(facade) };");
+            expect(result.generated.shard).toContain("const databaseContext = makeDatabaseContext(scheduler);");
+            expect(result.generated.shard).toContain("orm: databaseContext.orm,");
+            expect(result.generated.shard).toContain("value: mutationDatabase.orm, writable: true },");
         });
 
         it("emits functions.ts dispatch table keyed by `<namespace>:<fnName>`", () => {
@@ -4834,7 +4837,7 @@ export const ping = query({ args: { id: v.string() }, handler: async (_context, 
         });
 
         it("wires ctx.payments into the ShardDO when payments are used", () => {
-            expect.assertions(8);
+            expect.assertions(10);
 
             const schema: SchemaIR = { tables: [], vectorIndexes: [] };
 
@@ -4844,7 +4847,9 @@ export const ping = query({ args: { id: v.string() }, handler: async (_context, 
             expect(output).toContain("payment?: (env: Record<string, unknown>) => PaymentsFromContextOptions;");
             expect(output).toContain("const paymentStub: LunoraPayment");
             expect(output).toContain("config.payment");
-            expect(output).toContain("payments ??= config.payment");
+            expect(output).toContain("const paymentsByContext = new WeakMap<object, LunoraPayment>();");
+            expect(output).toContain("payments = config.payment");
+            expect(output).toContain("paymentsByContext.set(this, payments);");
 
             // The money-moving facade methods are stubbed too — not left as `undefined` behind the cast.
             for (const method of ["cancelPayment", "capturePayment", "refundPayment"]) {
