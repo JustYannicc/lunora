@@ -1133,6 +1133,10 @@ interface SocketDelivery {
 
 /** Per-subscription memo used to suppress no-op pushes. */
 interface SubscriptionMemo {
+    clientWatermark?: number;
+    cursor?: number;
+    epoch?: string;
+
     /**
      * {@link ShardDO.writeGeneration} captured before the run that produced this
      * baseline started reading. A later push carrying a LOWER generation read
@@ -2987,6 +2991,8 @@ abstract class ShardDO {
         this.closingSockets.add(ws);
 
         await this.ensureShardInit();
+
+        this.rejectRetainedRooms(ws);
 
         // Fire `onDisconnect` lifecycle hooks the instant the socket drops —
         // replaying the identity + context recorded at connect — so presence and
@@ -7086,6 +7092,10 @@ abstract class ShardDO {
             this.sendFrame(ws, JSON.stringify({ message: "invalid envelope", type: "error" }), "control");
 
             return;
+        }
+
+        if (envelope.type === "connect" || envelope.type === "whisper" || envelope.type === "whisper_subscribe" || envelope.type === "whisper_unsubscribe") {
+            this.rejectRetainedRooms(ws);
         }
 
         if (
@@ -12425,7 +12435,13 @@ abstract class ShardDO {
                         return;
                     }
                     const memo = this.subMemos.get(ws)?.get(subId);
-                    if (this.deliveryAuthorization && memo?.lastJson !== UNDELIVERED_BASELINE && memoProvesUnchanged(memo, changed, changedKeys)) {
+                    if (
+                        this.deliveryAuthorization &&
+                        memo !== undefined &&
+                        memo.lastJson !== UNDELIVERED_BASELINE &&
+                        memoProvesUnchanged(memo, changed, changedKeys)
+                    ) {
+                        this.sendSubscriptionSettlement(ws, subId, { cursor: frameCursor, epoch: frameEpoch, generation }, delivery, permit, true);
                         return;
                     }
                     const outcome = await this.resolveReactiveOutcomeDeduped(functionPath, args, isAdmin, socketIdentity(attachment), reactiveRunCache);
@@ -12900,9 +12916,9 @@ abstract class ShardDO {
         return { baseCheckpoint: canResume ? shape.sinceSeq : undefined, cursor, epoch, reset: !canResume, rowsPatch };
     }
 
-    /** Attachments can retain unsupported shapes when a deployment enables delivery authorization. */
-    private rejectRetainedShapes(): number {
-        let remaining = 0;
+    /** Attachments can retain unsupported subscriptions when a deployment enables delivery authorization. */
+    private rejectRetainedShapesAndRooms(): number {
+        let remaining = this.rejectRetainedRooms();
 
         for (const ws of this.runner.sockets()) {
             for (const subId of Object.keys(this.readAttachment(ws).shapes ?? {})) {
@@ -12930,7 +12946,7 @@ abstract class ShardDO {
      */
     private async pokeShapeSubscribers(changed: Set<string>, frameCursor: number | undefined, frameEpoch: string | undefined): Promise<void> {
         if (this.deliveryAuthorization) {
-            this.rejectRetainedShapes();
+            this.rejectRetainedShapesAndRooms();
             return;
         }
         const sockets = [...this.runner.sockets()];
@@ -14325,7 +14341,7 @@ abstract class ShardDO {
      */
     private async pollGlobalShapes(trace?: TraceRefLike): Promise<number> {
         if (this.deliveryAuthorization) {
-            return this.rejectRetainedShapes();
+            return this.rejectRetainedShapesAndRooms();
         }
         const sockets = [...this.runner.sockets()];
         let remaining = 0;
@@ -14709,9 +14725,7 @@ abstract class ShardDO {
         if (existing?.lastJson === json) {
             // An unchanged result still settles optimistic overlays at this cursor.
             // Keep its baseline intact when the control frame cannot be delivered.
-            const watermarkField = clientWatermark === undefined ? "" : `,"lastMutationId":${String(clientWatermark)}`;
-            const frame = `{"type":"settled","id":${JSON.stringify(subId)}${watermarkField}${cursorSuffix}}`;
-            if (this.deliveryAuthorization && !this.sendFrame(ws, frame, { subId, permit })) {
+            if (!this.sendSubscriptionSettlement(ws, subId, stamp, delivery, permit) && this.deliveryAuthorization) {
                 return;
             }
             existing.generation = generation;
@@ -14726,9 +14740,6 @@ abstract class ShardDO {
             // suppressed or not — matches the non-suppressed branch below.
             existing.ranges = outcome.ranges;
 
-            if (!this.deliveryAuthorization) {
-                this.sendFrame(ws, frame);
-            }
             return;
         }
 
@@ -14777,6 +14788,9 @@ abstract class ShardDO {
             return;
         }
         memos.set(subId, {
+            cursor: delivered ? cursor : existing?.cursor,
+            epoch: delivered ? epoch : existing?.epoch,
+            clientWatermark: delivered ? clientWatermark : existing?.clientWatermark,
             // Tracks `lastJson`: an undelivered value leaves the baseline, and so
             // its generation, where the last delivered one put it.
             generation: delivered ? generation : (existing?.generation ?? generation),
@@ -14784,6 +14798,37 @@ abstract class ShardDO {
             ranges: outcome.ranges,
             tables: outcome.tables,
         });
+    }
+
+    private sendSubscriptionSettlement(
+        ws: ShardSocketLike,
+        subId: string,
+        stamp: { cursor: number | undefined; epoch: string | undefined; generation: number },
+        delivery: SocketDelivery,
+        permit: SubscriptionDeliveryPermit | undefined,
+        advanceOnly = false,
+    ): boolean {
+        const memo = this.subMemos.get(ws)?.get(subId);
+        if (memo === undefined || !this.allowsSubscriptionOutcome(ws, subId, permit, stamp.generation)) {
+            return false;
+        }
+        if (
+            advanceOnly &&
+            (stamp.cursor === undefined || (stamp.cursor === memo.cursor && stamp.epoch === memo.epoch)) &&
+            (delivery.clientWatermark === undefined || delivery.clientWatermark <= (memo.clientWatermark ?? 0))
+        ) {
+            return false;
+        }
+        const watermarkField = delivery.clientWatermark === undefined ? "" : `,"lastMutationId":${String(delivery.clientWatermark)}`;
+        const frame = `{"type":"settled","id":${JSON.stringify(subId)}${watermarkField}${cdcSuffix(stamp.cursor, stamp.epoch)}}`;
+        if (!this.sendFrame(ws, frame, { subId, permit })) {
+            return false;
+        }
+        memo.cursor = stamp.cursor;
+        memo.epoch = stamp.epoch;
+        memo.clientWatermark = delivery.clientWatermark;
+        memo.generation = stamp.generation;
+        return true;
     }
 
     private allowsSubscriptionOutcome(ws: ShardSocketLike, subId: string, permit: SubscriptionDeliveryPermit | undefined, generation: number): boolean {
@@ -15328,6 +15373,30 @@ abstract class ShardDO {
         return allowed;
     }
 
+    /** Retiring an unsupported room must not invoke its application mutations or broadcasts. */
+    private rejectRetainedRooms(socket?: ShardSocketLike): number {
+        if (!this.deliveryAuthorization) {
+            return 0;
+        }
+        const sockets = new Set<ShardSocketLike>(this.runner.sockets());
+        if (socket !== undefined) {
+            sockets.add(socket);
+        }
+        let remaining = 0;
+        for (const ws of sockets) {
+            for (const topic of this.readAttachment(ws).whispers ?? []) {
+                const message = "delivery mode unsupported with delivery authorization";
+                this.sendFrame(ws, JSON.stringify({ type: "error", code: "NOT_IMPLEMENTED", error: { code: "NOT_IMPLEMENTED", message }, topic }), "control");
+                if (this.setWhisperMembership(ws, topic, false)) {
+                    this.whisperVerdicts.get(ws)?.delete(`subscribe:${topic}`);
+                    this.whisperVerdicts.get(ws)?.delete(`send:${topic}`);
+                }
+            }
+            remaining += this.readAttachment(ws).whispers?.length ?? 0;
+        }
+        return remaining;
+    }
+
     /**
      * Join (`join = true`) or leave a whisper `topic` on this socket. Membership rides
      * the hibernation attachment, bounded by
@@ -15432,6 +15501,10 @@ abstract class ShardDO {
      * unforgeable either way.
      */
     private async broadcastWhisper(sender: ShardSocketLike, topic: string, data: unknown): Promise<void> {
+        if (this.deliveryAuthorization) {
+            this.rejectRetainedRooms();
+            return;
+        }
         // Rate-limit first — cheapest rejection, and it bounds the O(connections)
         // fan-out cost a tight whisper loop would otherwise impose.
         if (!this.allowWhisper(sender)) {
@@ -15472,6 +15545,10 @@ abstract class ShardDO {
      * @returns the number of sockets the frame was sent to
      */
     private deliverWhisperLocal(topic: string, frame: string, exclude: undefined | ShardSocketLike): number {
+        if (this.deliveryAuthorization) {
+            this.rejectRetainedRooms();
+            return 0;
+        }
         let scanned = 0;
         let delivered = 0;
 
@@ -15509,8 +15586,9 @@ abstract class ShardDO {
             }
 
             // Best-effort fan-out; a closed socket is simply skipped.
-            this.sendFrame(ws, frame);
-            delivered += 1;
+            if (this.sendFrame(ws, frame)) {
+                delivered += 1;
+            }
         }
 
         this.fanout.whisper = recordFanoutPass(this.fanout.whisper, scanned, delivered, 0);
@@ -15736,6 +15814,11 @@ abstract class ShardDO {
         joinEpoch: number | undefined,
         identity: SocketAttachment | undefined,
     ): Promise<boolean> {
+        if (this.deliveryAuthorization) {
+            this.rejectRetainedRooms(ws);
+            return false;
+        }
+
         // Checked here, not at receive: a queued event runs only once the events ahead of it have settled.
         if (this.skipsQueuedRoomEvent(ws, topic, kind, joinEpoch)) {
             return true;
@@ -15818,6 +15901,10 @@ abstract class ShardDO {
      * restores them. Fire-and-forget: `broadcast` is a synchronous callback.
      */
     private broadcastRoomMessage(topic: string, data: unknown, joiner?: ShardSocketLike): void {
+        if (this.deliveryAuthorization) {
+            this.rejectRetainedRooms();
+            return;
+        }
         // eslint-disable-next-line unicorn/no-null -- an undefined broadcast body is delivered as an explicit JSON `null`, mirroring `broadcastWhisper`
         const dataJson = JSON.stringify(encodeWire(data ?? null));
 

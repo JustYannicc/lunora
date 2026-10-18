@@ -133,7 +133,7 @@ must route to the owner.
 Query caches and shared subscription evaluations are bypassed. Every write flush calls
 the authority callback again for guarded subscriptions. If the permit is unchanged, the
 subscription already has a delivered result and the write leaves its read set untouched,
-Lunora skips the query and sends no `settled` frame. Reconnects send fresh full snapshots.
+Lunora skips the query and sends a `settled` frame only when its cursor or client watermark advances. Reconnects send fresh full snapshots.
 
 `DELIVERY_FENCED` means the operation may have committed. Retry with the same native
 transport key to check for its receipt. If authority changed, the shard may return
