@@ -55,7 +55,7 @@ describe("emitShard — transactional ctx.runMutation", () => {
         expect(methodBody(emitted, "public override async handleRpc(")).toContain("await this.runMutationTransaction(ctx, async () => {");
         expect(methodBody(emitted, "protected override async runReactor(")).toContain("await this.runMutationTransaction(ctx, async () =>");
         expect(emitted).toContain(
-            'dispatchRun("mutation", reference.__lunoraRef, fnArgs, target, kind, async (work) => this.runMutationTransaction(target, work))',
+            'dispatchRun("mutation", reference.__lunoraRef, fnArgs, mutationCtx, kind, async (work) => this.runMutationTransaction(mutationCtx, work))',
         );
     });
 
@@ -77,8 +77,8 @@ describe("emitShard — transactional ctx.runMutation", () => {
 
         // A `ctx.runMutation` from inside a mutation is NESTED: SQLite-in-DO has no
         // savepoints, so it rides the enclosing span rather than opening a second.
-        expect(helper).toContain("if (this.isInTransaction()) {");
-        expect(helper.indexOf("if (this.isInTransaction()) {")).toBeLessThan(helper.indexOf("await this.runInTransaction(work)"));
+        expect(helper).toContain("if (this.mutationContexts.has(ctx as object)) {");
+        expect(helper.indexOf("if (this.mutationContexts.has(ctx as object)) {")).toBeLessThan(helper.indexOf("await this.runInTransaction(async () => {"));
     });
 
     it("dispatches the handler under the caller's wrapper when one is supplied", () => {
@@ -143,7 +143,7 @@ describe("emitShard — deferred scheduling", () => {
         const emitted = shard();
         const helper = methodBody(emitted, "private async runMutationTransaction<T>(");
         const open = helper.indexOf("beginDeferredSchedules(ctx as { scheduler?: unknown })");
-        const span = helper.indexOf("await this.runInTransaction(work)");
+        const span = helper.indexOf("await this.runInTransaction(async () => {");
 
         expect(open).toBeGreaterThan(-1);
         // The window opens before the span and the commit settle comes after it: a
@@ -180,7 +180,7 @@ describe("emitShard — ctx.run* caller guard", () => {
         const emitted = shard();
 
         expect(emitted).toContain('dispatchRun("action", reference.__lunoraRef, fnArgs, target, kind)');
-        expect(emitted).toContain('dispatchRun("mutation", reference.__lunoraRef, fnArgs, target, kind,');
+        expect(emitted).toContain('dispatchRun("mutation", reference.__lunoraRef, fnArgs, mutationCtx, kind,');
         // `runQuery` passes it too: it hands the callee a query context, so the
         // caller's kind cannot be recovered from the ctx it is handed.
         expect(methodBody(emitted, "private buildCtx(")).toContain("                        kind,\n                    );");

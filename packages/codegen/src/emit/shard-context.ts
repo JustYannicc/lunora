@@ -19,6 +19,7 @@ interface BuildContextParts {
     everyContextField: string;
     facadeBlock: string;
     globalDatabaseLine: string;
+    lazyFunctions?: boolean;
     notifyBuild: string;
     ormContextField: string;
     paymentsBuild: string;
@@ -46,6 +47,7 @@ const renderBuildContext = ({
     everyContextField,
     facadeBlock,
     globalDatabaseLine,
+    lazyFunctions = false,
     notifyBuild,
     ormContextField,
     paymentsBuild,
@@ -60,6 +62,12 @@ const renderBuildContext = ({
     workflowsContextField,
 }: BuildContextParts): string => {
     const actionOnlyHasAny = actionOnlyFields.length > 0;
+    const databaseContextReturn = ormContextField === "" ? "{ db }" : "{ db, orm: bindOrm(facade) }";
+    const databaseContextField = ormContextField === "" ? "" : "\n                orm: databaseContext.orm,";
+    const mutationOrmDescriptor =
+        ormContextField === ""
+            ? ""
+            : "\n                                orm: { configurable: true, enumerable: true, value: mutationDatabase.orm, writable: true },";
     // The builds are written at `buildCtx` body depth (they are shared with the
     // every-context helpers' shape); here they sit one block deeper.
     const actionOnlyBlock = actionOnlyHasAny
@@ -118,11 +126,9 @@ ${vectorsBuild}${everyContextBuild}${containersBuild}${workflowsBuild}${queuesBu
             // equivalent of an \`afterCommit\` hook, and the SchedulerDO persists the
             // job the moment it is called — so inside a mutation the call is BUFFERED
             // and replayed after the transaction commits (a rollback drops it).
-            // Wrapped on the same dispatches as the deferred-delete queue and for the
-            // same reason: \`ctx.runMutation\` hands the CALLER's ctx to the callee, so
-            // a mutation reached from an action schedules through the action's ctx.
-            // An action's own schedules stay immediate — the window is only open
-            // while a transaction is (see \`runMutationTransaction\`).
+            // Composed mutations get their own facade when the caller is outside
+            // a transaction. True nested calls share the enclosing facade and open
+            // a nested window. The action's own schedules stay immediate.
             //
             // Every kind but \`query\` is wrapped, because \`runMutationTransaction\`
             // is installed on \`ctx.runMutation\` for every kind but \`query\`: a
@@ -175,12 +181,11 @@ ${vectorsBuild}${everyContextBuild}${containersBuild}${workflowsBuild}${queuesBu
                 ]);
             const storage = makeStorage(requestOrigin);
             // \`ctx.storage.deleteAfterCommit(key)\`, on every dispatch that can host
-            // a MUTATION handler — which is not only a mutation dispatch:
-            // \`ctx.runMutation\` hands the CALLER's ctx to the callee, so a mutation
-            // reached from an action runs on the action's ctx. Wrapping mutations
-            // alone made that composition throw a bare TypeError on a method the
-            // handler's own type promises. Queries stay unwrapped: they cannot host
-            // one, and their ctx is built on the hot subscription path.
+            // a MUTATION handler — which is not only a mutation dispatch. An
+            // action's composed mutation gets a child ctx with its own deferred
+            // delete queue, while mutations reuse the admitted ctx. Queries stay
+            // unwrapped: they cannot host one, and their ctx is built on the hot
+            // subscription path.
             //
             // Every dispatch wrapped here also flushes (see \`handleRpc\` and
             // \`runReactor\`) — a queue nothing drains leaks silently, which is worse
@@ -216,8 +221,15 @@ ${globalDatabaseLine}            // \`ctx.db\`, wrapped in automatic instrumenta
             // breakdown) to the wide event rather than a span per call, so a
             // handler making hundreds of queries stays readable. See
             // \`instrumentDatabase\` for the \`"spans"\` / \`"off"\` levels.
-            const db: DatabaseWriterLike = this.instrumentDb(createShardCtxDb(${databaseOptions}), logFunctionPath, traceAnchor, observability);
-${facadeBlock}${paymentsBuild}
+            // Schema triggers close over this DB's scheduler, so a composed
+            // mutation must rebuild its DB and table/ORM views with its own queue.
+            const makeDatabaseContext = (scheduler: SchedulerLike) => {
+                const db: DatabaseWriterLike = this.instrumentDb(createShardCtxDb(${databaseOptions}), logFunctionPath, traceAnchor, observability);
+${facadeBlock}                return ${databaseContextReturn};
+            };
+            const databaseContext = makeDatabaseContext(scheduler);
+            const db = databaseContext.db;
+${paymentsBuild}
 
             // \`ctx.trace\` / \`ctx.metrics\`: spans and measurements to the same sink.
             // The trace anchor is threaded explicitly for the same reason \`identity\`
@@ -276,20 +288,51 @@ ${notifyBuild}
                 // to the handler so code that signs its own URLs (a copy-in
                 // \`createStorage\`) can fall back to it too. \`undefined\` for a
                 // query and for a deferred dispatch, for the reasons given there.
-                origin: requestOrigin,${ormContextField}
+                origin: requestOrigin,${databaseContextField}
                 scheduler,
                 span,
                 storage: contextStorage,
                 trace,${vectorsContextField}${everyContextField}${paymentsContextField}${containersContextField}${workflowsContextField}${queuesContextField}${topicsContextField}${agentsContextField}
             };
 ${isActionLine}${actionOnlyBlock}
-            const installRun = (target: Record<string, unknown>, kind: typeof contextKind): void => {
-                target.runAction = (reference: FunctionReference, fnArgs: Record<string, unknown>) => dispatchRun("action", reference.__lunoraRef, fnArgs, target, kind);
+${
+    lazyFunctions
+        ? `            const captureScope = (): (() => void) => {
+                const requestScope = this.captureRequestScope();
+                return () => this.restoreRequestScope(requestScope);
+            };
+
+`
+        : ""
+}            const installRun = (target: Record<string, unknown>, kind: typeof contextKind): void => {
+                target.runAction = (reference: FunctionReference, fnArgs: Record<string, unknown>) => dispatchRun("action", reference.__lunoraRef, fnArgs, target, kind${lazyFunctions ? ", undefined, captureScope" : ""});
                 // The composed mutation runs under the SAME wrapper the top-level RPC
                 // uses, so "do the transactional work in a mutation and call it from the
                 // action" — the recipe the docs give for atomicity — actually is atomic.
-                target.runMutation = (reference: FunctionReference, fnArgs: Record<string, unknown>) =>
-                    dispatchRun("mutation", reference.__lunoraRef, fnArgs, target, kind, async (work) => this.runMutationTransaction(target, work));
+                target.runMutation = (reference: FunctionReference, fnArgs: Record<string, unknown>) => {
+                    // An action can start sibling mutations concurrently. Each owns its
+                    // context and deferral queues; only calls from an admitted mutation
+                    // inherit that mutation's transaction.
+                    const mutationCtx: Record<string, unknown> = this.mutationContexts.has(target)
+                        ? target
+                        : (() => {
+                            const mutationScheduler = withDeferredSchedules(schedulerBase, this.scheduleOutbox());
+                            const mutationDatabase = makeDatabaseContext(mutationScheduler);
+
+                            return Object.defineProperties({}, {
+                                ...Object.getOwnPropertyDescriptors(target),
+                                db: { configurable: true, enumerable: true, value: mutationDatabase.db, writable: true },${mutationOrmDescriptor}
+                                scheduler: { configurable: true, enumerable: true, value: mutationScheduler, writable: true },
+                                storage: { configurable: true, enumerable: true, value: withDeferredDeletes(storage), writable: true },
+                            });
+                        })();
+
+                    if (mutationCtx !== target) {
+                        installRun(mutationCtx, kind);
+                    }
+
+                    return dispatchRun("mutation", reference.__lunoraRef, fnArgs, mutationCtx, kind, async (work) => this.runMutationTransaction(mutationCtx, work)${lazyFunctions ? ", captureScope" : ""});
+                };
                 // \`ctx.runQuery(ref, args, { untracked: true })\` runs the sub-query on
                 // its OWN query context, built without the subscription's read-footprint
                 // hooks — so its reads never enter this subscription's footprint and a
@@ -311,7 +354,7 @@ ${isActionLine}${actionOnlyBlock}
                         runOptions?.untracked === true
                             ? this.buildCtx({ bookmarks: options.bookmarks, functionPath: options.functionPath, headroom: options.headroom, identity: caller, kind: "query", scope: options.scope })
                             : queryContext(),
-                        kind,
+                        kind,${lazyFunctions ? "\n                        undefined,\n                        captureScope," : ""}
                     );
             };
 

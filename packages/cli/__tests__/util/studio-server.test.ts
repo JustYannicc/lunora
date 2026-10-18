@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createServer as createHttpServer, request as httpRequest } from "node:http";
 import { connect, createServer } from "node:net";
@@ -220,6 +220,7 @@ describe("startStudioServer", () => {
     const blockers: ReturnType<typeof createServer>[] = [];
 
     afterEach(async () => {
+        vi.unstubAllEnvs();
         await Promise.all(
             blockers.map(
                 (server) =>
@@ -617,19 +618,27 @@ describe("startStudioServer", () => {
         }
     });
 
-    it("forwards the host's apiSpec into a schema edit, so the edit does not delete the project's openrpc.json", async () => {
-        expect.assertions(2);
+    it.each([
+        { lazyFunctions: true, environment: "" },
+        { lazyFunctions: undefined, environment: "1" },
+        { lazyFunctions: false, environment: "true" },
+    ])(
+        "preserves the host's API spec and lazy registry after a schema edit with flag=$lazyFunctions and environment=$environment",
+        async ({ lazyFunctions, environment }) => {
+            expect.assertions(5);
 
-        // Codegen writes the spec its mode names and REMOVES the other, so a studio
-        // edit that reached codegen with no `apiSpec` defaulted to "openapi" and
-        // deleted the `openrpc.json` an `apiSpec: "openrpc"` project had just
-        // generated. The Vite host already forwarded it; this one did not.
-        const projectRoot = mkdtempSync(join(tmpdir(), "lunora-studio-apispec-"));
+            vi.stubEnv("LUNORA_LAZY_FUNCTIONS", environment);
 
-        mkdirSync(join(projectRoot, "lunora"), { recursive: true });
-        writeFileSync(
-            join(projectRoot, "lunora", "schema.ts"),
-            `import { defineSchema, defineTable, v } from "@lunora/server";
+            // Codegen writes the spec its mode names and REMOVES the other, so a studio
+            // edit that reached codegen with no `apiSpec` defaulted to "openapi" and
+            // deleted the `openrpc.json` an `apiSpec: "openrpc"` project had just
+            // generated. The Vite host already forwarded it; this one did not.
+            const projectRoot = mkdtempSync(join(tmpdir(), "lunora-studio-apispec-"));
+
+            mkdirSync(join(projectRoot, "lunora"), { recursive: true });
+            writeFileSync(
+                join(projectRoot, "lunora", "schema.ts"),
+                `import { defineSchema, defineTable, v } from "@lunora/server";
 
 export default defineSchema({
     todos: defineTable({
@@ -637,25 +646,38 @@ export default defineSchema({
     }).index("by_text", ["text"]),
 });
 `,
-            "utf8",
-        );
+                "utf8",
+            );
 
-        const port = await getFreePort();
-        const studio = await startStudioServer({ apiSpec: "openrpc", cwd: projectRoot, port, workerOrigin: "http://localhost:8787" });
+            const port = await getFreePort();
+            writeFileSync(
+                join(projectRoot, "lunora", "todos.ts"),
+                'import { query } from "./_generated/server";\nexport const list = query({ handler: async () => [] });\n',
+                "utf8",
+            );
 
-        try {
-            const response = await postStudioJson(port, "/__lunora/schema-edit", `127.0.0.1:${String(port)}`, {
-                column: "due",
-                kind: "addOptionalColumn",
-                table: "todos",
-                validator: "v.number()",
-            });
+            const studio = await startStudioServer({ apiSpec: "openrpc", lazyFunctions, cwd: projectRoot, port, workerOrigin: "http://localhost:8787" });
 
-            expect(response.statusCode).toBe(200);
-            expect(existsSync(join(projectRoot, "lunora", "_generated", "openrpc.json"))).toBe(true);
-        } finally {
-            await studio.close();
-            rmSync(projectRoot, { force: true, recursive: true });
-        }
-    });
+            try {
+                const response = await postStudioJson(port, "/__lunora/schema-edit", `127.0.0.1:${String(port)}`, {
+                    column: "due",
+                    kind: "addOptionalColumn",
+                    table: "todos",
+                    validator: "v.number()",
+                });
+
+                expect(response.statusCode).toBe(200);
+                expect(existsSync(join(projectRoot, "lunora", "_generated", "openrpc.json"))).toBe(true);
+
+                const registry = readFileSync(join(projectRoot, "lunora", "_generated", "functions.ts"), "utf8");
+
+                expect(registry).toContain("export const LUNORA_FUNCTION_MANIFEST");
+                expect(registry).toContain("todos:list");
+                expect(existsSync(join(projectRoot, "lunora", "_generated", "fn", "lunora_todos_0.ts"))).toBe(true);
+            } finally {
+                await studio.close();
+                rmSync(projectRoot, { force: true, recursive: true });
+            }
+        },
+    );
 });

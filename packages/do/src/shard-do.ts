@@ -476,6 +476,21 @@ const WS_KEEPALIVE_PONG = "lunora-pong";
  */
 const MAX_WS_FRAME_UNITS = 1024 * 1024;
 
+/** Abort can arrive from unsubscribe or socket close while a stream awaits its next chunk. */
+const isStreamCancelled = (controller: AbortController): boolean => controller.signal.aborted;
+
+const reportStreamError = (ws: ShardSocketLike, id: string, error: unknown, logMessage: string): void => {
+    // Keep developer-facing non-internal errors; redact unexpected errors.
+    const { body, redacted } = toErrorBody(error, { fallbackCode: "INTERNAL_SERVER_ERROR", redactedMessage: "internal error" });
+
+    if (redacted) {
+        // eslint-disable-next-line no-console -- server-side diagnostic for an internal/unhandled stream error
+        console.error(`[@lunora/do] ${logMessage}:`, error);
+    }
+
+    trySendFrame(ws, JSON.stringify({ error: { code: body.code, message: body.message }, id, type: "error" }));
+};
+
 /** Get the per-socket `Map` stored under `ws` in `store`, creating it on first use. */
 const socketMap = <V>(store: WeakMap<ShardSocketLike, Map<string, V>>, ws: ShardSocketLike): Map<string, V> => {
     let map = store.get(ws);
@@ -3733,8 +3748,10 @@ abstract class ShardDO {
         }
     }
 
-    protected async runInTransaction<T>(handler: () => Promise<T> | T): Promise<T> {
-        if (this.transactionDepth > 0) {
+    protected async runInTransaction<T>(handler: () => Promise<T> | T, options?: { independent: true }): Promise<T> {
+        // Generated dispatch tracks nesting by caller context. An independent
+        // caller must wait on the writer gate even if another transaction is open.
+        if (this.transactionDepth > 0 && !options?.independent) {
             throw new LunoraError("NESTED_TRANSACTION", "nested transactions are not supported in SQLite-in-DO", { status: 500 });
         }
 
@@ -3768,6 +3785,9 @@ abstract class ShardDO {
 
         const result = await this.runner.runInTransaction(
             async () => {
+                // Another dispatch may have run while this caller waited on the gate, leaving its
+                // identity in the shared per-request fields; pin this caller's back before its handler.
+                this.restoreRequestScope(requestScope);
                 this.transactionDepth = 1;
                 this.transactionRequestScope = requestScope;
                 queued = [];
@@ -5050,6 +5070,10 @@ abstract class ShardDO {
     protected isCustomMutator(_functionPath: string): boolean {
         return false;
     }
+
+    /** Prepare a codegen-lazy procedure only after the caller's purpose is known. */
+    // eslint-disable-next-line class-methods-use-this -- the generated subclass overrides this for lazy function registries
+    protected prepareFunction(_functionPath: string, _reason: "rpc" | "subscription" | "stream" | "reactor"): void | Promise<void> {}
 
     /**
      * Whether `functionPath` names a registered `mutation` — the only function
@@ -7709,12 +7733,26 @@ abstract class ShardDO {
 
             dispatchScope = requestScope;
 
+            // Module evaluation is shared across dispatches, but the fields it
+            // temporarily yields through are not. Prepare before entering the
+            // shard-wide mutation gate; this remains after the synchronous
+            // preDispatchAnswer above.
+            const preparation = this.prepareFunction(payload.functionPath, "rpc");
+
+            if (preparation !== undefined) {
+                try {
+                    await preparation;
+                } finally {
+                    this.restoreRequestScope(requestScope);
+                }
+            }
+
             // Decode the wire codec (`bytes`/`bigint`/typed-array/±Infinity
             // leaves) ONLY for the handler, so `validateArgs` sees real
             // `ArrayBuffer`/`bigint` values. `payload.args` stays in wire form for
             // the request log/metrics below (JSON-safe — a raw `bigint` there
             // would throw `JSON.stringify`).
-            const runHandler = (): Promise<unknown> => {
+            const runHandler = async (): Promise<unknown> => {
                 const handlerArgs = decodeWire(payload.args ?? {}) as Record<string, unknown>;
 
                 // A registered `query` goes through the reactive cache when one
@@ -8111,6 +8149,77 @@ abstract class ShardDO {
         }
     }
 
+    /**
+     * Build `ctx.span` — the handle onto the **dispatch's own span**, and with it
+     * the wide-event surface.
+     *
+     * `ctx.trace(...)` creates a *new* child span for a sub-operation; this
+     * attaches to the one that already exists for the request. That is the
+     * distinction between "time this thing" and "record a fact about this
+     * request", and conflating them is why instrumentation usually degrades into
+     * log spam: with nowhere to put a fact, people reach for `ctx.log.info`.
+     *
+     * Attributes accumulate across the whole dispatch and are folded into the
+     * root span in `recordDispatchRootSpan` — the OTel-native form of a
+     * wide event, needing no non-standard "canonical log line" convention on the
+     * collector side.
+     *
+     * Keyed by `dispatchSpanKey` — trace id AND root span id — so two concurrent
+     * dispatches forwarded under the same client trace accumulate separately.
+     */
+
+    /**
+     * Snapshot the per-request identity/replay fields into a {@link RequestScope}.
+     * Paired with {@link ShardDO.restoreRequestScope}; see that type's docstring
+     * for why the dispatch path needs it.
+     */
+    protected captureRequestScope(): RequestScope {
+        return {
+            baselineSeq: this.currentRequestBaselineSeq,
+            bookmark: this.currentRequestBookmark,
+            clientId: this.currentRequestClientId,
+            clientSeq: this.currentRequestClientSeq,
+            deliveryPermit: this.currentDeliveryPermit,
+            identity: this.currentRequestIdentity,
+            ip: this.currentRequestIp,
+            mutationId: this.currentRequestMutationId,
+            mutatorClass: this.currentMutatorClass,
+            origin: this.currentRequestOrigin,
+            sampleErrors: this.currentRequestSampleErrors,
+            system: this.currentRequestSystem,
+            trace: this.currentRequestTrace,
+            traceparent: this.currentRequestTraceparent,
+            userId: this.currentRequestUserId,
+        };
+    }
+
+    /**
+     * Re-pin a {@link RequestScope} captured by {@link ShardDO.captureRequestScope}.
+     *
+     * Also clears the OUTBOUND bookmark, which is produced rather than captured:
+     * whatever sits in the field on the way in belongs to whichever dispatch ran
+     * during the wait, and echoing it would report a stranger's D1 write position
+     * as this request's. The dispatch path re-pins its own afterwards.
+     */
+    protected restoreRequestScope(scope: RequestScope): void {
+        this.currentRequestBaselineSeq = scope.baselineSeq;
+        this.currentRequestBookmark = scope.bookmark;
+        this.currentResponseBookmark = undefined;
+        this.currentRequestClientId = scope.clientId;
+        this.currentRequestClientSeq = scope.clientSeq;
+        this.currentDeliveryPermit = scope.deliveryPermit;
+        this.currentRequestIdentity = scope.identity;
+        this.currentRequestIp = scope.ip;
+        this.currentRequestOrigin = scope.origin;
+        this.currentRequestMutationId = scope.mutationId;
+        this.currentMutatorClass = scope.mutatorClass;
+        this.currentRequestSampleErrors = scope.sampleErrors;
+        this.currentRequestSystem = scope.system;
+        this.currentRequestTrace = scope.trace;
+        this.currentRequestTraceparent = scope.traceparent;
+        this.currentRequestUserId = scope.userId;
+    }
+
     private deliveryRoleSupported(): boolean {
         const key = this.runner.shardKey;
         return key === undefined || (parseRelayName(key) === undefined && parseReplicaName(key) === undefined);
@@ -8323,77 +8432,6 @@ abstract class ShardDO {
             this.deliveryResponsePermits.set(delivered, permit);
         }
         return delivered;
-    }
-
-    /**
-     * Build `ctx.span` — the handle onto the **dispatch's own span**, and with it
-     * the wide-event surface.
-     *
-     * `ctx.trace(...)` creates a *new* child span for a sub-operation; this
-     * attaches to the one that already exists for the request. That is the
-     * distinction between "time this thing" and "record a fact about this
-     * request", and conflating them is why instrumentation usually degrades into
-     * log spam: with nowhere to put a fact, people reach for `ctx.log.info`.
-     *
-     * Attributes accumulate across the whole dispatch and are folded into the
-     * root span in `recordDispatchRootSpan` — the OTel-native form of a
-     * wide event, needing no non-standard "canonical log line" convention on the
-     * collector side.
-     *
-     * Keyed by `dispatchSpanKey` — trace id AND root span id — so two concurrent
-     * dispatches forwarded under the same client trace accumulate separately.
-     */
-
-    /**
-     * Snapshot the per-request identity/replay fields into a {@link RequestScope}.
-     * Paired with {@link ShardDO.restoreRequestScope}; see that type's docstring
-     * for why the dispatch path needs it.
-     */
-    private captureRequestScope(): RequestScope {
-        return {
-            baselineSeq: this.currentRequestBaselineSeq,
-            bookmark: this.currentRequestBookmark,
-            clientId: this.currentRequestClientId,
-            clientSeq: this.currentRequestClientSeq,
-            deliveryPermit: this.currentDeliveryPermit,
-            identity: this.currentRequestIdentity,
-            ip: this.currentRequestIp,
-            mutationId: this.currentRequestMutationId,
-            mutatorClass: this.currentMutatorClass,
-            origin: this.currentRequestOrigin,
-            sampleErrors: this.currentRequestSampleErrors,
-            system: this.currentRequestSystem,
-            trace: this.currentRequestTrace,
-            traceparent: this.currentRequestTraceparent,
-            userId: this.currentRequestUserId,
-        };
-    }
-
-    /**
-     * Re-pin a {@link RequestScope} captured by {@link ShardDO.captureRequestScope}.
-     *
-     * Also clears the OUTBOUND bookmark, which is produced rather than captured:
-     * whatever sits in the field on the way in belongs to whichever dispatch ran
-     * during the wait, and echoing it would report a stranger's D1 write position
-     * as this request's. The dispatch path re-pins its own afterwards.
-     */
-    private restoreRequestScope(scope: RequestScope): void {
-        this.currentRequestBaselineSeq = scope.baselineSeq;
-        this.currentRequestBookmark = scope.bookmark;
-        this.currentResponseBookmark = undefined;
-        this.currentRequestClientId = scope.clientId;
-        this.currentRequestClientSeq = scope.clientSeq;
-        this.currentDeliveryPermit = scope.deliveryPermit;
-        this.currentRequestIdentity = scope.identity;
-        this.currentRequestIp = scope.ip;
-        this.currentRequestOrigin = scope.origin;
-        this.currentRequestMutationId = scope.mutationId;
-        this.currentMutatorClass = scope.mutatorClass;
-        this.currentRequestSampleErrors = scope.sampleErrors;
-        this.currentRequestSystem = scope.system;
-        this.currentRequestTrace = scope.trace;
-        this.currentRequestTraceparent = scope.traceparent;
-        this.currentRequestUserId = scope.userId;
     }
 
     /**
@@ -11750,19 +11788,28 @@ abstract class ShardDO {
             this.sendSubscriptionError(ws, id, "NOT_IMPLEMENTED", "delivery mode unsupported with delivery authorization");
             return;
         }
-        const iterable = this.executeStream(functionPath, args, socketIdentity(attachment));
 
-        if (!iterable) {
-            this.sendFrame(
-                ws,
-                JSON.stringify({ error: { code: "NOT_FOUND", message: `stream not registered: ${functionPath}` }, id, type: "error" }),
-                "control",
-            );
+        const reservation = this.reserveStream(ws, id);
 
+        if (reservation === undefined) {
             return;
         }
 
-        const cancellers = socketMap(this.streamCancellers, ws);
+        let durableAttached = false;
+
+        try {
+            durableAttached = await this.startStream(ws, id, functionPath, args, attachment, reservation.controller, sinceSeq, generation);
+        } catch (error: unknown) {
+            if (!isStreamCancelled(reservation.controller)) {
+                reportStreamError(ws, id, error, "unhandled stream error");
+            }
+        } finally {
+            this.releaseStream(ws, id, reservation.cancellers, reservation.controller, durableAttached);
+        }
+    }
+
+    private reserveStream(ws: ShardSocketLike, id: string): { cancellers: Map<string, AbortController>; controller: AbortController } | undefined {
+        const existingCancellers = this.streamCancellers.get(ws);
 
         // One live stream per `id`, refused rather than silently replacing the
         // incumbent. `id` is client-chosen (straight off the frame) and the cap
@@ -11771,7 +11818,7 @@ abstract class ShardDO {
         // orphaned the first `AbortController` (so neither `unsubscribe` nor
         // `webSocketClose` could reach it), and whichever pump finished first
         // deleted the entry its siblings were still cancelled through.
-        if (cancellers.has(id)) {
+        if (existingCancellers?.has(id)) {
             this.sendFrame(
                 ws,
                 JSON.stringify({
@@ -11782,14 +11829,14 @@ abstract class ShardDO {
                 "control",
             );
 
-            return;
+            return undefined;
         }
 
         // Enforce the per-socket in-flight cap before allocating any state
         // for the new stream. A rejected stream never lands in the
         // canceller map, so a flurry of rejections can't push the count
         // past the cap.
-        if (cancellers.size >= ShardDO.MAX_STREAMS_PER_SOCKET) {
+        if ((existingCancellers?.size ?? 0) >= ShardDO.MAX_STREAMS_PER_SOCKET) {
             this.sendFrame(
                 ws,
                 JSON.stringify({
@@ -11800,80 +11847,140 @@ abstract class ShardDO {
                 "control",
             );
 
-            return;
+            return undefined;
+        }
+
+        const cancellers = existingCancellers ?? socketMap(this.streamCancellers, ws);
+        const controller = new AbortController();
+        cancellers.set(id, controller);
+        return { cancellers, controller };
+    }
+
+    private async startStream(
+        ws: ShardSocketLike,
+        id: string,
+        functionPath: string,
+        args: Record<string, unknown>,
+        attachment: SocketAttachment,
+        controller: AbortController,
+        sinceSeq: number,
+        generation?: number,
+    ): Promise<boolean> {
+        const preparation = this.prepareFunction(functionPath, "stream");
+
+        if (preparation !== undefined) {
+            try {
+                await preparation;
+            } catch (error: unknown) {
+                if (!isStreamCancelled(controller)) {
+                    reportStreamError(ws, id, error, "stream preparation failed");
+                }
+
+                return false;
+            }
+        }
+
+        // An unsubscribe or close can land while a cold module is loading.
+        // The reservation makes either one visible before a pump exists.
+        if (this.isStreamStopped(ws, controller)) {
+            return false;
+        }
+
+        const iterable = this.executeStream(functionPath, args, socketIdentity(attachment));
+
+        if (!iterable) {
+            trySendFrame(ws, JSON.stringify({ error: { code: "NOT_FOUND", message: `stream not registered: ${functionPath}` }, id, type: "error" }));
+
+            return false;
         }
 
         if (iterable.durable) {
-            await this.attachDurableStream(ws, id, functionPath, args, { durable: iterable.durable, iterator: iterable.iterator }, sinceSeq, generation);
+            await this.attachDurableStream(
+                ws,
+                id,
+                functionPath,
+                args,
+                { durable: iterable.durable, iterator: iterable.iterator },
+                controller,
+                sinceSeq,
+                generation,
+            );
 
+            return true;
+        }
+
+        await this.pumpStream(ws, id, iterable.iterator, controller);
+
+        return false;
+    }
+
+    private async pumpStream(
+        ws: ShardSocketLike,
+        id: string,
+        iterator: NonNullable<ReturnType<ShardDO["executeStream"]>>["iterator"],
+        controller: AbortController,
+    ): Promise<void> {
+        trySendFrame(ws, JSON.stringify({ id, type: "ack" }));
+
+        for await (const chunk of iterator(controller.signal)) {
+            if (isStreamCancelled(controller)) {
+                break;
+            }
+
+            // A credential can lapse mid-stream: the inbound check ran once,
+            // on the frame that STARTED this stream, and a pump can outlive
+            // it indefinitely. Tear the iterator down rather than keep
+            // pushing the user's data at an expired socket.
+            if (this.isSocketExpired(ws)) {
+                this.dropExpiredSocket(ws);
+                controller.abort();
+
+                break;
+            }
+
+            // Defensive backpressure: when the runtime surfaces
+            // `bufferedAmount`, pause iteration if the socket already
+            // has > 1 MiB queued. Without this, a slow consumer can
+            // make the runtime's outbound buffer grow without bound
+            // while we keep pumping `ws.send` calls.
+            await awaitWsDrain(ws);
+
+            // Unsubscribe can release this id while this pump is waiting for
+            // backpressure. Do not let its pending chunk land on a new stream
+            // that has since reused the same id.
+            if (isStreamCancelled(controller)) {
+                break;
+            }
+
+            ws.send(JSON.stringify({ data: encodeWire(chunk), id, type: "chunk" }));
+        }
+
+        if (!isStreamCancelled(controller)) {
+            ws.send(JSON.stringify({ id, type: "complete" }));
+        }
+    }
+
+    private isStreamStopped(ws: ShardSocketLike, controller: AbortController): boolean {
+        return isStreamCancelled(controller) || this.closingSockets.has(ws);
+    }
+
+    private releaseStream(
+        ws: ShardSocketLike,
+        id: string,
+        cancellers: Map<string, AbortController>,
+        controller: AbortController,
+        durableAttached: boolean,
+    ): void {
+        if (durableAttached || cancellers.get(id) !== controller) {
             return;
         }
 
-        const controller = new AbortController();
+        cancellers.delete(id);
 
-        cancellers.set(id, controller);
-        this.sendFrame(ws, JSON.stringify({ id, type: "ack" }), "control");
-
-        try {
-            for await (const chunk of iterable.iterator(controller.signal)) {
-                if (controller.signal.aborted) {
-                    break;
-                }
-
-                // A credential can lapse mid-stream: the inbound check ran once,
-                // on the frame that STARTED this stream, and a pump can outlive
-                // it indefinitely. Tear the iterator down rather than keep
-                // pushing the user's data at an expired socket.
-                if (this.isSocketExpired(ws)) {
-                    this.dropExpiredSocket(ws);
-                    controller.abort();
-
-                    break;
-                }
-
-                // Defensive backpressure: when the runtime surfaces
-                // `bufferedAmount`, pause iteration if the socket already
-                // has > 1 MiB queued. Without this, a slow consumer can
-                // make the runtime's outbound buffer grow without bound
-                // while we keep pumping `ws.send` calls.
-                await awaitWsDrain(ws);
-
-                ws.send(JSON.stringify({ data: encodeWire(chunk), id, type: "chunk" }));
-            }
-
-            if (!controller.signal.aborted) {
-                ws.send(JSON.stringify({ id, type: "complete" }));
-            }
-        } catch (error: unknown) {
-            // Apply the shared redaction invariant: a non-internal `LunoraError`
-            // keeps its intentional, developer-facing message; an internal-coded
-            // or bare/unexpected throw is redacted so SQL fragments, file paths,
-            // or internal identifiers never reach the client.
-            const { body, redacted } = toErrorBody(error, { fallbackCode: "INTERNAL_SERVER_ERROR", redactedMessage: "internal error" });
-
-            if (redacted) {
-                // eslint-disable-next-line no-console -- server-side diagnostic for an internal/unhandled stream error
-                console.error("[@lunora/do] unhandled stream error:", error);
-            }
-
-            this.sendFrame(
-                ws,
-                JSON.stringify({
-                    error: { code: body.code, message: body.message },
-                    id,
-                    type: "error",
-                }),
-                "control",
-            );
-        } finally {
-            cancellers.delete(id);
-
-            // Drop the now-empty per-socket canceller map so a socket that
-            // churns through many short-lived streams doesn't accumulate empty
-            // `Map` instances for the lifetime of the WeakMap entry.
-            if (cancellers.size === 0) {
-                this.streamCancellers.delete(ws);
-            }
+        // Drop the now-empty per-socket canceller map so a socket that churns
+        // through many short-lived streams doesn't accumulate empty `Map`s.
+        if (cancellers.size === 0) {
+            this.streamCancellers.delete(ws);
         }
     }
 
@@ -11898,6 +12005,7 @@ abstract class ShardDO {
         functionPath: string,
         args: Record<string, unknown>,
         registration: { durable: { ttlMs?: number }; iterator: (signal: AbortSignal) => AsyncIterable<unknown> },
+        controller: AbortController,
         sinceChunk: number,
         generation?: number,
     ): Promise<void> {
@@ -11913,14 +12021,14 @@ abstract class ShardDO {
         const caller = attachment.userId ?? anonymousStreamCaller(attachment, id);
         const runKey = `${caller}\u0000${functionPath}:${stableWireKey(args)}`;
         const cancellers = socketMap(this.streamCancellers, ws);
-        const controller = new AbortController();
         const frames = streamFrames(ws, id);
 
-        cancellers.set(id, controller);
         frames.ack();
 
         const detach = (): void => {
-            cancellers.delete(id);
+            if (cancellers.get(id) === controller) {
+                cancellers.delete(id);
+            }
 
             // Drop the now-empty per-socket canceller map so a socket that churns
             // through many short-lived streams doesn't accumulate empty `Map`s.

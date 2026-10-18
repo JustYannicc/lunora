@@ -346,13 +346,14 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
 
             const result = await registered.handler(ctx, args);
 
-            // An action is not itself transactional, but `ctx.runMutation` runs its
-            // submutations on THIS ctx, so anything they queued after their own
-            // transaction settled lands here. A dispatch with nothing queued no-ops.
+            // Composed mutations settle their own delete queues. An action can
+            // also queue deletes outside those mutations; drain its own queue here.
             await this.deferPastResponse(flushDeferredDeletes(ctx));
 
             return result;
         }
+
+        private readonly mutationContexts = new WeakSet<object>();
 
         /**
          * Run one mutation handler with the atomicity every caller of a mutation is
@@ -374,11 +375,9 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
          * scheduler flush.
          *
          * Both deferral windows are opened here and settled against the SAME
-         * outcome. The delete window is what keeps a composed mutation's queued
-         * object deletes off the caller's flush when it rolls back: `ctx` is
-         * shared, so without a window the keys are indistinguishable from the
-         * action's own and the action's flush destroys objects whose rows the
-         * rollback put back.
+         * outcome. True nested calls share their caller's context, so each window
+         * must discard its own failed delete and schedule intents even when the
+         * outer handler catches the error and commits.
          */
         private async runMutationTransaction<T>(ctx: unknown, work: () => Promise<T>): Promise<T> {
             const settleSchedules = beginDeferredSchedules(ctx as { scheduler?: unknown });
@@ -386,7 +385,7 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
             // settle first on every path and cannot mask the outcome.
             const settleDeletes = beginDeferredDeletes(ctx);
 
-            if (this.isInTransaction()) {
+            if (this.mutationContexts.has(ctx as object)) {
                 try {
                     const nested = await work();
 
@@ -405,7 +404,15 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
             let result: T;
 
             try {
-                result = await this.runInTransaction(work);
+                result = await this.runInTransaction(async () => {
+                    this.mutationContexts.add(ctx as object);
+
+                    try {
+                        return await work();
+                    } finally {
+                        this.mutationContexts.delete(ctx as object);
+                    }
+                }, { independent: true });
             } catch (error) {
                 // The span rolled back, so the rows are gone and the jobs that were
                 // to run "after I commit" must go with them. Dropping them is the
@@ -902,11 +909,9 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
             // equivalent of an `afterCommit` hook, and the SchedulerDO persists the
             // job the moment it is called — so inside a mutation the call is BUFFERED
             // and replayed after the transaction commits (a rollback drops it).
-            // Wrapped on the same dispatches as the deferred-delete queue and for the
-            // same reason: `ctx.runMutation` hands the CALLER's ctx to the callee, so
-            // a mutation reached from an action schedules through the action's ctx.
-            // An action's own schedules stay immediate — the window is only open
-            // while a transaction is (see `runMutationTransaction`).
+            // Composed mutations get their own facade when the caller is outside
+            // a transaction. True nested calls share the enclosing facade and open
+            // a nested window. The action's own schedules stay immediate.
             //
             // Every kind but `query` is wrapped, because `runMutationTransaction`
             // is installed on `ctx.runMutation` for every kind but `query`: a
@@ -959,12 +964,11 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
                 ]);
             const storage = makeStorage(requestOrigin);
             // `ctx.storage.deleteAfterCommit(key)`, on every dispatch that can host
-            // a MUTATION handler — which is not only a mutation dispatch:
-            // `ctx.runMutation` hands the CALLER's ctx to the callee, so a mutation
-            // reached from an action runs on the action's ctx. Wrapping mutations
-            // alone made that composition throw a bare TypeError on a method the
-            // handler's own type promises. Queries stay unwrapped: they cannot host
-            // one, and their ctx is built on the hot subscription path.
+            // a MUTATION handler — which is not only a mutation dispatch. An
+            // action's composed mutation gets a child ctx with its own deferred
+            // delete queue, while mutations reuse the admitted ctx. Queries stay
+            // unwrapped: they cannot host one, and their ctx is built on the hot
+            // subscription path.
             //
             // Every dispatch wrapped here also flushes (see `handleRpc` and
             // `runReactor`) — a queue nothing drains leaks silently, which is worse
@@ -1000,7 +1004,10 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
             // breakdown) to the wide event rather than a span per call, so a
             // handler making hundreds of queries stays readable. See
             // `instrumentDatabase` for the `"spans"` / `"off"` levels.
-            const db: DatabaseWriterLike = this.instrumentDb(createShardCtxDb({
+            // Schema triggers close over this DB's scheduler, so a composed
+            // mutation must rebuild its DB and table/ORM views with its own queue.
+            const makeDatabaseContext = (scheduler: SchedulerLike) => {
+                const db: DatabaseWriterLike = this.instrumentDb(createShardCtxDb({
                 ...this.ctxDbTuning(),
                 auth: { identity: identity ?? null, userId: userId ?? null },
                 broadcast: (delta) => {
@@ -1050,6 +1057,10 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
             const facade = db as unknown as Record<string, ReturnType<typeof bindTableFacade>>;
             facade["tasks"] = bindTableFacade(db, "tasks");
             facade["ratelimit_buckets"] = bindTableFacade(db, "ratelimit_buckets");
+                return { db, orm: bindOrm(facade) };
+            };
+            const databaseContext = makeDatabaseContext(scheduler);
+            const db = databaseContext.db;
 
 
             // `ctx.trace` / `ctx.metrics`: spans and measurements to the same sink.
@@ -1110,7 +1121,7 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
                 // `createStorage`) can fall back to it too. `undefined` for a
                 // query and for a deferred dispatch, for the reasons given there.
                 origin: requestOrigin,
-                orm: bindOrm(facade),
+                orm: databaseContext.orm,
                 scheduler,
                 span,
                 storage: contextStorage,
@@ -1123,8 +1134,31 @@ export const createShardDO = (config: ShardDOConfig = {}): new (state: ShardDOSt
                 // The composed mutation runs under the SAME wrapper the top-level RPC
                 // uses, so "do the transactional work in a mutation and call it from the
                 // action" — the recipe the docs give for atomicity — actually is atomic.
-                target.runMutation = (reference: FunctionReference, fnArgs: Record<string, unknown>) =>
-                    dispatchRun("mutation", reference.__lunoraRef, fnArgs, target, kind, async (work) => this.runMutationTransaction(target, work));
+                target.runMutation = (reference: FunctionReference, fnArgs: Record<string, unknown>) => {
+                    // An action can start sibling mutations concurrently. Each owns its
+                    // context and deferral queues; only calls from an admitted mutation
+                    // inherit that mutation's transaction.
+                    const mutationCtx: Record<string, unknown> = this.mutationContexts.has(target)
+                        ? target
+                        : (() => {
+                            const mutationScheduler = withDeferredSchedules(schedulerBase, this.scheduleOutbox());
+                            const mutationDatabase = makeDatabaseContext(mutationScheduler);
+
+                            return Object.defineProperties({}, {
+                                ...Object.getOwnPropertyDescriptors(target),
+                                db: { configurable: true, enumerable: true, value: mutationDatabase.db, writable: true },
+                                orm: { configurable: true, enumerable: true, value: mutationDatabase.orm, writable: true },
+                                scheduler: { configurable: true, enumerable: true, value: mutationScheduler, writable: true },
+                                storage: { configurable: true, enumerable: true, value: withDeferredDeletes(storage), writable: true },
+                            });
+                        })();
+
+                    if (mutationCtx !== target) {
+                        installRun(mutationCtx, kind);
+                    }
+
+                    return dispatchRun("mutation", reference.__lunoraRef, fnArgs, mutationCtx, kind, async (work) => this.runMutationTransaction(mutationCtx, work));
+                };
                 // `ctx.runQuery(ref, args, { untracked: true })` runs the sub-query on
                 // its OWN query context, built without the subscription's read-footprint
                 // hooks — so its reads never enter this subscription's footprint and a

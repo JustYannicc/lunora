@@ -6556,6 +6556,12 @@ class LunoraClient {
             return;
         }
 
+        // The server keeps the incumbent stream when it refuses a duplicate
+        // id. That refusal must not fail the client stream already using it.
+        if (errorCode === "STREAM_ID_IN_USE") {
+            return;
+        }
+
         // Stream-scoped errors arrive on the same `error` envelope as
         // subscription errors; dispatch by id-prefix lookup.
         const { id } = message;

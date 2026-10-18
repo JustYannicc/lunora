@@ -83,6 +83,7 @@
         "@codspeed/vitest-plugin": "catalog:test",
         "@lunora/bindings": "1.0.0-alpha.118",
         "@lunora/do": "1.0.0-alpha.221",
+        "@lunora/payment": "1.0.0-alpha.214",
         "@lunora/server": "1.0.0-alpha.212",
         "@lunora/shard-engine": "1.0.0-alpha.135",
         "@types/node": "catalog:types",

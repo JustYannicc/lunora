@@ -8,10 +8,11 @@ import { sanitizeNamespace } from "../../paths";
 import { listLunoraSourceFiles, lunoraRelativePath } from "../ast";
 import { exportNamesByLocalOf, isAddressableExportName } from "../attribution";
 import { collectErasures, reportErasures } from "../erased-returns";
-import type { LifecycleMoment } from "./classify-procedure-call";
+import type { LifecycleMoment, ProcedureClassification } from "./classify-procedure-call";
 import { classifyProcedureCall } from "./classify-procedure-call";
 import { argsFromBuilderChain, outputFromBuilderChain, returnTypeFromBuilderCall, returnTypeFromCall } from "./internal/builder-chain";
-import { argsFromCall, exposeFromBuilderChain } from "./internal/expose";
+import { argsFromCall, exposeFromBuilderChain, x402FromBuilderChain } from "./internal/expose";
+import lazyMetadataFromBuilderChain from "./internal/lazy-metadata";
 import { exportCallsOfDeclaration, resolveExpressionToCall } from "./internal/resolve-call";
 
 interface DiscoveredFunction {
@@ -28,6 +29,7 @@ interface DiscoveredFunction {
     output?: ValidatorIR;
     returnType: string;
     visibility: "internal" | "public";
+    x402?: { price?: number | string };
 }
 
 /**
@@ -57,8 +59,34 @@ const roomNameOf = (call: CallExpression): string => {
     return initializer.getLiteralValue();
 };
 
-const discoverFromCall = (call: CallExpression): DiscoveredFunction | undefined => {
-    const classified = classifyProcedureCall(call);
+const discoverBuilderTerminal = (call: CallExpression, receiver: Node, classified: ProcedureClassification, lazyFunctions: boolean): DiscoveredFunction => {
+    const metadata = lazyFunctions ? lazyMetadataFromBuilderChain(receiver) : undefined;
+    const expose = lazyFunctions ? metadata?.expose : exposeFromBuilderChain(receiver);
+    const x402 = lazyFunctions ? metadata?.x402 : x402FromBuilderChain(receiver);
+    // Both types are computed, but `api.ts` carries only one of them — see
+    // `declaredOutputWins`. An erasure in the other reaches nothing, so it is
+    // not reported: the handler behind a declared output, or the inert
+    // `.output()` of a `stream`.
+    const output = collectErasures(() => outputFromBuilderChain(receiver));
+    const returnType = collectErasures(() => returnTypeFromBuilderCall(call));
+    const outputWins = declaredOutputWins({ kind: classified.kind, output: output.value });
+
+    reportErasures(outputWins ? output.erased : returnType.erased);
+
+    return {
+        args: argsFromBuilderChain(receiver),
+        ...(expose ? { expose } : {}),
+        ...(x402 ? { x402 } : {}),
+        ...(classified.adminOnly ? { adminOnly: true as const } : {}),
+        kind: classified.kind,
+        ...(output.value ? { output: output.value } : {}),
+        returnType: returnType.value,
+        visibility: metadata?.visibility === "internal" || classified.visibility === "internal" ? "internal" : "public",
+    };
+};
+
+const discoverFromCall = (call: CallExpression, lazyFunctions: boolean): DiscoveredFunction | undefined => {
+    const classified = classifyProcedureCall(call, lazyFunctions);
 
     if (!classified) {
         return undefined;
@@ -78,26 +106,7 @@ const discoverFromCall = (call: CallExpression): DiscoveredFunction | undefined 
     const { receiver } = classified;
 
     if (receiver) {
-        const expose = exposeFromBuilderChain(receiver);
-        // Both types are computed, but `api.ts` carries only one of them — see
-        // `declaredOutputWins`. An erasure in the other reaches nothing, so it is
-        // not reported: the handler behind a declared output, or the inert
-        // `.output()` of a `stream`.
-        const output = collectErasures(() => outputFromBuilderChain(receiver));
-        const returnType = collectErasures(() => returnTypeFromBuilderCall(call));
-        const outputWins = declaredOutputWins({ kind: classified.kind, output: output.value });
-
-        reportErasures(outputWins ? output.erased : returnType.erased);
-
-        return {
-            args: argsFromBuilderChain(receiver),
-            ...(expose ? { expose } : {}),
-            ...(classified.adminOnly ? { adminOnly: true as const } : {}),
-            kind: classified.kind,
-            ...(output.value ? { output: output.value } : {}),
-            returnType: returnType.value,
-            visibility: classified.visibility,
-        };
+        return discoverBuilderTerminal(call, receiver, classified, lazyFunctions);
     }
 
     // Lifecycle hooks (`onConnect`/`onDisconnect`) take a bare handler, not the
@@ -116,8 +125,8 @@ const discoverFromCall = (call: CallExpression): DiscoveredFunction | undefined 
 };
 
 /** Build a {@link FunctionIR} entry from one classified registration call, or `undefined` when it isn't a Lunora registration. */
-const functionIrFromCall = (call: CallExpression, exportName: string, relativePath: string): FunctionIR | undefined => {
-    const discovered = discoverFromCall(call);
+const functionIrFromCall = (call: CallExpression, exportName: string, relativePath: string, lazyFunctions: boolean): FunctionIR | undefined => {
+    const discovered = discoverFromCall(call, lazyFunctions);
 
     if (!discovered) {
         return undefined;
@@ -133,6 +142,7 @@ const functionIrFromCall = (call: CallExpression, exportName: string, relativePa
         visibility: discovered.visibility,
         ...(discovered.adminOnly ? { adminOnly: true as const } : {}),
         ...(discovered.expose ? { expose: discovered.expose } : {}),
+        ...(discovered.x402 ? { x402: discovered.x402 } : {}),
         ...(discovered.lifecycle ? { lifecycle: discovered.lifecycle } : {}),
         ...(discovered.channel ? { channel: discovered.channel } : {}),
     };
@@ -151,8 +161,8 @@ const functionIrFromCall = (call: CallExpression, exportName: string, relativePa
  * (`export default cronJobs()`, a workflow registry) classify to `undefined`
  * and are skipped like any other non-registration call.
  */
-const defaultExportFunctions = (source: SourceFile, relativePath: string): FunctionIR[] => {
-    const found: FunctionIR[] = [];
+const defaultExportFunctions = (source: SourceFile, relativePath: string, lazyFunctions: boolean): { call: CallExpression; entry: FunctionIR }[] => {
+    const found: { call: CallExpression; entry: FunctionIR }[] = [];
 
     for (const assignment of source.getExportAssignments()) {
         if (assignment.isExportEquals()) {
@@ -160,10 +170,10 @@ const defaultExportFunctions = (source: SourceFile, relativePath: string): Funct
         }
 
         const call = resolveExpressionToCall(assignment.getExpression());
-        const entry = call ? functionIrFromCall(call, "default", relativePath) : undefined;
+        const entry = call ? functionIrFromCall(call, "default", relativePath, lazyFunctions) : undefined;
 
-        if (entry) {
-            found.push(entry);
+        if (call && entry) {
+            found.push({ call, entry });
         }
     }
 
@@ -180,11 +190,27 @@ const defaultExportFunctions = (source: SourceFile, relativePath: string): Funct
  * A name that is not an identifier (`export { run as "kebab-name" }`) cannot be
  * emitted that way and is left to `procedure_not_registered`.
  */
-const discoverFileFunctions = (source: SourceFile, relativePath: string): FunctionIR[] => {
+const discoverFileFunctions = (source: SourceFile, relativePath: string, lazyFunctions: boolean): FunctionIR[] => {
     const exportNames = exportNamesByLocalOf(source);
     // The call each room name was first registered by. Two export names of one call are aliases of
     // one room; two different calls under one name are a clash, which the emitters cannot represent.
     const roomCalls = new Map<string, CallExpression>();
+    const rememberRoomCall = (entry: FunctionIR | undefined, call: CallExpression): void => {
+        if (entry?.channel?.kind !== "room") {
+            return;
+        }
+
+        const prior = roomCalls.get(entry.channel.name);
+
+        if (prior !== undefined && prior !== call) {
+            throw new LunoraError(
+                "DUPLICATE_ROOM_NAME",
+                `Duplicate room name "${entry.channel.name}" in ${relativePath}: two defineRoom calls share it. Room names must be unique.`,
+            );
+        }
+
+        roomCalls.set(entry.channel.name, call);
+    };
     const found = source
         .getVariableStatements()
         .flatMap((statement) => statement.getDeclarations())
@@ -193,28 +219,23 @@ const discoverFileFunctions = (source: SourceFile, relativePath: string): Functi
             (exportNames.get(localName) ?? [])
                 .filter((name) => isAddressableExportName(name))
                 .flatMap((name) => {
-                    const entry = functionIrFromCall(call, name, relativePath);
-
-                    if (entry?.channel !== undefined) {
-                        const prior = roomCalls.get(entry.channel.name);
-
-                        if (prior !== undefined && prior !== call) {
-                            throw new LunoraError(
-                                "DUPLICATE_ROOM_NAME",
-                                `Duplicate room name "${entry.channel.name}" in ${relativePath}: two defineRoom calls share it. Room names must be unique.`,
-                            );
-                        }
-
-                        roomCalls.set(entry.channel.name, call);
-                    }
+                    const entry = functionIrFromCall(call, name, relativePath, lazyFunctions);
+                    rememberRoomCall(entry, call);
 
                     return entry ? [entry] : [];
                 }),
         );
     const named = new Set(found.map((entry) => entry.exportName));
 
-    // `export default <expression>` that is not a local binding.
-    found.push(...defaultExportFunctions(source, relativePath).filter((entry) => !named.has(entry.exportName)));
+    // `export default <expression>`, including a local registration alias.
+    for (const { call, entry } of defaultExportFunctions(source, relativePath, lazyFunctions)) {
+        if (named.has(entry.exportName)) {
+            continue;
+        }
+
+        rememberRoomCall(entry, call);
+        found.push(entry);
+    }
 
     return found;
 };
@@ -288,7 +309,7 @@ const assertNoNamespaceCollision = (functions: ReadonlyArray<FunctionIR>): void 
  * Scan all .ts files under `lunoraDir` (skipping `_generated/` and `schema.ts`)
  * for top-level `export const x = query/mutation/action({...})` registrations.
  */
-const discoverFunctions = (project: Project, lunoraDirectory: string): FunctionIR[] => {
+const discoverFunctions = (project: Project, lunoraDirectory: string, options: { lazyFunctions?: boolean } = {}): FunctionIR[] => {
     const filePaths = listLunoraSourceFiles(lunoraDirectory);
     const functions: FunctionIR[] = [];
 
@@ -296,7 +317,7 @@ const discoverFunctions = (project: Project, lunoraDirectory: string): FunctionI
         const source: SourceFile = project.getSourceFile(filePath) ?? project.addSourceFileAtPath(filePath);
         const relativePath = lunoraRelativePath(lunoraDirectory, filePath);
 
-        functions.push(...discoverFileFunctions(source, relativePath));
+        functions.push(...discoverFileFunctions(source, relativePath, options.lazyFunctions === true));
     }
 
     functions.sort((a, b) => `${a.filePath}:${a.exportName}`.localeCompare(`${b.filePath}:${b.exportName}`));

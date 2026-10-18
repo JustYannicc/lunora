@@ -31,6 +31,8 @@ import { beginDeferredDeletes, beginDeferredSchedules, flushDeferredDeletes, wit
 import type { SchedulerLike } from "@lunora/shard-engine";
 
 class EmittedShardContract extends ShardDO {
+    private readonly mutationContexts = new WeakSet<object>();
+
     public override async handleRpc(): Promise<unknown> {
         // Mirrors the shape of the emitted mutation branch, so the helper below is
         // reached from a real dispatch signature rather than sitting unreferenced.
@@ -121,30 +123,68 @@ class EmittedShardContract extends ShardDO {
     /**
      * Mirrors the generated `runMutationTransaction` — the single helper the
      * top-level RPC, `ctx.runMutation` and `runReactor` all dispatch a mutation
-     * handler through. It reaches three base members: `isInTransaction` (so a
-     * composed sub-mutation rides the enclosing span instead of opening an illegal
-     * nested one), `runInTransaction`, and `deferPastResponse`, which is
-     * `protected` for exactly this call — the host's `waitUntil` behind it is
-     * private.
+     * handler through. Nested ownership belongs to a ctx admitted by this helper,
+     * not to shard-wide transaction depth: independent callers queue at the
+     * writer gate, and a composed child reuses its admitted ctx. This mirror pins
+     * the context type and `runInTransaction` option along with the deferral
+     * helpers and `deferPastResponse` visibility. This is the rooms-enabled
+     * variant, which marks schedule failures that happen after commit.
      */
     private async runMutationTransaction<T>(context: unknown, work: () => Promise<T>): Promise<T> {
         const settleSchedules = beginDeferredSchedules(context as { scheduler?: unknown });
         const settleDeletes = beginDeferredDeletes(context);
 
-        if (this.isInTransaction()) {
-            const nested = await work();
+        if (this.mutationContexts.has(context as object)) {
+            try {
+                const nested = await work();
 
-            settleDeletes(true);
-            await settleSchedules(true);
+                settleDeletes(true);
+                await settleSchedules(true);
 
-            return nested;
+                return nested;
+            } catch (error) {
+                settleDeletes(false);
+                await settleSchedules(false);
+
+                throw error;
+            }
         }
 
-        const result = await this.runInTransaction(work);
+        let result: T;
+
+        try {
+            result = await this.runInTransaction(
+                async () => {
+                    this.mutationContexts.add(context as object);
+
+                    try {
+                        return await work();
+                    } finally {
+                        this.mutationContexts.delete(context as object);
+                    }
+                },
+                { independent: true },
+            );
+        } catch (error) {
+            settleDeletes(false);
+            await settleSchedules(false);
+
+            throw error;
+        }
 
         settleDeletes(true);
-        await settleSchedules(true);
-        await this.deferPastResponse(flushDeferredDeletes(context));
+
+        try {
+            await settleSchedules(true);
+        } catch (error) {
+            if (typeof error === "object" && error !== null) {
+                Object.assign(error, { committed: true });
+            }
+
+            throw error;
+        } finally {
+            await this.deferPastResponse(flushDeferredDeletes(context));
+        }
 
         return result;
     }

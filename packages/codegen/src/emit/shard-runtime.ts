@@ -717,14 +717,19 @@ const emitPaymentFragments = (
         // only the handlers that use it. The facade rides `db` (the store) and `userId` (the
         // default authorizer ties a referenceId to the caller). Falls back to `paymentStub`.
         build: `
-            let payments: LunoraPayment | undefined;
+            const paymentsByContext = new WeakMap<object, LunoraPayment>();
 `,
         configField: `\n    payment?: (env: Record<string, unknown>) => PaymentsFromContextOptions;`,
         contextField: `
                 get payments(): LunoraPayment {
-                    payments ??= config.payment
-                        ? paymentsFromContext({ auth: { userId: userId ?? null }, db: db as unknown as LunoraPaymentDbLike }, config.payment(env))
-                        : paymentStub;
+                    let payments = paymentsByContext.get(this);
+
+                    if (payments === undefined) {
+                        payments = config.payment
+                            ? paymentsFromContext({ auth: { userId: userId ?? null }, db: this.db as unknown as LunoraPaymentDbLike }, config.payment(env))
+                            : paymentStub;
+                        paymentsByContext.set(this, payments);
+                    }
 
                     return payments;
                 },`,

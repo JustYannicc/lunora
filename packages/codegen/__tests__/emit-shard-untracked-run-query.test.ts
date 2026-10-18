@@ -87,12 +87,18 @@ describe("emitShard — untracked ctx.runQuery", () => {
         expect(shard()).toContain("const descriptors: PropertyDescriptorMap = Object.getOwnPropertyDescriptors(ctx);");
     });
 
-    it("keeps runMutation/runAction on the caller's ctx and kind", () => {
-        expect.assertions(2);
+    it("keeps actions on the caller ctx and gives mutations a transaction ctx", () => {
+        expect.assertions(4);
 
         const emitted = shard();
 
-        expect(emitted).toContain('dispatchRun("mutation", reference.__lunoraRef, fnArgs, target, kind,');
+        expect(emitted).toContain(
+            'target.runAction = (reference: FunctionReference, fnArgs: Record<string, unknown>) => dispatchRun("action", reference.__lunoraRef, fnArgs, target, kind);',
+        );
+        expect(emitted).toContain(
+            'return dispatchRun("mutation", reference.__lunoraRef, fnArgs, mutationCtx, kind, async (work) => this.runMutationTransaction(mutationCtx, work));',
+        );
+        expect(emitted).not.toContain('dispatchRun("mutation", reference.__lunoraRef, fnArgs, target, kind,');
         expect(emitted).toContain("installRun(ctx, contextKind);");
     });
 });

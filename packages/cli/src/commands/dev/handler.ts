@@ -35,6 +35,7 @@ import type { CommandHandler } from "../../util/command";
 import { defineHandler } from "../../util/command";
 import { resolveRunnableTargetOrError } from "../../util/deploy-target-resolve";
 import { EXIT_CODE } from "../../util/exit-code";
+import resolveLazyFunctions from "../../util/lazy-functions";
 import type { Logger } from "../../util/logger";
 import { forceJsonLogging } from "../../util/logger";
 import type { StudioServerHandle } from "../../util/studio-server";
@@ -331,6 +332,7 @@ const startStudioBestEffort = async (
             // in-process, so they need the SAME apiSpec this run's own codegen uses
             // — codegen deletes the spec file its mode does not name.
             apiSpec: options.apiSpec,
+            lazyFunctions: resolveLazyFunctions(options.lazyFunctions),
             cwd,
             logger: {
                 warnOnce: (message) => {
@@ -377,7 +379,14 @@ const ensureSidecarGenerated = (plan: DevCommandPlan, options: DevCommandOptions
     }
 
     try {
-        runCodegen({ apiSpec: options.apiSpec, lunoraDirectory: "lunora", projectRoot: cwd, target, ...wranglerCodegenInputs(cwd) });
+        runCodegen({
+            apiSpec: options.apiSpec,
+            lazyFunctions: resolveLazyFunctions(options.lazyFunctions),
+            lunoraDirectory: "lunora",
+            projectRoot: cwd,
+            target,
+            ...wranglerCodegenInputs(cwd),
+        });
     } catch (error: unknown) {
         logger.warn(`codegen (pre-sidecar) failed: ${error instanceof Error ? error.message : String(error)} — the framework dev server will retry`);
     }
@@ -533,6 +542,7 @@ const runDevCommand = async (options: DevCommandOptions): Promise<{ code: number
         if (plan.runsCodegenWatch) {
             handles.codegen = (options.startCodegen ?? startCodegenWatch)({
                 apiSpec: options.apiSpec,
+                lazyFunctions: resolveLazyFunctions(options.lazyFunctions),
                 jsonLogs: options.jsonLogs,
                 logger,
                 projectRoot: cwd,
@@ -791,6 +801,7 @@ const execute: CommandHandler<DevOptions> = defineHandler<DevOptions>(async ({ a
         cwd,
         emitBindings: options.emitBindings,
         inspectorPort: options.inspectorPort,
+        lazyFunctions: resolveLazyFunctions(options.lazyFunctions),
         jsonLogs,
         local: options.local,
         logger,
