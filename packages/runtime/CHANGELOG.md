@@ -1,3 +1,26 @@
+## @lunora/runtime [1.0.0-alpha.212](https://github.com/anolilab/lunora/compare/@lunora/runtime@1.0.0-alpha.211...@lunora/runtime@1.0.0-alpha.212) (2026-10-18)
+
+### Features
+
+* **codegen:** load procedure modules on demand ([#1236](https://github.com/anolilab/lunora/issues/1236)) ([655247d](https://github.com/anolilab/lunora/commit/655247d2c806433e656aec35ec69e2fa5133071c))
+
+
+### Dependencies
+
+* **@lunora/do:** upgraded to 1.0.0-alpha.222
+
+## @lunora/runtime [1.0.0-alpha.211](https://github.com/anolilab/lunora/compare/@lunora/runtime@1.0.0-alpha.210...@lunora/runtime@1.0.0-alpha.211) (2026-10-18)
+
+
+### Dependencies
+
+* **@lunora/bindings:** upgraded to 1.0.0-alpha.118
+* **@lunora/errors:** upgraded to 1.0.0-alpha.59
+* **@lunora/observability:** upgraded to 1.0.0-alpha.146
+* **@lunora/do:** upgraded to 1.0.0-alpha.221
+* **@lunora/shard-engine:** upgraded to 1.0.0-alpha.135
+* **@lunora/workflow:** upgraded to 1.0.0-alpha.81
+
 ## @lunora/runtime [1.0.0-alpha.210](https://github.com/anolilab/lunora/compare/@lunora/runtime@1.0.0-alpha.209...@lunora/runtime@1.0.0-alpha.210) (2026-10-17)
 
 

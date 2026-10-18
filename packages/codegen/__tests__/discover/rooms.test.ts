@@ -21,7 +21,8 @@ const writeLunoraSource = (relative: string, source: string): void => {
     writeFileSync(full, source);
 };
 
-const discover = () => discoverFunctions(new Project({ skipAddingFilesFromTsConfig: true }), join(workdir, "lunora"));
+const discover = (options?: { lazyFunctions?: boolean }) =>
+    discoverFunctions(new Project({ skipAddingFilesFromTsConfig: true }), join(workdir, "lunora"), options);
 
 describe("discover/functions — defineRoom channels", () => {
     beforeEach(() => {
@@ -73,6 +74,32 @@ export const chatB = defineRoom({ name: "chat", message: v.object({}), onMessage
         );
 
         expect(() => discover()).toThrow(/Duplicate room name "chat"/u);
+    });
+
+    it("refuses a distinct default room with a duplicate name in lazy mode", () => {
+        expect.assertions(1);
+
+        writeLunoraSource(
+            "rooms.ts",
+            `import { defineRoom, v } from "@lunora/server";
+export const chat = defineRoom({ name: "chat", message: v.object({}), onMessage: () => undefined });
+export default defineRoom({ name: "chat", message: v.object({}), onMessage: () => undefined });`,
+        );
+
+        expect(() => discover({ lazyFunctions: true })).toThrow(/Duplicate room name "chat"/u);
+    });
+
+    it("accepts a named room exported as default when both names refer to one call", () => {
+        expect.assertions(1);
+
+        writeLunoraSource(
+            "rooms.ts",
+            `import { defineRoom, v } from "@lunora/server";
+export const chat = defineRoom({ name: "chat", message: v.object({}), onMessage: () => undefined });
+export default chat;`,
+        );
+
+        expect(discover({ lazyFunctions: true }).map((entry) => entry.exportName)).toStrictEqual(["chat", "default"]);
     });
 
     it("reads a room registered through the umbrella package's namespace import", () => {

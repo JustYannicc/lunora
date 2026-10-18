@@ -1,3 +1,26 @@
+## @lunora/config [1.0.0-alpha.368](https://github.com/anolilab/lunora/compare/@lunora/config@1.0.0-alpha.367...@lunora/config@1.0.0-alpha.368) (2026-10-18)
+
+### Features
+
+* **codegen:** load procedure modules on demand ([#1236](https://github.com/anolilab/lunora/issues/1236)) ([655247d](https://github.com/anolilab/lunora/commit/655247d2c806433e656aec35ec69e2fa5133071c))
+
+
+### Dependencies
+
+* **@lunora/codegen:** upgraded to 1.0.0-alpha.320
+* **@lunora/studio:** upgraded to 1.0.0-alpha.311
+
+## @lunora/config [1.0.0-alpha.367](https://github.com/anolilab/lunora/compare/@lunora/config@1.0.0-alpha.366...@lunora/config@1.0.0-alpha.367) (2026-10-18)
+
+
+### Dependencies
+
+* **@lunora/codegen:** upgraded to 1.0.0-alpha.319
+* **@lunora/container:** upgraded to 1.0.0-alpha.79
+* **@lunora/errors:** upgraded to 1.0.0-alpha.59
+* **@lunora/seed:** upgraded to 1.0.0-alpha.231
+* **@lunora/studio:** upgraded to 1.0.0-alpha.310
+
 ## @lunora/config [1.0.0-alpha.366](https://github.com/anolilab/lunora/compare/@lunora/config@1.0.0-alpha.365...@lunora/config@1.0.0-alpha.366) (2026-10-17)
 
 

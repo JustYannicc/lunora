@@ -9,6 +9,7 @@ import { wranglerCodegenInputs } from "@lunora/config/cloudflare";
 import type { CommandHandler } from "../../util/command";
 import { defineHandler } from "../../util/command";
 import { EXIT_CODE } from "../../util/exit-code";
+import resolveLazyFunctions from "../../util/lazy-functions";
 import type { Logger } from "../../util/logger";
 import type { OutputFormat } from "../../util/output-format";
 import DEFAULT_MAP_PATH from "./constants";
@@ -154,7 +155,12 @@ const runAdvisorCommand = (options: AdvisorCommandOptions): AdvisorCommandResult
         return { code: EXIT_CODE.USAGE, error: minScore.error };
     }
 
-    const { advisorContext, advisories } = runCodegen({ dryRun: true, projectRoot, ...wranglerCodegenInputs(projectRoot) });
+    const { advisorContext, advisories } = runCodegen({
+        dryRun: true,
+        lazyFunctions: resolveLazyFunctions(),
+        projectRoot,
+        ...wranglerCodegenInputs(projectRoot),
+    });
 
     const map = scoreAdvisor(advisorContext?.procedureProtections ?? [], advisories, { generatedAt: options.generatedAt ?? STABLE_STAMP });
     const result: AdvisorCommandResult = { map };

@@ -16,6 +16,7 @@ import { detectPackageManager, execArgsFor } from "../../util/detect-package-man
 import { EXIT_CODE } from "../../util/exit-code";
 import type { HealthFetch } from "../../util/health-probe";
 import { probeHealth } from "../../util/health-probe";
+import resolveLazyFunctions from "../../util/lazy-functions";
 import type { Logger } from "../../util/logger";
 import type { OutputFormat } from "../../util/output-format";
 import reportPlatformDiagnostics from "../../util/platform-diagnostics";
@@ -50,6 +51,8 @@ interface VerifyCommandOptions {
      */
     healthUrl?: string;
 
+    /** Opt into per-module lazy function imports. */
+    lazyFunctions?: boolean;
     logger: Logger;
     /** Injectable subprocess runner for the tsc step; defaults to the real spawner. */
     spawner?: Spawner;
@@ -234,7 +237,14 @@ const runVerifyCommand = async (options: VerifyCommandOptions): Promise<VerifyCo
             return { code: EXIT_CODE.USAGE, error: message, errors: [message], warnings: [], wranglerPath: undefined };
         }
 
-        const codegen = runCodegen({ apiSpec: options.apiSpec, dryRun: true, projectRoot: cwd, target: resolvedTarget.target, ...wranglerCodegenInputs(cwd) });
+        const codegen = runCodegen({
+            apiSpec: options.apiSpec,
+            lazyFunctions: resolveLazyFunctions(options.lazyFunctions),
+            dryRun: true,
+            projectRoot: cwd,
+            target: resolvedTarget.target,
+            ...wranglerCodegenInputs(cwd),
+        });
 
         // The target is resolved and validated immediately above precisely so
         // the surface is gated against it — reporting everything else this run
@@ -291,6 +301,7 @@ const execute: CommandHandler<VerifyOptions> = defineHandler<VerifyOptions, Veri
     const result = await runVerifyCommand({
         allowSchemaDrift: options.allowSchemaDrift === true,
         apiSpec: parseApiSpec(options.apiSpec),
+        lazyFunctions: resolveLazyFunctions(options.lazyFunctions),
         cwd,
         env: options.env,
         format,

@@ -32,6 +32,7 @@ import { readServiceBindings, runCodegen } from "@lunora/codegen";
 import { wranglerCodegenInputs } from "@lunora/config/cloudflare";
 
 import { renderCodegenFailure } from "./codegen-error";
+import resolveLazyFunctions from "./lazy-functions";
 import type { Logger } from "./logger";
 import reportPlatformDiagnostics from "./platform-diagnostics";
 import { runPostCodegenHook } from "./post-codegen-hook";
@@ -79,11 +80,22 @@ const PATH_SEGMENT_SEPARATOR = /[/\\]/u;
  * as well, without leaving an argument order for the next parameter to get
  * wrong.
  */
-const runOnce = (options: Pick<CodegenWatcherOptions, "apiSpec" | "logger" | "projectRoot" | "target">, lunoraDirectory: string, reason: string): boolean => {
-    const { apiSpec, logger, projectRoot, target } = options;
+const runOnce = (
+    options: Pick<CodegenWatcherOptions, "apiSpec" | "lazyFunctions" | "logger" | "projectRoot" | "target">,
+    lunoraDirectory: string,
+    reason: string,
+): boolean => {
+    const { apiSpec, lazyFunctions, logger, projectRoot, target } = options;
 
     try {
-        const result = runCodegen({ apiSpec, lunoraDirectory, projectRoot, target, ...wranglerCodegenInputs(projectRoot) });
+        const result = runCodegen({
+            apiSpec,
+            lazyFunctions: resolveLazyFunctions(lazyFunctions),
+            lunoraDirectory,
+            projectRoot,
+            target,
+            ...wranglerCodegenInputs(projectRoot),
+        });
 
         logger.success(`codegen: wrote ${lunoraDirectory}/_generated (${reason})`);
 
@@ -357,6 +369,9 @@ export interface CodegenWatcherOptions {
      * turns this on for `--json` AND for a detected AI agent.
      */
     jsonLogs?: boolean;
+
+    /** Opt into per-module lazy function loading; omitted keeps the eager registry. */
+    lazyFunctions?: CodegenOptions["lazyFunctions"];
     logger: Logger;
     /** Override the lunora subdirectory name. Defaults to `"lunora"`. */
     lunoraDirectory?: string;

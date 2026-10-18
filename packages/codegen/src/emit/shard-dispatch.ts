@@ -74,8 +74,44 @@ const dispatchRun = async (
     }
 };`;
 
+const dispatchRunSource = (lazyFunctions: boolean): string => {
+    if (!lazyFunctions) {
+        return DISPATCH_RUN_SOURCE;
+    }
+
+    // The loadedFunction const preserves handler narrowing inside callbacks on TypeScript 5.0 through 5.3.
+    return DISPATCH_RUN_SOURCE.replace(
+        "    runTransactional?: (work: () => Promise<unknown>) => Promise<unknown>,",
+        "    runTransactional?: (work: () => Promise<unknown>) => Promise<unknown>,\n    captureScope?: () => () => void,",
+    )
+        .replace(
+            "    try {\n        // A mutation composed from an action",
+            `    try {
+        let loaded = getLoadedFunction(functionPath);
+
+        if (loaded === undefined) {
+            const restoreScope = captureScope?.();
+
+            try {
+                loaded = await loadFunction(functionPath);
+            } finally {
+                restoreScope?.();
+            }
+        }
+
+        if (!loaded) {
+            throw new Error(\`unknown function: \${functionPath}\`);
+        }
+
+        const loadedFunction = loaded;
+
+        // A mutation composed from an action`,
+        )
+        .replaceAll("registered.handler", "loadedFunction.handler");
+};
+
 const DISPATCH_METHODS_TEMPLATE = `        public override async handleRpc(functionPath: string, args: Record<string, unknown>, headroom?: TransactionHeadroomTracker, scope?: QueryReadScope, bookmarks?: DispatchBookmark): Promise<unknown> {
-            const registered = LUNORA_FUNCTIONS[functionPath];
+__PREPARE_FUNCTION__            const registered = LUNORA_FUNCTIONS[functionPath];
 
             // Internal functions are reachable server-side only: via \`ctx.run*\`
             // composition, or a trusted system dispatch (scheduler/cron, marked by
@@ -129,13 +165,14 @@ const DISPATCH_METHODS_TEMPLATE = `        public override async handleRpc(funct
 
             const result = await registered.handler(ctx, args);
 
-            // An action is not itself transactional, but \`ctx.runMutation\` runs its
-            // submutations on THIS ctx, so anything they queued after their own
-            // transaction settled lands here. A dispatch with nothing queued no-ops.
+            // Composed mutations settle their own delete queues. An action can
+            // also queue deletes outside those mutations; drain its own queue here.
             await this.deferPastResponse(flushDeferredDeletes(ctx));
 
             return result;
         }
+
+        private readonly mutationContexts = new WeakSet<object>();
 
         /**
          * Run one mutation handler with the atomicity every caller of a mutation is
@@ -157,11 +194,9 @@ const DISPATCH_METHODS_TEMPLATE = `        public override async handleRpc(funct
          * scheduler flush.
          *
          * Both deferral windows are opened here and settled against the SAME
-         * outcome. The delete window is what keeps a composed mutation's queued
-         * object deletes off the caller's flush when it rolls back: \`ctx\` is
-         * shared, so without a window the keys are indistinguishable from the
-         * action's own and the action's flush destroys objects whose rows the
-         * rollback put back.
+         * outcome. True nested calls share their caller's context, so each window
+         * must discard its own failed delete and schedule intents even when the
+         * outer handler catches the error and commits.
          */
         private async runMutationTransaction<T>(ctx: unknown, work: () => Promise<T>): Promise<T> {
             const settleSchedules = beginDeferredSchedules(ctx as { scheduler?: unknown });
@@ -169,7 +204,7 @@ const DISPATCH_METHODS_TEMPLATE = `        public override async handleRpc(funct
             // settle first on every path and cannot mask the outcome.
             const settleDeletes = beginDeferredDeletes(ctx);
 
-            if (this.isInTransaction()) {
+            if (this.mutationContexts.has(ctx as object)) {
                 try {
                     const nested = await work();
 
@@ -188,7 +223,15 @@ const DISPATCH_METHODS_TEMPLATE = `        public override async handleRpc(funct
             let result: T;
 
             try {
-                result = await this.runInTransaction(work);
+                result = await this.runInTransaction(async () => {
+                    this.mutationContexts.add(ctx as object);
+
+                    try {
+                        return await work();
+                    } finally {
+                        this.mutationContexts.delete(ctx as object);
+                    }
+                }, { independent: true });
             } catch (error) {
                 // The span rolled back, so the rows are gone and the jobs that were
                 // to run "after I commit" must go with them. Dropping them is the
@@ -260,7 +303,7 @@ const SUBSCRIPTION_METHODS = `        protected override async executeSubscripti
                 return null;
             }
 
-            this.ensureMigrated();
+__PREPARE_FUNCTION__            this.ensureMigrated();
 
             const footprint = createReadFootprint();
             // Identity is threaded EXPLICITLY from the (deferred/interleaved)
@@ -313,6 +356,18 @@ const COMMITTED_CATCH = `            } catch (error) {
 `;
 
 /** The dispatch methods for a shard: the committed-marker in the post-commit step only for a rooms app. */
-const dispatchMethods = (hasRooms: boolean): string => DISPATCH_METHODS_TEMPLATE.replace("__COMMITTED_CATCH__", hasRooms ? COMMITTED_CATCH : "");
+const dispatchMethods = (hasRooms: boolean, lazyFunctions = false): string => {
+    const preflightVisibility = lazyFunctions
+        ? '            const registeredBeforeLoad = LUNORA_FUNCTIONS[functionPath];\n\n            if (registeredBeforeLoad?.visibility === "internal" && !this.isSystemDispatch()) {\n                throw new LunoraError("FUNCTION_NOT_FOUND", "function not registered: " + functionPath);\n            }\n\n'
+        : "";
+    const preparation = lazyFunctions
+        ? '            const requestScope = this.captureRequestScope();\n            const preparation = this.prepareFunction(functionPath, "rpc");\n\n            if (preparation !== undefined) {\n                try {\n                    await preparation;\n                } finally {\n                    this.restoreRequestScope(requestScope);\n                }\n            }\n\n'
+        : "";
 
-export { DISPATCH_RUN_SOURCE, dispatchMethods, SUBSCRIPTION_METHODS };
+    return DISPATCH_METHODS_TEMPLATE.replace("__COMMITTED_CATCH__", hasRooms ? COMMITTED_CATCH : "").replace(
+        "__PREPARE_FUNCTION__",
+        `${preflightVisibility}${preparation}`,
+    );
+};
+
+export { DISPATCH_RUN_SOURCE, dispatchMethods, dispatchRunSource, SUBSCRIPTION_METHODS };

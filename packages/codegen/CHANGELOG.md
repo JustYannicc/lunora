@@ -1,3 +1,36 @@
+## @lunora/codegen [1.0.0-alpha.320](https://github.com/anolilab/lunora/compare/@lunora/codegen@1.0.0-alpha.319...@lunora/codegen@1.0.0-alpha.320) (2026-10-18)
+
+### Features
+
+* **codegen:** load procedure modules on demand ([#1236](https://github.com/anolilab/lunora/issues/1236)) ([655247d](https://github.com/anolilab/lunora/commit/655247d2c806433e656aec35ec69e2fa5133071c))
+
+
+### Dependencies
+
+* **@lunora/do:** upgraded to 1.0.0-alpha.222
+
+## @lunora/codegen [1.0.0-alpha.319](https://github.com/anolilab/lunora/compare/@lunora/codegen@1.0.0-alpha.318...@lunora/codegen@1.0.0-alpha.319) (2026-10-18)
+
+### Features
+
+* **do:** authorize RPC and subscription delivery with durable fences ([#1235](https://github.com/anolilab/lunora/issues/1235)) ([c1e354b](https://github.com/anolilab/lunora/commit/c1e354b7f392399da898bb19c444051412c9ac05))
+
+
+### Dependencies
+
+* **@lunora/advisor:** upgraded to 1.0.0-alpha.228
+* **@lunora/agent:** upgraded to 1.0.0-alpha.220
+* **@lunora/container:** upgraded to 1.0.0-alpha.79
+* **@lunora/errors:** upgraded to 1.0.0-alpha.59
+* **@lunora/queue:** upgraded to 1.0.0-alpha.111
+* **@lunora/scheduler:** upgraded to 1.0.0-alpha.133
+* **@lunora/values:** upgraded to 1.0.0-alpha.69
+* **@lunora/workflow:** upgraded to 1.0.0-alpha.81
+* **@lunora/bindings:** upgraded to 1.0.0-alpha.118
+* **@lunora/do:** upgraded to 1.0.0-alpha.221
+* **@lunora/server:** upgraded to 1.0.0-alpha.212
+* **@lunora/shard-engine:** upgraded to 1.0.0-alpha.135
+
 ## @lunora/codegen [1.0.0-alpha.318](https://github.com/anolilab/lunora/compare/@lunora/codegen@1.0.0-alpha.317...@lunora/codegen@1.0.0-alpha.318) (2026-10-17)
 
 ### Bug Fixes

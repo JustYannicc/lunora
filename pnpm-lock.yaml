@@ -3302,6 +3302,9 @@ importers:
       '@lunora/do':
         specifier: workspace:*
         version: link:../do
+      '@lunora/payment':
+        specifier: workspace:*
+        version: link:../payment
       '@lunora/server':
         specifier: workspace:*
         version: link:../server
