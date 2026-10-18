@@ -4,15 +4,23 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { applyOptimisticLayer, dropConfirmedLayers, refoldSubscription } from "../../client/src/optimistic-layers";
 import type { SubscriptionState } from "../../client/src/subscription";
+import { commitDataFrame } from "../../client/src/subscription-frames";
 import { cleanupDatabases, setup, TestShard } from "./_helpers/delivery-authorization";
 import messagesSchema from "./_helpers/messages-schema";
 
 class UnrelatedCdcShard extends TestShard {
     private writer: DatabaseWriterLike | undefined;
-    private readonly mutators = new Set(["rooms:tick"]);
+    private readonly mutators = new Set(["messages:mutate", "rooms:tick"]);
     public override handleRpc(path: string): Promise<unknown> {
         return this.runInTransaction(async () => {
             this.writer ??= createShardCtxDb({ sql: this.sql as SqlExec, schema: messagesSchema, cdc: true, broadcast: () => {} });
+            if (path === "messages:write" || path === "messages:mutate") {
+                const result = await this.writer.insert("messages", { authorId: "alice", channelId: "room", text: crypto.randomUUID() });
+                this.rows = ["after"];
+                this.recordChangedTable("messages");
+                this.commitMutationBookkeeping(result);
+                return result;
+            }
             const result = path === "rooms:join" ? await this.writer.insert("roomMembers", { roomId: "r1", userId: "alice" }) : "ok";
             this.recordChangedTable("roomMembers");
             this.commitMutationBookkeeping(result);
@@ -58,6 +66,22 @@ const readCommitCursor = async (response: Response): Promise<number> => {
     return body.commitCursor;
 };
 
+const applyDeliveredFrames = (client: SubscriptionState, frames: Record<string, unknown>[]): void => {
+    for (const frame of frames) {
+        if (frame.type === "data") {
+            commitDataFrame(client, frame.data, { cursor: frame.cursor as number });
+        } else if (frame.type === "settled") {
+            commitDataFrame(client, client.serverBase, { cursor: frame.cursor as number });
+        } else {
+            continue;
+        }
+        dropConfirmedLayers(client, client.serverCursor);
+        refoldSubscription(client, client.serverBase);
+    }
+};
+const writeRelevant = (shard: UnrelatedCdcShard, custom: boolean): Promise<Response> =>
+    custom ? write(shard, "messages:mutate", { "x-lunora-client-id": "client", "x-lunora-client-seq": "1" }) : write(shard, "messages:write");
+
 const setupWatermark = (cdc: boolean) => {
     const test = setup();
     if (!cdc) {
@@ -68,6 +92,79 @@ const setupWatermark = (cdc: boolean) => {
 
 describe("delivery-authorized unchanged subscription settlement", () => {
     afterEach(cleanupDatabases);
+
+    it.each([false, true])("redelivers failed data before settling an unrelated write with custom-mutator=%s", async (custom) => {
+        expect.hasAssertions();
+
+        const test = setup();
+
+        test.socket.attachment.clientId = "client";
+
+        const shard = new UnrelatedCdcShard(test.state, {}, { deliveryAuthorization: test.authority });
+
+        await test.send(shard);
+
+        const client = clientState();
+        const layer = applyOptimisticLayer(client, () => ["after"]);
+
+        test.socket.frames.length = 0;
+
+        vi.spyOn(test.socket, "send").mockImplementationOnce((frame) => {
+            expect(JSON.parse(frame)).toMatchObject({ type: "data", data: ["after"] });
+
+            throw new Error("data delivery unavailable");
+        });
+        const first = await writeRelevant(shard, custom);
+
+        await expect(first.json()).resolves.toMatchObject(custom ? { lastMutationId: 1 } : { commitCursor: 1 });
+
+        layer?.confirm(readCdcCursor(test.database.sql));
+
+        expect(client.optimisticLayers).toHaveLength(1);
+        expect(test.socket.frames).toEqual([]);
+        expect(shard.queryCalls).toBe(2);
+
+        const second = await write(shard);
+        const cursor = await readCommitCursor(second);
+        applyDeliveredFrames(client, test.socket.frames);
+
+        expect(client.lastValue).toEqual(["after"]);
+        expect(client.serverBase).toEqual(["after"]);
+        expect(client.optimisticLayers).toEqual([]);
+        expect(shard.queryCalls).toBe(3);
+        expect(test.socket.frames).toEqual([expect.objectContaining({ type: "data", data: ["after"], cursor, lastMutationId: custom ? 1 : 0 })]);
+
+        await write(shard, "rooms:notify");
+
+        expect(shard.queryCalls).toBe(3);
+        expect(test.socket.frames).toHaveLength(1);
+    });
+
+    it("clears the retry only after a fresh query confirms the previously delivered value", async () => {
+        expect.hasAssertions();
+
+        const test = setup();
+        const shard = new UnrelatedCdcShard(test.state, {}, { deliveryAuthorization: test.authority });
+
+        await test.send(shard);
+
+        test.socket.frames.length = 0;
+
+        vi.spyOn(test.socket, "send").mockImplementationOnce(() => {
+            throw new Error("data unavailable");
+        });
+        await writeRelevant(shard, false);
+        shard.rows = ["before"];
+        await write(shard);
+
+        expect(shard.queryCalls).toBe(3);
+        expect(test.socket.frames).toEqual([expect.objectContaining({ type: "settled", cursor: 2 })]);
+
+        await write(shard, "rooms:notify");
+
+        expect(shard.queryCalls).toBe(3);
+        expect(test.socket.frames).toHaveLength(1);
+    });
 
     it.each([true, false])("settles a watermark without cursor progress and skips repeated flushes with CDC=%s", async (cdc) => {
         expect.hasAssertions();

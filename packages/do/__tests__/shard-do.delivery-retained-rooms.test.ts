@@ -75,11 +75,67 @@ const retainedRooms = async (hibernated = false) => {
         }
         return [a, b];
     };
-    return { enable, joins, members, original };
+    const exclude = (socket: Socket): void => {
+        sockets = sockets.filter((candidate) => candidate !== socket);
+    };
+    return { enable, exclude, joins, members, original, state };
 };
 
 describe("retained rooms when delivery authorization is enabled", () => {
     afterEach(cleanupDatabases);
+
+    it("does not rescan sibling attachments after the retained memberships were removed", async () => {
+        expect.hasAssertions();
+
+        const test = await retainedRooms();
+        const shard = test.enable();
+        const [sender, sibling] = test.members();
+        await send(shard, sender, "whisper_unsubscribe");
+        const reads = vi.spyOn(sibling, "deserializeAttachment");
+        await send(shard, sender, "whisper");
+        await send(shard, sender, "connect");
+        await send(shard, sender, "whisper_subscribe");
+        await send(shard, sender, "whisper");
+
+        expect(reads).not.toHaveBeenCalled();
+        expect(sibling.attachment.whispers).toBeUndefined();
+        expect(shard.roomCalls).toEqual([]);
+    });
+
+    it("includes a closing socket even after the host stopped enumerating it", async () => {
+        expect.hasAssertions();
+
+        const test = await retainedRooms(true);
+        const shard = test.enable();
+        const [closing, remaining] = test.members();
+
+        test.exclude(closing);
+
+        await shard.webSocketClose(closing as unknown as WebSocket, 1000, "closed", true);
+
+        expect(closing.frames.filter((frame) => frame.type === "error")).toEqual([expect.objectContaining({ topic: "room:chat", code: "NOT_IMPLEMENTED" })]);
+        expect(remaining.attachment.whispers).toBeUndefined();
+        expect(shard.roomCalls).toEqual([]);
+    });
+
+    it("retries a sweep that threw before all retained sockets were visited", async () => {
+        expect.hasAssertions();
+
+        const test = await retainedRooms(true);
+        const shard = test.enable();
+        const [sender, sibling] = test.members();
+        vi.spyOn(sibling, "deserializeAttachment").mockImplementationOnce(() => {
+            throw new Error("attachment read unavailable");
+        });
+
+        await expect(send(shard, sender, "whisper_unsubscribe")).rejects.toThrow("attachment read unavailable");
+
+        await send(shard, sender, "connect");
+
+        expect(sibling.attachment.whispers).toBeUndefined();
+        expect(sibling.frames.filter((frame) => frame.type === "error")).toHaveLength(2);
+        expect(shard.roomCalls).toEqual([]);
+    });
 
     it.each([false, true])("removes and notifies retained room and whisper members before onLeave with hibernated=%s", async (hibernated) => {
         expect.hasAssertions();

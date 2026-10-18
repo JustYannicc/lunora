@@ -1154,6 +1154,8 @@ interface SubscriptionMemo {
      * unnarrowable way (a scan, a search, a join) and always re-runs.
      */
     ranges?: Map<string, KeyRange[]>;
+    /** A later unrelated write cannot settle past a value the socket never received. */
+    retryData?: boolean;
     tables: Set<string>;
 }
 
@@ -1475,7 +1477,11 @@ const memoProvesUnchanged = (
     memo: SubscriptionMemo | undefined,
     changed: Set<string>,
     changedKeys: Map<string, IndexKeyEntry[] | undefined> | undefined,
-): boolean => memo !== undefined && !memo.tables.has(ADMIN_WILDCARD) && (!setsIntersect(memo.tables, changed) || !writeTouchesMemo(memo, changed, changedKeys));
+): boolean =>
+    memo !== undefined &&
+    !memo.retryData &&
+    !memo.tables.has(ADMIN_WILDCARD) &&
+    (!setsIntersect(memo.tables, changed) || !writeTouchesMemo(memo, changed, changedKeys));
 
 /**
  * The caller context a socket's DEFERRED work runs under, read off its
@@ -2450,6 +2456,7 @@ abstract class ShardDO {
      * them, so a socket never receives room traffic before its join committed.
      */
     private readonly pendingRoomJoins = new WeakMap<ShardSocketLike, Map<string, number>>();
+    private retainedRoomsNeedCleanup = true;
 
     /**
      * Topics whose join was refused. A leave queued behind a refused join pairs with no
@@ -14729,6 +14736,7 @@ abstract class ShardDO {
                 return;
             }
             existing.generation = generation;
+            existing.retryData = false;
             existing.tables = outcome.tables;
             // `ranges` legitimately shifts run-to-run even when the result is
             // byte-identical (a recency-windowed query is the obvious case) — it's
@@ -14781,10 +14789,14 @@ abstract class ShardDO {
         // losing that update until it reconnected. `.map` before `.every` on purpose:
         // every frame is attempted, and only then is the verdict taken. `tables`
         // normally advances so dependency tracking stays accurate even on failure.
-        // An authorization-gated delivery leaves the entire memo unchanged on failure.
+        // A guarded failure preserves the delivered baseline and requires a fresh read before settlement.
         const delivered = frames.map((frame) => this.sendFrame(ws, frame, { subId, permit })).every(Boolean);
 
-        if (this.deliveryAuthorization && !delivered) {
+        const guardedFailure = this.deliveryAuthorization !== undefined && !delivered;
+        if (guardedFailure && existing !== undefined && memos.get(subId) === existing) {
+            existing.retryData = true;
+        }
+        if (guardedFailure) {
             return;
         }
         memos.set(subId, {
@@ -15375,7 +15387,7 @@ abstract class ShardDO {
 
     /** Retiring an unsupported room must not invoke its application mutations or broadcasts. */
     private rejectRetainedRooms(socket?: ShardSocketLike): number {
-        if (!this.deliveryAuthorization) {
+        if (!this.deliveryAuthorization || !this.retainedRoomsNeedCleanup) {
             return 0;
         }
         const sockets = new Set<ShardSocketLike>(this.runner.sockets());
@@ -15394,6 +15406,7 @@ abstract class ShardDO {
             }
             remaining += this.readAttachment(ws).whispers?.length ?? 0;
         }
+        this.retainedRoomsNeedCleanup = remaining > 0;
         return remaining;
     }
 
