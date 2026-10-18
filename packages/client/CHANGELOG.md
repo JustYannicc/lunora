@@ -1,3 +1,17 @@
+## @lunora/client [1.0.0-alpha.218](https://github.com/anolilab/lunora/compare/@lunora/client@1.0.0-alpha.217...@lunora/client@1.0.0-alpha.218) (2026-10-18)
+
+### Features
+
+* **do:** authorize RPC and subscription delivery with durable fences ([#1235](https://github.com/anolilab/lunora/issues/1235)) ([c1e354b](https://github.com/anolilab/lunora/commit/c1e354b7f392399da898bb19c444051412c9ac05))
+
+
+### Dependencies
+
+* **@lunora/errors:** upgraded to 1.0.0-alpha.59
+* **@lunora/do:** upgraded to 1.0.0-alpha.221
+* **@lunora/runtime:** upgraded to 1.0.0-alpha.211
+* **@lunora/shard-engine:** upgraded to 1.0.0-alpha.135
+
 ## @lunora/client [1.0.0-alpha.217](https://github.com/anolilab/lunora/compare/@lunora/client@1.0.0-alpha.216...@lunora/client@1.0.0-alpha.217) (2026-10-17)
 
 
