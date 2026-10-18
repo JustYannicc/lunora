@@ -1,10 +1,18 @@
 import type { ShardDOState, SubscriptionOutcome } from "@lunora/do";
 import { ShardDO } from "@lunora/do";
-import type { SocketAttachment, SqlExec } from "@lunora/shard-engine";
-import { migrateShapePokeCursor, runShardMigrations, writeGlobalShapeSnapshot, writeShapePokeCursor } from "@lunora/shard-engine";
+import type { SchemaLike, SocketAttachment, SqlExec } from "@lunora/shard-engine";
+import {
+    createShardCtxDb,
+    migrateShapePokeCursor,
+    readCdcCursor,
+    runShardMigrations,
+    writeGlobalShapeSnapshot,
+    writeShapePokeCursor,
+} from "@lunora/shard-engine";
 import { DurableObject } from "cloudflare:workers";
 
 const DELIVERY_TEST_SECRET = "delivery-authorization-workerd-fixture";
+const settlementSchema: SchemaLike = { tables: { unrelated: { indexes: [], shape: { value: { kind: "number" } } } } };
 
 interface Policy {
     allowed: boolean;
@@ -25,8 +33,10 @@ interface DeliverySnapshot {
 class AuthorizedShard extends ShardDO {
     public attempts = 0;
     public shapeReads = 0;
+    public queryCalls = 0;
     public parkActions = false;
-    private readonly mutations = new Set(["fixture:write"]);
+    private readonly mutations = new Set(["fixture:unrelated", "fixture:write"]);
+    private readonly rooms = new Map([["room:fixture", "fixture:room"]]);
     private readonly subscriptionResult = { value: "private" };
     private readonly actions = new Map<number, { entered: PromiseWithResolvers<undefined>; released: PromiseWithResolvers<undefined> }>();
 
@@ -54,6 +64,20 @@ class AuthorizedShard extends ShardDO {
     }
 
     public override handleRpc(functionPath: string, args: Record<string, unknown>): Promise<unknown> {
+        if (functionPath === "fixture:unrelated") {
+            return this.runInTransaction(async () => {
+                const writer = createShardCtxDb({ sql: this.sql as SqlExec, schema: settlementSchema, cdc: true, broadcast: () => {} });
+                const result = await writer.insert("unrelated", { value: 1 });
+                this.recordChangedTable("unrelated");
+                this.commitMutationBookkeeping(result);
+                return result;
+            });
+        }
+        if (functionPath === "fixture:room") {
+            (this.sql as SqlExec).exec("INSERT INTO delivery_room_events(kind) VALUES (?)", String(args.kind));
+            (args.socket as { broadcast: (value: unknown) => void }).broadcast({ roomEvent: args.kind });
+            return Promise.resolve(undefined);
+        }
         if (functionPath === "fixture:action") {
             this.attempts += 1;
             const { epoch } = this.policy;
@@ -110,7 +134,12 @@ class AuthorizedShard extends ShardDO {
         return this.mutations.has(functionPath);
     }
 
+    protected override roomHandlerPath(topic: string): string | undefined {
+        return this.rooms.get(topic);
+    }
+
     protected override executeSubscription(): Promise<SubscriptionOutcome> {
+        this.queryCalls += 1;
         return Promise.resolve({ result: this.subscriptionResult, tables: new Set(["delivery_fixture"]) });
     }
 }
@@ -124,6 +153,7 @@ class DeliveryAuthorizationTestDO extends DurableObject {
         super(context, env);
         runShardMigrations(context.storage.sql as unknown as SqlExec, { tables: {} });
         context.storage.sql.exec("CREATE TABLE IF NOT EXISTS delivery_fixture(runs INTEGER NOT NULL)");
+        context.storage.sql.exec("CREATE TABLE IF NOT EXISTS delivery_room_events(kind TEXT NOT NULL)");
         context.storage.sql.exec("INSERT INTO delivery_fixture SELECT 0 WHERE NOT EXISTS(SELECT 1 FROM delivery_fixture)");
         this.shard = new AuthorizedShard(context as unknown as ShardDOState, this.policy);
     }
@@ -155,6 +185,34 @@ class DeliveryAuthorizationTestDO extends DurableObject {
 
     public releaseAction(epoch: number): void {
         this.shard.action(epoch).released.resolve(undefined);
+    }
+
+    public enableSettlementFixture(): void {
+        runShardMigrations(this.ctx.storage.sql as unknown as SqlExec, settlementSchema, { cdc: true });
+    }
+
+    public settlementSnapshot(): { cursor: number | undefined; queryCalls: number; rows: number | undefined } {
+        const sql = this.ctx.storage.sql as unknown as SqlExec;
+        return {
+            cursor: readCdcCursor(sql),
+            queryCalls: this.shard.queryCalls,
+            rows: sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM unrelated").toArray()[0]?.count,
+        };
+    }
+
+    public retainRooms(): void {
+        // Seed the attachment state an earlier deployment persisted; guarded joins remain unsupported.
+        for (const socket of this.ctx.getWebSockets()) {
+            const attachment = socket.deserializeAttachment() as SocketAttachment;
+            socket.serializeAttachment({ ...attachment, whispers: ["room:fixture", "presence"] });
+        }
+    }
+
+    public roomSnapshot(): { events: { kind: string }[]; memberships: string[][] } {
+        return {
+            events: this.ctx.storage.sql.exec<{ kind: string }>("SELECT kind FROM delivery_room_events").toArray(),
+            memberships: this.ctx.getWebSockets().map((socket) => (socket.deserializeAttachment() as SocketAttachment).whispers ?? []),
+        };
     }
 
     public async retainShapes(): Promise<void> {

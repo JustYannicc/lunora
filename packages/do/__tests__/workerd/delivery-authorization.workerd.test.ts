@@ -7,9 +7,11 @@ import { DELIVERY_TEST_SECRET } from "./delivery-authorization-worker";
 
 type Stub = DurableObjectStub<DeliveryAuthorizationTestDO>;
 interface Frame {
+    cursor?: number;
     data?: unknown;
     error?: { code: string };
     id?: string;
+    topic?: string;
     type: string;
 }
 
@@ -37,14 +39,14 @@ const requireSocket = (socket: WebSocket | null): WebSocket => {
     return socket;
 };
 
-const nextFrame = (socket: WebSocket, type: string): Promise<Frame> =>
+const nextFrame = (socket: WebSocket, type: string, ignoreErrors = false): Promise<Frame> =>
     new Promise((resolve, reject) => {
         const listener = (event: MessageEvent) => {
             const frame = JSON.parse(String(event.data)) as Frame;
             if (frame.type === type) {
                 socket.removeEventListener("message", listener);
                 resolve(frame);
-            } else if (frame.type === "error") {
+            } else if (frame.type === "error" && !ignoreErrors) {
                 socket.removeEventListener("message", listener);
                 reject(new Error(`Unexpected socket error: ${frame.error?.code ?? "unknown"}`));
             }
@@ -59,7 +61,127 @@ const pollRetainedShapes = async (stub: Stub): Promise<void> => {
     await expect(runDurableObjectAlarm(stub)).resolves.toBe(true);
 };
 
+const connectBarrier = async (socket: WebSocket): Promise<void> => {
+    const connected = nextFrame(socket, "identity", true);
+    socket.send(JSON.stringify({ type: "connect" }));
+    await connected;
+};
+const leaveRoom = async (socket: WebSocket): Promise<void> => {
+    socket.send(JSON.stringify({ type: "whisper_unsubscribe", topic: "room:fixture" }));
+    // An ordinary subscription does not itself retire rooms, so this barrier cannot hide missed cleanup.
+    const subscribed = nextFrame(socket, "data", true);
+    socket.send(JSON.stringify({ type: "subscribe", id: "leave-barrier", query: { functionPath: "fixture:read", args: {} } }));
+    await subscribed;
+};
+const closeRoom = async (socket: WebSocket): Promise<void> => {
+    const closed = new Promise<void>((resolve) => {
+        socket.addEventListener(
+            "close",
+            () => {
+                resolve();
+            },
+            { once: true },
+        );
+    });
+    socket.close(1000, "test close");
+    await closed;
+};
+
 describe("delivery authorization on native workerd", () => {
+    it("settles an unrelated CDC write on the actual socket without rerunning its query", async () => {
+        expect.hasAssertions();
+
+        const stub = env.AUTHORIZED.get(env.AUTHORIZED.idFromName("unrelated-native-settlement"));
+        await stub.enableSettlementFixture();
+        const upgrade = await stub.fetch("https://shard.internal/ws", { headers: { Upgrade: "websocket", "x-lunora-userid": "alice" } });
+        const socket = requireSocket(upgrade.webSocket);
+        socket.accept();
+        try {
+            const seeded = nextFrame(socket, "data");
+            socket.send(JSON.stringify({ type: "subscribe", id: "view", query: { functionPath: "fixture:read", args: {} } }));
+
+            await expect(seeded).resolves.toMatchObject({ id: "view", cursor: 0 });
+
+            const frames: Frame[] = [];
+            socket.addEventListener("message", (event: MessageEvent) => frames.push(JSON.parse(String(event.data)) as Frame));
+            const result = await rpc(stub, "unrelated", false, "fixture:unrelated");
+            const after = await stub.settlementSnapshot();
+
+            expect(result.status).toBe(200);
+            expect(result.body).toMatchObject({ commitCursor: 1 });
+            expect(after).toEqual({ cursor: 1, queryCalls: 1, rows: 1 });
+
+            // A later control reply is a wire-order barrier, independent of whether settlement was sent.
+            await connectBarrier(socket);
+
+            expect(frames.filter((frame) => frame.type === "settled")).toEqual([expect.objectContaining({ id: "view", cursor: after.cursor })]);
+            expect(frames.filter((frame) => frame.type === "data" || frame.type === "delta")).toEqual([]);
+        } finally {
+            socket.close();
+        }
+    });
+
+    it.each([
+        { path: "unsubscribe", leave: leaveRoom },
+        { path: "close", leave: closeRoom },
+    ])("retires retained room memberships through $path after native hibernation", async ({ path, leave }) => {
+        expect.hasAssertions();
+
+        const stub = env.AUTHORIZED.get(env.AUTHORIZED.idFromName(`retained-rooms-${path}`));
+        const upgrade = await stub.fetch("https://shard.internal/ws", { headers: { Upgrade: "websocket", "x-lunora-userid": "alice" } });
+        const peerUpgrade = await stub.fetch("https://shard.internal/ws", { headers: { Upgrade: "websocket", "x-lunora-userid": "alice" } });
+        const socket = requireSocket(upgrade.webSocket);
+        const peer = requireSocket(peerUpgrade.webSocket);
+        socket.accept();
+        peer.accept();
+        try {
+            const seeded = nextFrame(peer, "data");
+            const subscribe = JSON.stringify({ type: "subscribe", id: "view", query: { functionPath: "fixture:read", args: {} } });
+            peer.send(subscribe);
+            await seeded;
+            await stub.retainRooms();
+
+            await expect(stub.roomSnapshot()).resolves.toMatchObject({
+                memberships: [
+                    ["room:fixture", "presence"],
+                    ["room:fixture", "presence"],
+                ],
+                events: [],
+            });
+
+            const before = await stub.snapshot();
+            const frames: Frame[] = [];
+            peer.addEventListener("message", (event: MessageEvent) => frames.push(JSON.parse(String(event.data)) as Frame));
+            await evictDurableObject(stub, { webSockets: "hibernate" });
+            await leave(socket);
+            const room = await stub.roomSnapshot();
+
+            expect(room.events).toEqual([]);
+            expect(room.memberships.flat()).toEqual([]);
+
+            const after = await stub.snapshot();
+
+            expect(after.boot).not.toBe(before.boot);
+            expect(after.attachments.some((attachment) => attachment.subscriptionIds.includes("view"))).toBe(true);
+
+            await connectBarrier(peer);
+
+            expect(frames.filter((frame) => frame.type === "error")).toEqual([
+                expect.objectContaining({ topic: "room:fixture", error: { code: "NOT_IMPLEMENTED", message: expect.any(String) } }),
+                expect.objectContaining({ topic: "presence", error: { code: "NOT_IMPLEMENTED", message: expect.any(String) } }),
+            ]);
+            expect(frames.filter((frame) => frame.type === "whisper")).toEqual([]);
+
+            const reseeded = nextFrame(peer, "data");
+            peer.send(subscribe);
+
+            await expect(reseeded).resolves.toMatchObject({ id: "view", data: { value: "private" } });
+        } finally {
+            socket.close();
+            peer.close();
+        }
+    });
+
     it.each([
         { path: "refresh", run: refreshRetainedShapes },
         { path: "alarm", run: pollRetainedShapes },
