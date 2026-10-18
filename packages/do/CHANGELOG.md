@@ -1,3 +1,23 @@
+## @lunora/do [1.0.0-alpha.221](https://github.com/anolilab/lunora/compare/@lunora/do@1.0.0-alpha.220...@lunora/do@1.0.0-alpha.221) (2026-10-18)
+
+### Features
+
+* **do:** authorize RPC and subscription delivery with durable fences ([#1235](https://github.com/anolilab/lunora/issues/1235)) ([c1e354b](https://github.com/anolilab/lunora/commit/c1e354b7f392399da898bb19c444051412c9ac05))
+
+### Tests
+
+* **do:** order the set-null cascade fixture parent-first regardless of clock ([#1237](https://github.com/anolilab/lunora/issues/1237)) ([b1d1132](https://github.com/anolilab/lunora/commit/b1d1132791da918cc383e68991625261e77a5346))
+
+
+### Dependencies
+
+* **@lunora/errors:** upgraded to 1.0.0-alpha.59
+* **@lunora/observability:** upgraded to 1.0.0-alpha.146
+* **@lunora/platform-cloudflare:** upgraded to 1.0.0-alpha.93
+* **@lunora/shard-engine:** upgraded to 1.0.0-alpha.135
+* **@lunora/values:** upgraded to 1.0.0-alpha.69
+* **@lunora/bindings:** upgraded to 1.0.0-alpha.118
+
 ## @lunora/do [1.0.0-alpha.220](https://github.com/anolilab/lunora/compare/@lunora/do@1.0.0-alpha.219...@lunora/do@1.0.0-alpha.220) (2026-10-17)
 
 

@@ -1,3 +1,15 @@
+## @lunora/shard-engine [1.0.0-alpha.135](https://github.com/anolilab/lunora/compare/@lunora/shard-engine@1.0.0-alpha.134...@lunora/shard-engine@1.0.0-alpha.135) (2026-10-18)
+
+### Features
+
+* **do:** authorize RPC and subscription delivery with durable fences ([#1235](https://github.com/anolilab/lunora/issues/1235)) ([c1e354b](https://github.com/anolilab/lunora/commit/c1e354b7f392399da898bb19c444051412c9ac05))
+
+
+### Dependencies
+
+* **@lunora/errors:** upgraded to 1.0.0-alpha.59
+* **@lunora/bindings:** upgraded to 1.0.0-alpha.118
+
 ## @lunora/shard-engine [1.0.0-alpha.134](https://github.com/anolilab/lunora/compare/@lunora/shard-engine@1.0.0-alpha.133...@lunora/shard-engine@1.0.0-alpha.134) (2026-10-17)
 
 
