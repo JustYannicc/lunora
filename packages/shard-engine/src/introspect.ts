@@ -1948,9 +1948,7 @@ interface FanoutPathCounters {
     /**
      * Sockets a frame was sent to, summed across every pass. The shape-poke path
      * counts only confirmed sends (`sendPoke` returned `true`); the whisper path
-     * counts matched receivers (the best-effort `trySendFrame` may silently no-op
-     * on a socket that closed between the snapshot and the send), so it can very
-     * marginally over-count in that near-impossible race.
+     * likewise counts only successful sends.
      */
     socketsDelivered: number;
     /** Sockets visited, summed across every pass — the O(subscribers) iteration cost. */
