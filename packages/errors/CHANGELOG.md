@@ -1,3 +1,9 @@
+## @lunora/errors [1.0.0-alpha.59](https://github.com/anolilab/lunora/compare/@lunora/errors@1.0.0-alpha.58...@lunora/errors@1.0.0-alpha.59) (2026-10-18)
+
+### Features
+
+* **do:** authorize RPC and subscription delivery with durable fences ([#1235](https://github.com/anolilab/lunora/issues/1235)) ([c1e354b](https://github.com/anolilab/lunora/commit/c1e354b7f392399da898bb19c444051412c9ac05))
+
 ## @lunora/errors [1.0.0-alpha.58](https://github.com/anolilab/lunora/compare/@lunora/errors@1.0.0-alpha.57...@lunora/errors@1.0.0-alpha.58) (2026-10-17)
 
 ### Bug Fixes
